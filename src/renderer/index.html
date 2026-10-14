@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  内容安全策略：默认禁止一切外部资源。
+  connect-src 'none' 表示渲染进程不会发起任何网络请求（全部网络访问由主进程承担）。
+  script-src / style-src 允许 'self' 与 file:，以便在 Electron(file://) 与本地浏览器中均可直接打开本页调试。
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; img-src 'self' file: data:; font-src 'self' file:; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="color-scheme" content="light dark">
+<title>夸克网盘 · 极简版</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- 顶部提示条（未注入桥接层 / 登录态失效 / 开发假数据模式） -->
+<div class="banners" id="banners" role="status" aria-live="polite"></div>
+
+<div class="app">
+
+  <!-- ======================= 左侧极简导航 ======================= -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" class="ic"><use href="#i-cloud"></use></svg>
+      </span>
+      <span class="brand-text">夸克网盘<em>极简版</em></span>
+    </div>
+
+    <nav class="nav" id="nav" aria-label="主导航">
+      <button type="button" class="nav-item" data-view="files">
+        <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-folder"></use></svg>
+        <span>全部文件</span>
+      </button>
+      <button type="button" class="nav-item" data-view="transfers">
+        <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-transfer"></use></svg>
+        <span>传输列表</span>
+        <span class="nav-badge" id="transfer-badge" hidden></span>
+      </button>
+      <button type="button" class="nav-item" data-view="settings">
+        <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-settings"></use></svg>
+        <span>设置</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot" id="sidebar-foot"></div>
+  </aside>
+
+  <!-- ======================= 右侧主区 ======================= -->
+  <main class="main">
+
+    <!-- 顶栏：面包屑 + 搜索 + 操作 + 账号区 -->
+    <header class="topbar">
+      <div class="crumbs" id="crumbs" aria-label="目录路径"></div>
+
+      <div class="topbar-tools">
+        <div class="search" id="search-box">
+          <svg viewBox="0 0 24 24" class="ic search-icon" aria-hidden="true"><use href="#i-search"></use></svg>
+          <input type="search" id="search-input" placeholder="搜索文件名称" autocomplete="off" spellcheck="false" aria-label="搜索文件名称">
+          <button type="button" class="search-clear" id="search-clear" title="清空搜索" aria-label="清空搜索" hidden>
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-close"></use></svg>
+          </button>
+        </div>
+
+        <button type="button" class="btn btn-icon" id="btn-refresh" title="刷新当前目录" aria-label="刷新当前目录">
+          <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-refresh"></use></svg>
+        </button>
+
+        <button type="button" class="btn" id="btn-mkdir" title="在当前目录新建文件夹">
+          <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-folder-plus"></use></svg>
+          <span class="btn-label">新建文件夹</span>
+        </button>
+
+        <button type="button" class="btn btn-primary" id="btn-upload" title="上传本地文件">
+          <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-upload"></use></svg>
+          <span class="btn-label">上传</span>
+        </button>
+
+        <div class="account" id="account"></div>
+      </div>
+    </header>
+
+    <!-- ======================= 视图：全部文件 ======================= -->
+    <section class="view" id="view-files">
+
+      <div class="bulkbar" id="bulkbar" hidden>
+        <span class="bulk-count" id="bulk-count">已选 0 项</span>
+        <div class="bulk-actions">
+          <button type="button" class="btn btn-sm" data-bulk="download">
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-download"></use></svg><span class="btn-label">下载</span>
+          </button>
+          <button type="button" class="btn btn-sm" data-bulk="move">
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-move"></use></svg><span class="btn-label">移动到</span>
+          </button>
+          <button type="button" class="btn btn-sm" data-bulk="copy">
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-copy"></use></svg><span class="btn-label">复制到</span>
+          </button>
+          <button type="button" class="btn btn-sm btn-danger" data-bulk="remove">
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-trash"></use></svg><span class="btn-label">删除</span>
+          </button>
+          <button type="button" class="btn btn-sm btn-ghost" data-bulk="clear">取消选择</button>
+        </div>
+      </div>
+
+      <div class="listhead" id="listhead">
+        <span class="cb-cell">
+          <label class="cb" title="全选已加载的项目">
+            <input type="checkbox" id="check-all" aria-label="全选已加载的项目">
+            <i aria-hidden="true"></i>
+          </label>
+        </span>
+        <span class="col-name">名称</span>
+        <span class="col-size">大小</span>
+        <span class="col-time">修改时间</span>
+        <span class="col-ops">操作</span>
+      </div>
+
+      <div class="listwrap" id="listwrap" tabindex="-1">
+        <div class="list" id="list" role="list"></div>
+        <div class="listfoot" id="listfoot"></div>
+      </div>
+    </section>
+
+    <!-- ======================= 视图：传输列表 ======================= -->
+    <section class="view" id="view-transfers" hidden>
+      <div class="section-head">
+        <h2 class="section-title">传输列表</h2>
+        <div class="section-actions">
+          <span class="muted" id="transfers-summary"></span>
+          <button type="button" class="btn btn-sm btn-ghost" id="btn-clear-finished">清除已结束记录</button>
+        </div>
+      </div>
+      <div class="tlist" id="tlist"></div>
+    </section>
+
+    <!-- ======================= 视图：设置 ======================= -->
+    <section class="view" id="view-settings" hidden>
+      <div class="section-head">
+        <h2 class="section-title">设置</h2>
+      </div>
+
+      <div class="setcard">
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">下载目录</div>
+            <div class="sethint">下载任务默认保存到此目录，同名冲突由主进程处理。</div>
+          </div>
+          <div class="setcontrol">
+            <input type="text" id="set-download-dir" class="input input-path" readonly placeholder="尚未设置">
+            <button type="button" class="btn btn-sm" id="btn-pick-dir">选择目录</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-open-dir">打开</button>
+          </div>
+        </div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">同时上传的文件数</div>
+            <div class="sethint">多文件上传时同时进行的任务数，范围 1–8。</div>
+          </div>
+          <div class="setcontrol">
+            <input type="number" id="set-up-conc" class="input input-num" min="1" max="8" step="1">
+          </div>
+        </div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">上传分片预读并发</div>
+            <div class="sethint">大文件上传时同时传输的分片数，越高越快，范围 1–8。</div>
+          </div>
+          <div class="setcontrol">
+            <input type="number" id="set-up-part" class="input input-num" min="1" max="8" step="1">
+          </div>
+        </div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">同时下载的文件数</div>
+            <div class="sethint">多文件下载时同时进行的任务数，范围 1–5。</div>
+          </div>
+          <div class="setcontrol">
+            <input type="number" id="set-down-conc" class="input input-num" min="1" max="5" step="1">
+          </div>
+        </div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">单文件下载并行连接数</div>
+            <div class="sethint">大文件多连接并行下载，决定大文件速度，范围 1–16。</div>
+          </div>
+          <div class="setcontrol">
+            <input type="number" id="set-down-parallel" class="input input-num" min="1" max="16" step="1">
+          </div>
+        </div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">主题</div>
+            <div class="sethint">深浅色跟随设置持久化保存。</div>
+          </div>
+          <div class="setcontrol">
+            <div class="segmented" id="set-theme" role="radiogroup" aria-label="主题">
+              <button type="button" class="seg" data-theme="light" role="radio" aria-checked="false">浅色</button>
+              <button type="button" class="seg" data-theme="dark" role="radio" aria-checked="false">深色</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="setcard">
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">账号</div>
+            <div class="sethint" id="set-account-hint">查看当前登录状态。</div>
+          </div>
+          <div class="setcontrol">
+            <button type="button" class="btn btn-sm" id="btn-verify">检查登录状态</button>
+            <button type="button" class="btn btn-sm" id="btn-login-2">重新登录</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-logout-2">退出登录</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="setcard">
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">运行环境</div>
+            <div class="sethint" id="set-env">—</div>
+          </div>
+          <div class="setcontrol">
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-env-check">重新检测桥接层</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- 拖拽上传提示遮罩 -->
+<div class="dropmask" id="dropmask" hidden>
+  <div class="dropmask-inner">
+    <svg viewBox="0 0 24 24" class="ic dropmask-ic" aria-hidden="true"><use href="#i-upload"></use></svg>
+    <div class="dropmask-title">释放以上传</div>
+    <div class="dropmask-sub" id="dropmask-sub">文件将上传到当前目录</div>
+  </div>
+</div>
+
+<!-- toast 容器 -->
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<!-- 自绘对话框 / 目录选择器 容器 -->
+<div class="overlay-root" id="overlay-root"></div>
+
+<!-- 右键菜单 -->
+<div class="ctxmenu" id="ctxmenu" hidden role="menu"></div>
+
+<!-- ======================= 内联图标（无外部资源） ======================= -->
+<svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-cloud" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.95 5.5 5.5 0 0 0-10.5-1.3A3.9 3.9 0 0 0 7 18z"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1l1.9 2.2h8A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/></symbol>
+  <symbol id="i-folder-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1l1.9 2.2h8A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 11.5v5M9.5 14h5"/></symbol>
+  <symbol id="i-folder-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h3.1l1.9 2h5A2 2 0 0 1 17 8v1"/><path d="M3.4 10h16.2a1.5 1.5 0 0 1 1.45 1.9l-1.7 6A1.5 1.5 0 0 1 17.9 19H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+  <symbol id="i-file-doc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M8.5 13h7M8.5 16.5h4.5"/></symbol>
+  <symbol id="i-file-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><circle cx="9.5" cy="12" r="1.3"/><path d="M7.5 18l3.2-3.2 2.3 2.3 1.8-1.8 1.7 1.7"/></symbol>
+  <symbol id="i-file-audio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M14.5 12.2v5.2"/><circle cx="13" cy="18" r="1.6"/><path d="M14.5 12.2l2.3-.6v5"/></symbol>
+  <symbol id="i-file-archive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M10 12h2.5M10 15h2.5M11.5 18h.01"/></symbol>
+  <symbol id="i-file-video" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M8 11.5h8M8 15h8M10.5 11.5v8M14 11.5v8"/></symbol>
+  <symbol id="i-file-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M10.5 13.5 8.5 15.5l2 2M13.5 13.5l2 2-2 2"/></symbol>
+  <symbol id="i-transfer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4v13M4.5 13.5 8 17l3.5-3.5"/><path d="M16 20V7M12.5 10.5 16 7l3.5 3.5"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.1 14.6a1.6 1.6 0 0 0 .32 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.32 1.6 1.6 0 0 0-.97 1.47V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1.05-1.46 1.6 1.6 0 0 0-1.77.32l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .32-1.77 1.6 1.6 0 0 0-1.47-.97H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.46-1.05 1.6 1.6 0 0 0-.32-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.32H8.9a1.6 1.6 0 0 0 .97-1.47V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 .97 1.47 1.6 1.6 0 0 0 1.77-.32l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.32 1.77v.08a1.6 1.6 0 0 0 1.47.97H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.47.97z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.35-5.65"/><path d="M20 4.5V9h-4.5"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16.5V5"/><path d="M7.5 9.5 12 5l4.5 4.5"/><path d="M5 19.5h14"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v11.5"/><path d="M7.5 12 12 16.5 16.5 12"/><path d="M5 19.5h14"/></symbol>
+  <symbol id="i-rename" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10-10-4-4L4 16z"/><path d="M13.5 5.5l4 4"/></symbol>
+  <symbol id="i-move" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1l1.9 2.2h8A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M10 13.5h5M12.8 11l2.6 2.5-2.6 2.5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11.5" rx="2"/><path d="M5.5 15.5h-1V4.5a1 1 0 0 1 1-1h8.5v1"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7"/><path d="M6.5 7l1 12.1a1.7 1.7 0 0 0 1.7 1.6h5.6a1.7 1.7 0 0 0 1.7-1.6L17.5 7"/><path d="M10.5 11v6M13.5 11v6"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="8" y="5.5" width="3" height="13" rx="1"/><rect x="13" y="5.5" width="3" height="13" rx="1"/></symbol>
+  <symbol id="i-resume" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8.5 5.6a1 1 0 0 1 1.5-.87l8 6.4a1 1 0 0 1 0 1.74l-8 6.4a1 1 0 0 1-1.5-.87z"/></symbol>
+  <symbol id="i-retry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.35-5.65"/><path d="M20 4.5V9h-4.5"/></symbol>
+  <symbol id="i-cancel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.2"/><path d="M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12H4.5"/><path d="M8 8.2 4.2 12 8 15.8"/><path d="M14 4h4.3A1.7 1.7 0 0 1 20 5.7v12.6a1.7 1.7 0 0 1-1.7 1.7H14"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8.5" r="3.7"/><path d="M4.8 20a7.2 7.2 0 0 1 14.4 0"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.8 9.5 17 19 7"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.2"/><path d="M12 11v5.5M12 7.8v.02"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.2 21 19.6H3z"/><path d="M12 10v4M12 16.6v.02"/></symbol>
+  <symbol id="i-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.2"/><path d="M12 8v5M12 15.8v.02"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 5.5 16 12l-6.5 6.5"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/></symbol>
+  <symbol id="i-link-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 14.5 6.8 17.2a3.6 3.6 0 1 1-5-5l2.7-2.7"/><path d="M14.5 9.5l2.7-2.7a3.6 3.6 0 1 1 5 5l-2.7 2.7"/><path d="M4 4l16 16"/></symbol>
+</svg>
+
+<!--
+  脚本加载方式说明：这里刻意使用**经典脚本**（classic script）而非 ES 模块脚本来加载 api.js / app.js。
+  原因：浏览器对模块脚本强制 CORS 校验，在 file: 协议下页面 origin 为 'null'，模块脚本会被直接拦截，
+  导致"直接在浏览器打开 index.html 即可调试、且未注入桥接层时优雅降级"这一验收标准无法满足；
+  Electron 的沙箱渲染进程同样以 file: 载入本页。
+  因此采用经典脚本 + 显式命名空间（window.QKAPI / window.QKUI），不依赖任何打包器，功能等价且更稳健。
+-->
+<script src="api.js" defer></script>
+<script src="app.js" defer></script>
+</body>
+</html>

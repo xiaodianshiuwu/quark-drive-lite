@@ -1,0 +1,4 @@
+/1/clouddrive/file/delete
+/1/clouddrive/file/move
+/1/clouddrive/file/copy
+/1/clouddrive/folder/

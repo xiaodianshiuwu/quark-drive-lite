@@ -1,0 +1,5 @@
+/1/clouddrive/file/upload/pre
+/1/clouddrive/file/upload/auth
+/1/clouddrive/file/upload/finish
+/1/clouddrive/file/rename
+/1/clouddrive/task/status

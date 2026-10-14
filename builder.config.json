@@ -1,0 +1,53 @@
+{
+  "appId": "com.quarkmini.app",
+  "productName": "夸克网盘极简版",
+  "copyright": "Copyright © 2026",
+  "directories": {
+    "output": "dist",
+    "buildResources": "build"
+  },
+  "asar": true,
+  "compression": "maximum",
+  "npmRebuild": false,
+  "removePackageScripts": true,
+
+  "_comment_nodemodules": "主进程零第三方依赖（只用 Node 内置模块 + electron），因此无需收集 node_modules；同时这可绕开 electron-builder 解析 pnpm 输出的兼容问题。",
+  "includeSubNodeModules": false,
+  "nodeGypRebuild": false,
+  "files": [
+    "src/**/*",
+    "!src/**/*.map",
+    "package.json"
+  ]
+}
+  "extraMetadata": {
+    "main": "src/main/main.js"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "portable",
+        "arch": ["x64"]
+      },
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "artifactName": "${productName}-${version}-${arch}.${ext}"
+  },
+  "portable": {
+    "artifactName": "${productName}-${version}-便携版.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "夸克网盘极简版"
+  },
+  "asar": true,
+  "compression": "maximum",
+  "npmRebuild": false,
+  "removePackageScripts": true
+}

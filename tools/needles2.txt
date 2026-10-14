@@ -1,0 +1,10 @@
+/1/clouddrive/auth/pc/flush
+__puus
+flushPuus
+qrcode
+qr_code
+poll
+scan
+login
+getUserInfo
+userinfo

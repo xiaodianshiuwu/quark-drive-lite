@@ -1,0 +1,27 @@
+{
+  "name": "quark-mini",
+  "version": "0.1.0",
+  "private": true,
+  "description": "夸克网盘极简桌面客户端 — 仅保留文件浏览、搜索、新建、移动、复制、重命名、批量删除、上传、下载与传输任务管理",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "node scripts/start.js",
+    "test": "node --test test/*.test.js",
+    "verify": "node verify/integration.js",
+    "verify:smoke": "node verify/smoke-electron.js",
+    "verify:all": "npm test && node verify/integration.js && node verify/smoke-electron.js",
+    "e2e": "node verify/e2e-real.js",
+    "login": "node tools/login-assisted.js",
+    "import-session": "node tools/import-browser-session.js",
+    "native": "node tools/quark-mini-native.js",
+    "stability": "node tools/stability-test.js --full",
+    "pack": "node tools/make-portable.js",
+    "pack:asar": "node node_modules/.pnpm/@electron+asar@4.3.1/node_modules/@electron/asar/bin/asar.js pack .build-staging dist/win-unpacked/resources/app.asar"
+  },
+  "devDependencies": {
+    "@electron/asar": "^4.3.1",
+    "electron": "^33.0.0",
+    "electron-builder": "^26.15.3",
+    "playwright-core": "^1.64.0"
+  }
+}
