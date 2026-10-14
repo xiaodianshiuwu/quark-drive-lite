@@ -26,7 +26,7 @@ security unlock-keychain -p "$keychain_password" "$keychain"
 security list-keychains -d user -s "$keychain"
 security default-keychain -d user -s "$keychain"
 security default-keychain
-# ACL 的 -A 与签名分区是两个独立条件；只预授权本次验收运行时与应用。
+# ACL 与签名分区是两个独立条件；此处只有临时随机测试密钥，不读取用户资料。
 # ad-hoc 主应用与其 Chromium 辅助进程均属于 unsigned 分区；这些许可仅覆盖随机测试密钥。
 partition_list='apple-tool:,apple:,unsigned:'
 trusted_apps=()
@@ -48,12 +48,12 @@ while IFS= read -r executable; do
   fi
   partition_list="$partition_list,cdhash:$cdhash"
 done <<< "$executables"
-# Electron 的服务名为 app_name + Safe Storage。只预授权随机测试密钥，避免无人值守 CI 的许可弹窗。
+# Electron 的服务名为 app_name + Safe Storage。临时随机测试密钥允许 CI 进程读取，避免不同辅助进程身份触发许可弹窗。
 # 每个应用名称使用不同口令，保持跨版本应用名称不一致时的解密失败可被检测。
 for app_name in quark-mini Electron Chrome Chromium '夸克网盘极简版'; do
   fixture_password=$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64"))')
   echo "::add-mask::$fixture_password"
-  security add-generic-password -a "$app_name" -s "$app_name Safe Storage" -w "$fixture_password" "${trusted_apps[@]}" "$keychain"
+  security add-generic-password -a "$app_name" -s "$app_name Safe Storage" -w "$fixture_password" -A "$keychain"
   security set-generic-password-partition-list -a "$app_name" -s "$app_name Safe Storage" -S "$partition_list" -k "$keychain_password" "$keychain" >/dev/null
 done
 unset keychain_password fixture_password signature

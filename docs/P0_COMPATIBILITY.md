@@ -83,7 +83,7 @@ QCK_SMOKE_SEED_LEGACY=1 node verify/packaged-smoke.js
 ```
 
 旧运行时 33.4.11 来自官方发布并检查 SHA256，仅位于忽略目录 `.work/`，不进入产品构建。
-macOS CI 的临时旧样本使用 ad-hoc 签名；临时测试密钥只授权验收运行时，不修改用户钥匙串。
+macOS CI 的临时旧样本使用 ad-hoc 签名；随机测试密钥在独立 CI 密钥环内授权测试进程，签名分区保持校验；不读取或修改用户钥匙串。
 
 真实账号验收只操作专用自建目录：
 
