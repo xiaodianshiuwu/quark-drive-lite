@@ -36,9 +36,10 @@ macOS Chromium 在本应用内使用 `use-mock-keychain`，Linux 使用 `passwor
 登录窗口使用内存分区 `quark-login`；跨启动登录态由应用本地随机密钥保存。这些设置不修改系统配置、其他应用或 TLS 校验。
 Windows 日常应用同样使用本地随机密钥，不设置系统密码交互。
 
-旧 QCK1 系统密文是独立的兼容场景。需要时先运行：
+旧 QCK1 系统密文是独立的兼容场景。macOS 的旧 QCK1 使用独立旧运行时读取后转为 QCK2，避免新 Chromium KeychainV2 的许可差异；普通应用读取 QCK2。需要时先运行：
 
 ```bash
+node scripts/prepare-legacy-runtime.js  # macOS 旧格式迁移读取器，独立放在 .work
 npm run migrate-session
 ```
 

@@ -23,7 +23,7 @@ try{
   if(!current)throw Error('未安装 Electron');
   const written=run(legacy||current,'write');
   // 旧系统密文先通过显式迁移入口转为本地密钥格式，正常应用不再触碰系统密钥环。
-  if(legacy)require('../src/main/core/secure-store').createSecureStore({userDataDir:directory}).snapshot();
+  if(legacy)require('../src/main/core/secure-store').createSecureStore({userDataDir:directory,migrationRuntime:legacy}).snapshot();
   const read=run(current,'read');
   console.log(JSON.stringify({encrypted:true,source:written.electron,target:read.electron,legacyMigrationTested:!!legacy}));
 }catch(error){console.error(error.message);process.exitCode=1;}

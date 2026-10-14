@@ -38,7 +38,7 @@ function storageFixture(action,userData) {
       encoding:'utf8',timeout:30000,killSignal:'SIGKILL',
     });
     if(result.status!==0)throw Error('构建产物与开发运行时的加密存储不兼容');
-    if(legacySeed)require('../src/main/core/secure-store').createSecureStore({userDataDir:userData}).snapshot();
+    if(legacySeed)require('../src/main/core/secure-store').createSecureStore({userDataDir:userData,migrationRuntime:executable}).snapshot();
     if(legacySeed)console.log('  已使用 Electron 33.4.11 的测试密文作为打包应用启动样本。');
   } finally {host.cleanup();}
 }

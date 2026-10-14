@@ -123,7 +123,7 @@ function writeAtomic(target, buf) {
  * @param {object} [opts.safeStorage] 仅测试注入
  * @returns {{isAvailable:Function,isEncrypted:Function,getItem:Function,setItem:Function,removeItem:Function,clear:Function,path:string,filePath:string}}
  */
-function createSecureStore({ userDataDir, fileName = 'session.bin', safeStorage, requireEncryption = false, strictRead = false } = {}) {
+function createSecureStore({ userDataDir, fileName = 'session.bin', safeStorage, requireEncryption = false, strictRead = false, migrationRuntime } = {}) {
   const dir = resolveUserDataDir(userDataDir);
   const file = path.join(dir, fileName);
   let cached = null;      // 内存副本（对象）
@@ -132,8 +132,16 @@ function createSecureStore({ userDataDir, fileName = 'session.bin', safeStorage,
   // 命令行脚本也通过 Electron 的同一加密后端读写，不能把 Cookie 降级为明文。
   if (requireEncryption && !safeStorage && !electronModule()) {
     const { spawnSync } = require('child_process');
-    let executable;
-    try { executable = require('electron'); } catch { /* 后端缺失时拒绝写入 */ }
+    let executable = migrationRuntime;
+    if (executable && (!path.isAbsolute(executable) || !fs.existsSync(executable))) throw Error('旧格式迁移运行时无效');
+    if (!executable && process.platform === 'darwin') {
+      const manifest = path.join(__dirname, '../../../.work/legacy-runtime.json');
+      if (fs.existsSync(manifest)) {
+        const prepared = JSON.parse(fs.readFileSync(manifest, 'utf8')).executable;
+        if (path.isAbsolute(prepared) && fs.existsSync(prepared)) executable = prepared;
+      }
+    }
+    if (!executable) { try { executable = require('electron'); } catch { /* 后端缺失时拒绝写入 */ } }
     const call = (op, value) => {
       if (typeof executable !== 'string') throw new Error('无法使用系统加密存储，请在桌面应用内登录');
       const env = { ...process.env };
