@@ -31,12 +31,15 @@ const SRC = path.join(root, 'src', 'main');
 const { createSecureStore } = require(path.join(SRC, 'core', 'secure-store.js'));
 const { createSession } = require(path.join(SRC, 'core', 'session.js'));
 const { HttpClient, DEFAULT_UA } = require(path.join(SRC, 'core', 'http.js'));
+const { userDataDir } = require('../src/main/core/platform');
+const { configureNativeProxy } = require('../src/main/core/network-environment');
+configureNativeProxy();
 
 const ARGS = process.argv.slice(2);
 const timeoutArg = (ARGS.find((a) => a.startsWith('--timeout=')) || '').split('=')[1];
 const WAIT_MS = (Number(timeoutArg) > 0 ? Number(timeoutArg) : 300) * 1000;
 
-const APP_DIR = path.join(process.env.APPDATA || os.tmpdir(), 'quark-mini');
+const APP_DIR = userDataDir();
 const PROFILE_DIR = path.join(os.tmpdir(), 'qk-assisted-login-profile');
 const CHECK_URL = 'https://drive-pc.quark.cn/1/clouddrive/config?pr=ucpro&fr=pc&uc_param_str=';
 

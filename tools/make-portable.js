@@ -8,8 +8,7 @@
  *   └─ resources/app.asar      ← 应用源码（已就位）
  *
  * 原理：electron-builder 已把 Electron 运行时解压到 dist/win-unpacked，
- *       我们用 @electron/asar 把源码打进 resources/app.asar，再把 electron.exe
- *       重命名为中文名。主进程零第三方依赖，因此无需 node_modules。
+ *       便携目录完整复制构建产物，不改写 app.asar 或可执行文件中的完整性信息。
  */
 const fs = require('fs');
 const path = require('path');
@@ -19,8 +18,7 @@ const fuses = require(require.resolve('@electron/fuses', { paths: [path.dirname(
 const ROOT = path.join(__dirname, '..');
 const UNPACKED = path.join(ROOT, 'dist', 'win-unpacked');
 const OUT = path.join(ROOT, 'dist', '夸克网盘极简版');
-const STAGING = path.join(ROOT, '.build-staging');
-for (const target of [UNPACKED, OUT, STAGING]) {
+for (const target of [UNPACKED, OUT]) {
   const rel = path.relative(ROOT, path.resolve(target));
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('打包目录超出项目范围');
 }
@@ -30,32 +28,25 @@ function log(m) { console.log(m); }
 (async () => {
   log('\x1b[1m=== 生成夸克网盘极简版（便携绿色版）===\x1b[0m\n');
 
-  // 1) 检查 Electron 运行时是否已就位
-  const exe = path.join(UNPACKED, 'electron.exe');
-  if (!fs.existsSync(exe)) {
-    const runtimeExe = require('electron');
-    if (typeof runtimeExe !== 'string' || !fs.existsSync(runtimeExe)) throw new Error('请先安装 Electron 运行时');
-    if (path.basename(runtimeExe) !== 'electron.exe') {
-      throw new Error('便携版需要 Windows Electron 运行时，请先将官方 Windows x64 运行时解压到 dist/win-unpacked');
-    }
-    fs.mkdirSync(UNPACKED, { recursive: true });
-    fs.cpSync(path.dirname(runtimeExe), UNPACKED, { recursive: true });
-  }
-  log('✓ Electron 运行时已就位: dist/win-unpacked');
-
-  // 2) 准备 staging（源码 + package.json）
-  log('准备应用源码...');
-  fs.rmSync(STAGING, { recursive: true, force: true });
-  fs.mkdirSync(path.join(STAGING, 'src'), { recursive: true });
-  fs.cpSync(path.join(ROOT, 'src'), path.join(STAGING, 'src'), { recursive: true });
-  fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(STAGING, 'package.json'));
-
-  // 3) 打成 app.asar（用 @electron/asar 的 API）
-  log('打包 app.asar...');
+  // 必须由当前源码先执行 electron-builder；不可混用旧缓存运行时。
+  const builtName = '夸克网盘极简版.exe';
+  const exe = path.join(UNPACKED, builtName);
   const asarOut = path.join(UNPACKED, 'resources', 'app.asar');
-  fs.mkdirSync(path.dirname(asarOut), { recursive: true });
-  await asar.createPackage(STAGING, asarOut);
-  log('✓ app.asar 已生成');
+  if (!fs.existsSync(exe) || !fs.existsSync(asarOut)) throw Error('请先执行 npm run pack:win');
+  const metadata = JSON.parse(asar.extractFile(asarOut, 'package.json'));
+  if (metadata.version !== require('../package.json').version) throw Error('构建版本与源码不一致');
+  function verifySource(directory) {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) verifySource(file);
+      else if (!entry.name.endsWith('.map')) {
+        const relative = path.relative(ROOT, file);
+        if (!fs.readFileSync(file).equals(asar.extractFile(asarOut, relative))) throw Error(`构建源码过期：${relative}`);
+      }
+    }
+  }
+  verifySource(path.join(ROOT, 'src'));
+  log('✓ 当前版本源码与已构建的 app.asar 完全一致');
 
   // 4) 组装输出目录
   log('组装输出目录...');
@@ -63,17 +54,13 @@ function log(m) { console.log(m); }
   fs.mkdirSync(OUT, { recursive: true });
   fs.cpSync(UNPACKED, OUT, { recursive: true });
 
-  // 5) 重命名 exe 为中文名
-  const newExe = path.join(OUT, '夸克网盘极简版.exe');
-  fs.renameSync(path.join(OUT, 'electron.exe'), newExe);
-  // 便携版双击启动不能被 IDE 注入的 Node 环境变量劫持。
-  await fuses.flipFuses(newExe, {
-    version: fuses.FuseVersion.V1,
-    [fuses.FuseV1Options.RunAsNode]: false,
-    [fuses.FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
-    [fuses.FuseV1Options.EnableNodeCliInspectArguments]: false,
-  });
-  log('✓ 已重命名为: 夸克网盘极简版.exe');
+  // builder 已设置安全 fuses；此处验证，保持构建文件字节不变。
+  const newExe = path.join(OUT, builtName);
+  const configured = await fuses.getCurrentFuseWire(newExe);
+  for (const option of [fuses.FuseV1Options.RunAsNode, fuses.FuseV1Options.EnableNodeOptionsEnvironmentVariable,
+    fuses.FuseV1Options.EnableNodeCliInspectArguments]) {
+    if (configured[option] !== '0'.charCodeAt(0)) throw Error('便携包运行时未禁用 Node 注入');
+  }
 
   // 6) 写一个说明
   fs.writeFileSync(path.join(OUT, '使用说明.txt'),

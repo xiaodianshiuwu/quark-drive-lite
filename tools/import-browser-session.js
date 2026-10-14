@@ -25,6 +25,10 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const SRC = path.join(root, 'src', 'main');
+if (process.platform !== 'win32') {
+  console.error('浏览器会话导入目前仅支持 Windows；请通过应用内登录在当前系统建立加密会话。');
+  process.exit(1);
+}
 
 const { createSecureStore } = require(path.join(SRC, 'core', 'secure-store.js'));
 const { createSession } = require(path.join(SRC, 'core', 'session.js'));
@@ -39,7 +43,7 @@ const LOCAL = process.env.LOCALAPPDATA || '';
 const APPDATA = process.env.APPDATA || '';
 
 /** 本应用 userData 目录：Electron 默认取 package.json 的 name（quark-mini）。 */
-const APP_DIR = path.join(APPDATA, 'quark-mini');
+const APP_DIR = require('../src/main/core/platform').userDataDir();
 
 const BROWSERS = [
   { key: 'edge', name: 'Microsoft Edge', base: path.join(LOCAL, 'Microsoft', 'Edge', 'User Data') },

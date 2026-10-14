@@ -13,32 +13,41 @@
  *
  * 运行：node verify/smoke-electron.js
  */
-const { spawn } = require('child_process');
+const { spawn, spawnSync, execFileSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { resolveElectron, electronEnvironment, createElectronHostApp } = require('../src/main/core/platform');
 
 const root = path.join(__dirname, '..');
-const PORT = 9777;
+const PORT = Number(process.env.QCK_SMOKE_PORT || 9777);
+const startupTimeout=Math.min(300000,Math.max(30000,Number(process.env.QCK_SMOKE_TIMEOUT_MS)||30000));
 
-const electronPath = (() => {
-  try {
-    const p = require('electron');
-    if (typeof p === 'string' && fs.existsSync(p)) return p;
-  } catch {
-    /* fallthrough */
-  }
-  const f = path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe');
-  return fs.existsSync(f) ? f : null;
-})();
+const packagedExecutable = process.env.QCK_SMOKE_EXECUTABLE;
+const electronPath = packagedExecutable || resolveElectron(root);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function storageFixture(action,userData) {
+  const host=createElectronHostApp(path.join(__dirname,'storage-fixture.js'));
+  try {
+    const legacySeed=action==='write'&&process.env.QCK_SMOKE_SEED_LEGACY==='1';
+    const executable=legacySeed?JSON.parse(fs.readFileSync(path.join(root,'.work','legacy-runtime.json'),'utf8')).executable:resolveElectron(root);
+    const result=spawnSync(executable,[host.directory],{
+      env:{...electronEnvironment(),QCK_STORAGE_TEST_DIR:userData,QCK_STORAGE_TEST_ACTION:action,...(legacySeed?{QCK_STORAGE_TEST_BACKEND:'system'}:{}),...(action==='read'?{QCK_STORAGE_EXPECT_CONCURRENCY:'3'}:{})},
+      encoding:'utf8',timeout:30000,killSignal:'SIGKILL',
+    });
+    if(result.status!==0)throw Error('构建产物与开发运行时的加密存储不兼容');
+    if(legacySeed)require('../src/main/core/secure-store').createSecureStore({userDataDir:userData,migrationRuntime:executable}).snapshot();
+    if(legacySeed)console.log('  已使用 Electron 33.4.11 的测试密文作为打包应用启动样本。');
+  } finally {host.cleanup();}
+}
 
 async function waitForDevtools(port, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/json/list`);
+      const r = await fetch(`http://127.0.0.1:${port}/json/list`,{signal:AbortSignal.timeout(1500)});
       if (r.ok) {
         const list = await r.json();
         const page = list.find((t) => t.type === 'page' && /index\.html/.test(t.url));
@@ -84,8 +93,12 @@ class CDP {
 
   send(method, params = {}) {
     const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
+    return new Promise((resolve, reject) => {
+      const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error(`窗口检查超时：${method}`));},20000);
+      this.pending.set(id,{resolve:value=>{clearTimeout(timer);resolve(value);},reject:error=>{clearTimeout(timer);reject(error);}});
+      try { this.ws.send(JSON.stringify({ id, method, params })); }
+      catch(error){clearTimeout(timer);this.pending.delete(id);reject(error);}
+    });
   }
 
   async eval(expression) {
@@ -137,9 +150,17 @@ function check(name, ok, detail) {
   // 用独立的临时 userData，避免污染真实运行数据
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'qk-smoke-'));
 
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE; // 关键：否则 electron 会以纯 Node 模式启动并崩溃
-  delete env.NODE_OPTIONS;
+  if(packagedExecutable) {
+    try {storageFixture('write',userData);}
+    catch(error){fs.rmSync(userData,{recursive:true,force:true});throw error;}
+  }
+
+  const env = electronEnvironment();
+  if (packagedExecutable) {
+    // 构建产物关闭对应 fuses，应能抵抗 IDE 注入的 Node 启动变量。
+    env.ELECTRON_RUN_AS_NODE = '1';
+    env.NODE_OPTIONS = '--unrecognized-quark-test-flag';
+  }
 
   const child = spawn(
     electronPath,
@@ -158,7 +179,7 @@ function check(name, ok, detail) {
 
   let cdp = null;
   try {
-    const page = await waitForDevtools(PORT);
+    const page = await waitForDevtools(PORT,startupTimeout);
     console.log(`  已连接到窗口：${page.url}\n`);
 
     cdp = await CDP.connect(page.webSocketDebuggerUrl);
@@ -216,7 +237,7 @@ function check(name, ok, detail) {
         title: document.title,
         hasNav: !!q('.nav, nav, [class*=nav]'),
         hasList: !!q('[class*=list], #filelist, table'),
-        hasUpload: /上传/.test(txt),
+        hasUpload: (() => { const button=q('#btn-upload'); return !!button && button.getClientRects().length>0 && /上传/.test(button.title || button.textContent || ''); })(),
         hasSearch: !!q('input[type=search], input[placeholder*=搜索], [class*=search]'),
         bodyLen: txt.length,
         themeAttr: document.documentElement.dataset.theme || '',
@@ -263,11 +284,11 @@ function check(name, ok, detail) {
         const before = await window.qk.settings.get();
         const after = await window.qk.settings.set({ downloadConcurrency: 3 });
         const reread = await window.qk.settings.get();
-        return { ok: reread.downloadConcurrency === 3, before: before.downloadConcurrency, after: reread.downloadConcurrency };
+        return { ok: reread.downloadConcurrency === 3, seeded: before.theme === 'dark', before: before.downloadConcurrency, after: reread.downloadConcurrency };
       } catch (e) { return { ok: false, err: String(e && e.message || e) }; }
     })()`);
-    check('IPC 往返可用（settings 读写持久化）', settingsRoundTrip.ok,
-      `before=${settingsRoundTrip.before} after=${settingsRoundTrip.after} ${settingsRoundTrip.err || ''}`);
+    check('IPC 往返可用（settings 读写持久化）', settingsRoundTrip.ok && (!packagedExecutable || settingsRoundTrip.seeded),
+      `before=${settingsRoundTrip.before} after=${settingsRoundTrip.after} seeded=${settingsRoundTrip.seeded} ${settingsRoundTrip.err || ''}`);
 
     // ---- 8. IPC 真实往返：登录态查询（本地读取，不发网络） ----
     const authState = await cdp.eval(`(async () => {
@@ -303,10 +324,29 @@ function check(name, ok, detail) {
     check('IPC 往返可用（transfer.list 返回数组）', transferList.ok && transferList.isArr,
       JSON.stringify(transferList).slice(0, 160));
 
+    if(packagedExecutable) {
+      let compatible=true;
+      try {storageFixture('read',userData);} catch {compatible=false;}
+      check('构建产物的密文可由开发运行时回读',compatible);
+    }
+
   } catch (e) {
     fail += 1;
     failures.push({ name: '冒烟测试执行', detail: e.message });
     console.log(`  \x1b[31m✗\x1b[0m 冒烟测试执行失败：${e.message}`);
+    // 此进程只有固定测试数据；保留有限原生诊断用于定位启动或 Keychain 阻塞。
+    if(stderr)console.error(stderr.slice(-3000));
+    if(process.platform==='darwin'&&process.env.CI==='true'&&packagedExecutable){
+      // 仅诊断当前固定测试 profile 的进程，输出原生函数名与测试项是否存在，不输出密钥。
+      try{
+        const stack=execFileSync('sample',[String(child.pid),'1','1'],{encoding:'utf8',timeout:10000});
+        console.error(stack.split('\n').filter(line=>/OSCrypt|Keychain|SecItem|semaphore|Decrypt|Encrypt/.test(line)).slice(0,45).join('\n'));
+      }catch{console.error('原生进程采样不可用');}
+      for(const appName of ['quark-mini','Electron','夸克网盘极简版']){
+        const probe=spawnSync('security',['find-generic-password','-a',appName,'-s',appName+' Safe Storage',path.join(process.env.RUNNER_TEMP,'quark-ci-packed.keychain-db')],{stdio:'ignore',timeout:2000,killSignal:'SIGKILL'});
+        console.error(`测试 Keychain 条目 ${appName}：${probe.status===0?'存在':'不可见'}`);
+      }
+    }
   } finally {
     if (cdp) cdp.close();
     await sleep(300);
@@ -316,6 +356,7 @@ function check(name, ok, detail) {
       /* ignore */
     }
     await sleep(500);
+    if(child.exitCode===null)child.kill('SIGKILL');
     try {
       fs.rmSync(userData, { recursive: true, force: true });
     } catch {

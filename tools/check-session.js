@@ -9,7 +9,7 @@ const { createSession } = require(path.join(S, 'core', 'session.js'));
 const { HttpClient } = require(path.join(S, 'core', 'http.js'));
 
 (async () => {
-  const dir = path.join(process.env.APPDATA || process.env.HOME || '', 'quark-mini');
+  const dir = require('../src/main/core/platform').userDataDir();
   console.log('userData 目录:', dir);
   const store = createSecureStore({ userDataDir: dir, requireEncryption: true });
   const s = createSession({ store }).load();

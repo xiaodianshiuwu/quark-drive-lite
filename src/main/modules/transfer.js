@@ -21,6 +21,7 @@ const { sleep } = require('../core/http');
 const { createTransferApi } = require('../core/api-transfer');
 const { downloadFile, cleanupPartial, safeFileName } = require('../core/download');
 const { uploadFile } = require('../core/upload');
+const { matchingFiles, confirmUpload } = require('../core/upload-confirmation');
 
 const UPDATE_THROTTLE_MS = 250; // ≤ 4 次/秒
 const SPEED_WINDOW_MS = 3000;
@@ -33,7 +34,7 @@ function uid() {
 function createTransferModule(o = {}) {
   const {
     http,
-    fsModule, // 保留以便未来在传输后刷新列表；目前不直接调用
+    fsModule, // 下载元数据与上传结果核对
     getDownloadDir = () => '',
     getConcurrency = () => ({ upload: 2, download: 2 }),
     onUpdate = () => {},
@@ -290,7 +291,7 @@ function createTransferModule(o = {}) {
         signal,
         onProgress,
         // 已知大小可省去一次探测请求
-        size: t.size > 0 ? t.size : undefined,
+        size: t._metadataLoaded ? t.size : undefined,
         // 单文件并行连接数（对齐官方 partitionParallelNum）：决定**大文件**速度
         parallel: Math.max(1, Number(c.downloadParallel) || 4),
         maxRetries: 0,
@@ -302,7 +303,11 @@ function createTransferModule(o = {}) {
       });
     }
     const c2 = getConcurrency() || {};
-    return uploadFile({
+    const canConfirm = fsModule && typeof fsModule.list === 'function';
+    if (canConfirm && !t._uploadBaseline) {
+      t._uploadBaseline = await matchingFiles(fsModule, { pdirFid: t.pdirFid, name: t.name, signal });
+    }
+    const result = await uploadFile({
       localPath: t.localPath,
       pdirFid: t.pdirFid,
       http,
@@ -313,6 +318,8 @@ function createTransferModule(o = {}) {
       concurrency: Math.max(1, Number(c2.uploadPartConcurrency) || 2),
       checkpoint: t._uploadState || (t._uploadState = {}),
     });
+    if (canConfirm) await confirmUpload(fsModule, { pdirFid: t.pdirFid, result, baseline: t._uploadBaseline, signal });
+    return result;
   }
 
   // -------------------------------------------------------------------------

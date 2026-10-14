@@ -189,7 +189,7 @@ function createSession({ store } = {}) {
 
   /** 是否可直接使用（有凭据且未被标记失效）。 */
   function isLoggedIn() {
-    return hasCookies() && !expired;
+    return !!getCookie() && !expired;
   }
 
   /**
