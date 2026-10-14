@@ -147,7 +147,7 @@ function createSecureStore({ userDataDir, fileName = 'session.bin', safeStorage,
         encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
       }); } finally { host.cleanup(); }
       if (result.status !== 0) {
-        if (process.env.CI === 'true') console.error(result.error?.code === 'ETIMEDOUT' ? '旧格式辅助进程超时' : '旧格式辅助进程失败：' + (result.stderr || '未提供阶段信息'));
+        if (process.env.CI === 'true') console.error((result.error?.code === 'ETIMEDOUT' ? '旧格式辅助进程超时：' : '旧格式辅助进程失败：') + (result.stderr || '未提供阶段信息'));
         throw new Error('系统加密存储不可用，请在桌面应用内登录');
       }
       return JSON.parse(result.stdout).value;

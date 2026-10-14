@@ -10,15 +10,18 @@ try {
   app.setPath('userData',data.userDataDir);
 } catch { app.exit(1); }
 let stage='等待系统加密服务';
+const diagnostic = () => { if (process.env.CI === 'true') console.error('旧格式阶段：'+stage); };
+diagnostic();
 app.whenReady().then(async () => {
   if(process.platform==='darwin')await new BrowserWindow({show:false,webPreferences:{sandbox:true,nodeIntegration:false,contextIsolation:true}}).loadURL('about:blank');
+  stage='系统存储上下文已就绪';diagnostic();
   const {safeStorage}=require('electron');
-  stage='加密能力检查';
+  stage='加密能力检查';diagnostic();
   const asynchronous = typeof safeStorage.isAsyncEncryptionAvailable === 'function';
   const available = asynchronous ? await safeStorage.isAsyncEncryptionAvailable() : safeStorage.isEncryptionAvailable();
   if (!available) throw new Error('加密服务不可用');
   if (typeof safeStorage.getSelectedStorageBackend === 'function' && safeStorage.getSelectedStorageBackend() === 'basic_text') throw new Error('系统密钥环不可用');
-  stage='执行加密操作';
+  stage='执行加密操作';diagnostic();
   let value;
   if (data.op === 'encrypt') {
     const encrypted = asynchronous ? await safeStorage.encryptStringAsync(data.value) : safeStorage.encryptString(data.value);

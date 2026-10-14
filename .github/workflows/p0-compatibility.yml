@@ -56,6 +56,12 @@ jobs:
         run: |
           npm run verify:smoke
           npm run verify:encryption
+      - name: Linux 旧版加密迁移
+        if: runner.os == 'Linux'
+        run: bash scripts/ci-linux-gui.sh node verify/encryption-roundtrip.js --legacy
+      - name: Windows/macOS 旧版加密迁移
+        if: runner.os != 'Linux'
+        run: node verify/encryption-roundtrip.js --legacy
       - name: Windows 目录构建
         if: runner.os == 'Windows'
         run: npm run pack
@@ -80,12 +86,6 @@ jobs:
         run: |
           $env:QCK_PACKAGED_EXECUTABLE = Join-Path $PWD 'dist/夸克网盘极简版/夸克网盘极简版.exe'
           node verify/packaged-smoke.js
-      - name: Linux 旧版加密迁移
-        if: runner.os == 'Linux'
-        run: bash scripts/ci-linux-gui.sh node verify/encryption-roundtrip.js --legacy
-      - name: Windows/macOS 旧版加密迁移
-        if: runner.os != 'Linux'
-        run: node verify/encryption-roundtrip.js --legacy
       - name: 归档已验证的预发布产物
         run: npm run release:archive
       - uses: actions/upload-artifact@v4
