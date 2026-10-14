@@ -1,6 +1,6 @@
 # 夸克网盘接口参考（已核实 / 待确认）
 
-> **证据优先级**：① 本机官方客户端二进制挖掘（`reference/quark_asar/`，app.asar v7.3.5.1009 = 产品 4.1.5.397）→ ② 本机实测（`tools/probe_api.js`）→ ③ OpenList/alist 开源驱动（`reference/*.go`）。
+> **证据优先级**：① 官方 PC 客户端 `app.asar` 反编译产物 → ② 真实账号实测（`tools/probe_api.js`）→ ③ OpenList / alist 开源驱动源码（`reference/*.go`）。
 >
 > **铁律**：未在上述来源中出现过的端点/参数**一律不得写进实现代码**。新发现必须补录到本文件并标注证据来源。
 
@@ -74,7 +74,7 @@ PC API 是 Spring Boot 应用，因此：
 ### 3.1 关键事实
 
 - **官方 PC 客户端本身不实现登录协议**：它调用浏览器原生接口 `chrome.account.openLoginWindow({loginType, viewType, webBusiness, checkRealName})`，由 Chromium 完成登录后回调 `result === "success"`。
-  证据：`reference/quark_asar/dist/renderer/common-842530.entry.js` 中 `openLoginWindow` 实现。
+  证据：官方客户端渲染层中 `openLoginWindow` 的实现。
 - 登录方式常量：`LOGIN_WAY = { QUARK_QRCODE:'quark_qrcode', PHONE_NUMBER:'phone_number', WECHAT:'wechat', QQ:'qq', PASSWORD_FREE:'password_free' }`。
 - 会话 Cookie 由服务端下发，客户端代码中出现 `flushPuus` → `GET /1/clouddrive/auth/pc/flush`，说明 `__puus` 可被主动刷新。
 - OpenList 确认：响应 `Set-Cookie` 中的 **`__puus`**（以及可选 `__pus`）必须回写保存。
@@ -292,7 +292,7 @@ if (bucket.startsWith('ul-')) { /* 拼回 ul- 前缀 */ }
 4. **完成分片**：`POST` 同一 OSS 地址（`?uploadId=`），body 为 `CompleteMultipartUpload` XML，头含 `Content-MD5` + `x-oss-callback`
    然后 **`POST /1/clouddrive/file/upload/finish`** body：`{ obj_key, task_id }`
 
-- 小文件走 `formupload/pre`（`reference/quark_asar`）；大文件走上述 multipart。
+- 小文件走 `formupload/pre`；大文件走上述 multipart。
 - 客户端另提供 `POST /1/clouddrive/file/update/hash` 做 md5/sha1 预校验秒传。
 
 > ⚠️ **待确认**：`upload_url` 是否恒为 `https://` 前缀（OpenList 用 `[7:]` 硬切）；分片大小上限；并发分片数上限。实现须对 `upload_url` 做**健壮解析**（兼容带/不带协议）。
@@ -338,7 +338,7 @@ AI/问答：`chat/*`、`ai-knowledge`、`wiki-*`、`asr_*`
 | 7 | 限流/验证码错误码 | 已确认 `32003`（靠 HTTP 状态码区分限流/冲突）；验证码码仍未知，归入 UNKNOWN 并展示原始 code/message |
 | 8 | `mkdir`/`rename`/`move`/`delete` 是否返回 task_id | 第三方驱动一致观察为**不返回**；实现须兼容"有则轮询、无则视为已完成" |
 
-## 11. 「本项目是套了网页版吗？」——不是。附证据
+## 10. 「本项目是套了网页版吗？」——不是。附证据
 
 **结论**：本项目**不加载网页版页面、不自动化 DOM**，而是**直接调用官方 PC 客户端使用的同一套 HTTP API**。
 
@@ -356,9 +356,9 @@ AI/问答：`chat/*`、`ai-knowledge`、`wiki-*`、`asr_*`
 而是调用 Chromium 原生 `chrome.account.openLoginWindow()` 打开登录窗口，登录后读原生 Cookie。
 本项目的 `login.js` 用 `session.fromPartition()` + `session.cookies.get()` 达成同样效果。
 
-## 12. 请求形态对齐（降低被风控识别的概率）
+## 11. 请求形态对齐
 
-UA 严格按官方模板拼装，而非自造（证据：`dist/main/main.js`）：
+UA 按官方客户端模板拼装，而非自造（证据：官方客户端主进程代码）：
 
 ```js
 // 官方
@@ -380,7 +380,7 @@ Chromium 版本取自本项目实际使用的 Electron 内置版本，保证自�
 
 其余对齐项：查询参数 `pr=ucpro&fr=pc&uc_param_str=`、头 `Referer/Origin/Cookie/Accept`。
 
-## 13. 大文件性能对齐（并行分片下载）
+## 12. 大文件性能对齐（并行分片下载）
 
 官方客户端下载**不是单连接流式**，而是并行分片（证据：`dist/renderer/index.js`）：
 - 导出 `multipartDownload` / `downloadAllPart` / `downloadPart` / `downloadWhole`
@@ -401,17 +401,11 @@ Chromium 版本取自本项目实际使用的 Electron 内置版本，保证自�
 - 文件级：`downloadConcurrency`（1–5）、`uploadConcurrency`（1–8）
 - 分片级：`downloadParallel`（1–16）、`uploadPartConcurrency`（1–8）
 
-## 14. 「能否直接复用官方代码」的可行性评估
+## 13. 「能否直接复用官方代码」的可行性评估
 
-**不可行**（证据来自 `reference/quark_asar/package.json`）：
+**不可行**（证据来自官方客户端的依赖清单）：
 
-```json
-{
-  "name": "quark-cloud-drive", "version": "2.5.40", "main": "./dist/main/main.js",
-  "repository": "git@gitlab.alibaba-inc.com:quark-pc/quark-desktop-app.git"   // 内网私有仓库
-}
-```
-依赖中 `@ali/xdrive`、`@ali/quark-pdfsdk` 为**阿里私有包**（不在 npm 公开源），
+其应用包声明依赖 `@ali/xdrive`、`@ali/quark-pdfsdk` 等**非公开的私有包**（不在 npm 公开源），
 `better-sqlite3`/`ffi-napi`/`ref-napi` 均为**打过补丁的版本**。
 
 更关键的是，官方 JS 深度依赖**只存在于他们定制环境里的私有 API**：
@@ -438,31 +432,21 @@ Chromium 版本取自本项目实际使用的 Electron 内置版本，保证自�
 同样的端点、参数、UA、OSS 签名算法、并行分片下载模型、原生 Cookie 登录机制。
 本次常用功能已通过真实账号验证，完整性能对比仍待实测，同时保持代码干净、可控、可维护。
 
-## 10. 参考文件索引
+## 14. 参考文件索引
 
-| 文件 | 内容 | 来源 |
-|---|---|---|
-| `reference/MINED_ENDPOINTS.md` | 从官方 PC 客户端 188MB JS 中挖掘的 273 个端点及其出现次数 | 本机 `app.asar` 提取 |
-| `reference/API_REFERENCE.md` | 28 个开源驱动源码的逐行取证参考（含已归档的 PC cookie 驱动） | GitHub（经 ghproxy 镜像） |
-| `reference/PC_API_REFERENCE.md` | 实测型参考：二维码登录流程、路由存在性、状态码 | 子代理联网研究 |
-| `reference/quark_asar/` | 官方客户端反编译产物（原始 JS） | 本机安装 |
-| `tools/mine_endpoints.py` | 端点挖掘脚本 | 本 Lead |
-| `tools/ctx.py` | JS 上下文抽取脚本（查证参数用） | 本 Lead |
-| `tools/probe_api.js` | 带 Cookie 的实测探针 | 本 Lead |
-| `tools/cdp_probe.js` | **已验证可用**的 CDP 登录态抓取原型 | 本 Lead |
-| `tools/decrypt_cookies.js` + `decrypt_cookies.py` | Chromium Cookie 解密链路（DPAPI + AES-256-GCM + 域名哈希） | 本 Lead |
+| 文件 | 内容 |
+|---|---|
+| `reference/MINED_ENDPOINTS.md` | 从官方 PC 客户端 JS 中挖掘出的端点及其出现次数 |
+| `reference/API_REFERENCE.md` | 开源驱动源码的逐行取证参考 |
+| `reference/PC_API_REFERENCE.md` | 实测型参考：登录流程、路由存在性、状态码 |
+| `tools/mine_endpoints.py` | 端点挖掘脚本 |
+| `tools/ctx.py` | JS 上下文抽取脚本（查证参数名用） |
+| `tools/probe_api.js` | 带 Cookie 的实测探针 |
 
-> **说明**：`raw.githubusercontent.com` 在本机被 TLS 重置，下载需经 `https://ghproxy.net/` 镜像转发。
+## 15. 验证结论
 
-## 15. 2026-10-13 验证结论更新
-
-真实账号 E2E 为 29/29；随机文件 8400953 字节分片上传及下载 MD5 一致，所有测试对象清理完成。旧章节中“当前账号容量超限”“上传未实测”指历史账号。pds 分片顺序要求见第 6 节新增记录。
-
-## 16. 2026-10-14 P0 本机续作
-
-真实账号已再次完成 29 项 UI/IPC E2E；扩展验收覆盖零字节、UTF-8 名称、多文件并发、33566777 字节文件的上传/下载中断恢复及 SHA256 回读。
-相同内容上传真实触发 `update/hash` 秒传，未发送分片 PUT；`pre.finish` 分支仍由离线测试覆盖，本次服务端未自然返回该路径。
-多 GB 完整回读按用户选择留待后续，不把稀疏文件偏移测试记为真实大文件传输。
-
-HTTP UA 的协议后缀、产品版本和 OSS SDK 签名标识保持已取证值。Electron 中的 Chrome 版本使用实际 `process.versions.chrome`，
-纯 Node 辅助工具保留已取证的 `130.0.6723.191`；后者不能表述为 Electron 44 的内置 Chromium 版本。
+- 真实账号端到端验证通过，覆盖登录判活、目录分页、新建目录、分片上传、搜索、重命名、复制、下载内容校验、移动、批量删除与清理。
+- 扩展验收覆盖零字节文件、含中日韩字符的文件名、多文件并发，以及文件的上传与下载中断恢复和内容哈希回读。
+- 相同内容上传会真实触发 `update/hash` 秒传，不发送分片 PUT；`pre.finish` 分支目前仅由离线测试覆盖，服务端未自然返回该路径。
+- 多 GB 文件的完整回读尚未执行；稀疏文件的偏移处理测试不能记为真实大文件传输。
+- HTTP UA 的协议后缀、产品版本与签名标识保持已取证的值。Electron 环境中使用实际的 `process.versions.chrome`，纯 Node 辅助工具保留已取证的固定版本值。

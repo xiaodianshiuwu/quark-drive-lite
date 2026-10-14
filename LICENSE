@@ -1,0 +1,38 @@
+MIT License
+
+Copyright (c) 2026 xiaodianshiuwu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 第三方内容说明 / Third-party notices
+
+本仓库 `reference/` 目录收录了以下项目的源代码片段，用于协议对照与交叉验证。
+这些文件不参与构建，也不适用本仓库的 MIT 许可证，其版权与许可归各自原作者所有：
+
+- **alist** — https://github.com/alist-org/alist — AGPL-3.0
+  对应文件：`reference/alist_quark_*.go`
+
+- **OpenList** — https://github.com/OpenListTeam/OpenList — AGPL-3.0
+  对应文件：`reference/openlist_quark_*.go`
+
+再分发上述文件时，请遵守 AGPL-3.0 的条款并保留原始版权声明。
+
+本软件使用的 Electron 及其他第三方依赖遵循各自的许可证。

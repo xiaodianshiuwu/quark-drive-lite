@@ -1,21 +1,15 @@
 # ─────────────────────────────────────────────────────────────
-# 夸克网盘极简客户端 — Git 忽略规则
+# 夸克网盘极简版 — Git 忽略规则
 # ─────────────────────────────────────────────────────────────
-# 原则：提交**源码、测试、文档、工具、配置**，以及**开发所需的官方客户端研究材料**。
-# 不提交：依赖、构建产物、临时工作目录、运行登录态、>100MB 的二进制
-#        （后者走 GitHub Release 附件，见 reference/quark_official/MANIFEST.md）。
+# 纳入版本管理：源码、测试、验证脚本、文档与打包配置。
+# 不纳入：依赖、构建产物、临时工作目录、登录资料与运行日志。
 
 # ── 依赖 ──
-# 锚定到仓库根：本项目自身的依赖在根目录，不入库（pnpm install 可恢复）。
-# 但 reference/quark_asar/node_modules 必须放行 —— 那是官方客户端**打包进 asar 的
-# 三方依赖与私有包**（@ali/xdrive、@ali/quark-pdfsdk），仅 6.4MB，
-# 是「官方代码无法复用」这一结论的关键证据，也是协议分析材料。
+# 锚定到仓库根，避免误伤子目录中同名的路径。
 /node_modules
 /.pnpm-store/
 
-# ── 构建产物（可用 npm run pack 重新生成，约 536 MB）──
-# ⚠️ 必须锚定到仓库根（前导 /）：否则会误伤 reference/quark_asar/dist/ ——
-#    那里面正是官方前端的主代码（main.js / renderer/index.js），曾因此被漏传。
+# ── 构建产物（可用打包命令重新生成）──
 /dist/
 /.build-staging/
 *.asar
@@ -28,12 +22,12 @@
 *.7z
 *.zip
 
-# ── 临时工作目录（逆向实验中间产物，可能含数百 MB 的 DLL 副本）──
+# ── 临时工作目录 ──
 /.work/
 /tmp/
 /temp/
 
-# ── 运行时数据与登录态（**严禁入库**）──
+# ── 运行时数据与登录资料（严禁入库）──
 session.bin
 session.key
 *.legacy-QCK1
@@ -44,13 +38,15 @@ session.bin.tmp
 cookies.json
 cookie*.txt
 
-# 原始研究材料仅保留在私有归档；公开仓库拒绝误提交。
+# ── 受限研究材料 ──
+# 官方客户端的完整解包产物与二进制不进入本仓库；
+# 仅保留说明文件，见 reference/quark_official/MANIFEST.md。
 /reference/quark_asar/
 /reference/quark_official/*
 !/reference/quark_official/MANIFEST.md
 /_src/
 
-# 日志、账号与个人配置
+# ── 日志、覆盖率与本地配置 ──
 *.log
 logs/
 *-report.txt
