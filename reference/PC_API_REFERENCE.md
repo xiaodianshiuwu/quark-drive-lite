@@ -2,7 +2,6 @@
 
 **Compiled:** 2026-10-11
 **Method:** Source-code mining of real open-source clients + **live HTTP probing** of the production API (no proxy, direct network).
-**Workspace:** `C:\Users\USER\Documents\qck`
 
 > **Citation convention.** Every claim carries a source. Sources are either:
 > - **`CODE:<repo>/<path>`** — a real client source file (URL given in [§9 Sources](#9-sources)).
@@ -616,7 +615,7 @@ Exact blob URL form used:
 
 ### 9.2 Local evidence copies
 
-Downloaded sources retained at `C:\Users\USER\Documents\qck\_src\`:
+Downloaded upstream driver sources are kept under `reference/` with the `alist_` / `openlist_` prefixes:
 
 ```
 openlist\quark_uc__{driver,meta,types,util}.go

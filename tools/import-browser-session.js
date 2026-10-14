@@ -154,7 +154,7 @@ function listProfiles(base) {
 /**
  * 读取并解密指定 profile 的 Cookie。
  *
- * 解密链路（与 tools/decrypt_cookies.js 相同，此处内联以便独立运行）：
+ * 解密链路（本文件内联实现，可独立运行）：
  *   1. 从 Local State 取 os_crypt.encrypted_key，去掉 "DPAPI" 前缀后用 DPAPI 解出 AES-256 密钥
  *      —— 这一步必须由 PowerShell 完成（Node 无 DPAPI 绑定）
  *   2. 用该密钥 AES-256-GCM 解密每条 encrypted_value

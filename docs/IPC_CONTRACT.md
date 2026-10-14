@@ -24,8 +24,8 @@
    抛普通对象则字段完整。
    渲染侧 `api.js` 的 `normalizeError()` 会把该对象归一化成带 `code` 的 `Error`。
 
-> 为什么必须如此严格：UI 依赖 `err.code === 'NEED_LOGIN'` 弹出「登录状态已失效，请重新登录」提示条
-> （需求明确要求）。上述任一环节写错，该提示条就会静默失效——真机冒烟测试 `verify/smoke-electron.js`
+> 为什么必须如此严格：UI 依赖 `err.code === 'NEED_LOGIN'` 弹出「登录状态已失效，请重新登录」提示条。
+> 上述任一环节写错，该提示条就会静默失效——真机冒烟测试 `verify/smoke-electron.js`
 > 专门覆盖了这条链路。
 
 ## 1. 数据类型
