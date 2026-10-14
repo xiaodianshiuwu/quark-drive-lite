@@ -16,7 +16,7 @@
     "native": "node tools/quark-mini-native.js",
     "stability": "node tools/stability-test.js --full",
     "pack": "node tools/make-portable.js",
-    "pack:asar": "node node_modules/.pnpm/@electron+asar@4.3.1/node_modules/@electron/asar/bin/asar.js pack .build-staging dist/win-unpacked/resources/app.asar"
+    "pack:asar": "asar pack .build-staging dist/win-unpacked/resources/app.asar"
   },
   "devDependencies": {
     "@electron/asar": "^4.3.1",

@@ -11,15 +11,12 @@
   "npmRebuild": false,
   "removePackageScripts": true,
 
-  "_comment_nodemodules": "主进程零第三方依赖（只用 Node 内置模块 + electron），因此无需收集 node_modules；同时这可绕开 electron-builder 解析 pnpm 输出的兼容问题。",
-  "includeSubNodeModules": false,
   "nodeGypRebuild": false,
   "files": [
     "src/**/*",
     "!src/**/*.map",
     "package.json"
-  ]
-}
+  ],
   "extraMetadata": {
     "main": "src/main/main.js"
   },
@@ -45,9 +42,5 @@
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
     "shortcutName": "夸克网盘极简版"
-  },
-  "asar": true,
-  "compression": "maximum",
-  "npmRebuild": false,
-  "removePackageScripts": true
+  }
 }

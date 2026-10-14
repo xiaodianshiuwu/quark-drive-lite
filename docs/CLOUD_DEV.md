@@ -35,19 +35,20 @@ git sparse-checkout add reference
 
 | 依赖 | 版本 | 用途 | 必需性 |
 |---|---|---|---|
-| Node.js | **≥ 20**（本机验证用 24） | 源码、测试、工具 | 必需 |
+| Node.js | **24.x**（开发依赖最低 22.12） | 源码、测试、CDP 工具 | 必需 |
 | pnpm | ≥ 9 | 安装依赖 | 推荐（用 npm 亦可） |
 | Python | ≥ 3.8 | `tools/*.py`（端点挖掘、字符串取证） | 逆向分析时必需 |
 | Electron | 33.x（由 `pnpm install` 自动下载） | 真机冒烟 / 打包 | 跑 Electron 相关验证时必需 |
 
 ```bash
-pnpm install
+pnpm install --frozen-lockfile --ignore-scripts
+node node_modules/electron/install.js
 ```
 
-> ⚠️ `pnpm install` 会下载 Electron 二进制（约 100 MB）。**若只跑纯 Node 的单元/集成测试**，
-> 可跳过下载以加速与省空间：
+> 安装使用仓库锁文件，并只显式执行 Electron 安装器。该安装器会下载对应平台二进制（约 100 MB）。
+> **若只跑纯 Node 的单元/集成测试**，可省略安装器步骤：
 > ```bash
-> ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install
+> pnpm install --frozen-lockfile --ignore-scripts
 > ```
 > 但这样 `verify:smoke` 与 `pack` 无法运行。
 
@@ -63,20 +64,28 @@ pnpm install
 | `npm run e2e` | ❌ **云端不可用** | 需要**真实夸克账号扫码登录**（人工交互），且会操作真实网盘 |
 | `npm run stability` | ❌ **云端不可用** | 依赖 **Windows 版官方客户端**（`quark.exe`），Linux 无法运行 |
 | `npm run native` | ❌ **云端不可用** | 同上，方案 B 只能在 Windows 上跑 |
-| `npm run pack` | ❌ **云端不可用** | 产出 Windows 便携版，需 Windows 或交叉打包环境；且依赖 `dist/win-unpacked` 运行时（未入库） |
+| `npm run pack` | ⚠️ **需要 Windows 运行时** | 将与依赖版本一致的官方 Windows x64 Electron 解压到 `dist/win-unpacked` 后可在 Linux 组装；产物运行仍需 Windows 验证 |
 | `tools/*.py`（字符串取证、端点挖掘） | ✅ **可直接跑** | 纯文件读取分析，**Linux 上完全可用** |
 | `tools/dll_research/*` | ✅ 部分可用 | 字符串取证/Mojo 分析可跑；**实际启动客户端验证的部分不可用** |
 
 ### 3.1 在无头 Linux 上跑真机冒烟
 
 ```bash
-# 方式一：xvfb 虚拟显示
-sudo apt-get install -y xvfb
+# 在已配置 D-Bus 并解锁系统密钥环的 Linux 会话中
 xvfb-run -a npm run verify:smoke
-
-# 方式二：Electron 的 headless 开关（视版本可用性而定）
-ELECTRON_DISABLE_SANDBOX=1 npm run verify:smoke
 ```
+
+新版应用要求系统加密存储，单独使用 `xvfb-run` 不足以完成设置写入。
+其他 Linux 环境也需安装 Xvfb、D-Bus、libsecret 和可解锁的 Secret Service 密钥环，
+再在相同的 D-Bus 会话中启动应用。保留 Electron 沙箱和 TLS 验证。
+本次托管实例已配置辅助入口，可运行：
+
+```bash
+/workspace/.cloud-setup/quark-drive-lite/run-gui.sh npm run verify:smoke
+```
+
+实例安装、启动说明位于 `/workspace/.cloud-setup/quark-drive-lite/START.md`。
+这些辅助文件位于仓库外，仅适用于当前实例；新实例需自行配置上述系统服务。
 
 > 冒烟测试用 CDP 附加到 Electron 窗口（端口 9777）。**必须清掉 `ELECTRON_RUN_AS_NODE` 环境变量**，
 > 否则 Electron 会以纯 Node 模式启动，报出极具误导性的
@@ -106,8 +115,8 @@ ls  reference/quark_asar/node_modules/@ali/    # @ali/xdrive、@ali/quark-pdfsdk
 配套工具：
 
 ```bash
-python tools/mine_endpoints.py        # 统计端点（文档记录为 273 个）
-python tools/count_private_api.py     # 统计私有 API 引用（文档记录为 7231 处）
+python3 tools/mine_endpoints.py       # 使用仓库相对路径，输出到 .work/MINED_ENDPOINTS.md
+python3 tools/count_private_api.py    # 统计私有 API 引用（文档记录为 7231 处）
 python tools/ctx.py                   # 抽取任意 JS 的上下文，用于查证参数名
 ```
 
@@ -171,7 +180,7 @@ gh release upload research-assets-2026-10-14 <文件> --repo xiaodianshiuwu/quar
 
 ### 5.4 Node 版本差异
 
-- 本机验证使用 **Node 24**；项目要求 **≥ 20**。
+- 完整开发与 CDP 验证使用 **Node 24**；`@electron/asar` 等开发依赖要求 **≥ 22.12**。
 - ⚠️ **不要用裸 `node --test`**：它会把 `tools/` 下的工具脚本也当成测试（其中稳定性工具会尝试
   启动并强杀官方客户端）。正确口径是 `npm test`（脚本已限定为 `node --test test/*.test.js`）。
   - `npm test` → **216 项**（正确）
@@ -187,7 +196,7 @@ git clone https://github.com/xiaodianshiuwu/quark-drive-lite.git
 cd quark-drive-lite
 
 # 2. 安装（跳过 Electron 二进制以加速）
-ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install
+pnpm install --frozen-lockfile --ignore-scripts
 
 # 3. 代码级验证（不需要 Electron / 网络 / 登录）
 npm test           # 216/216
@@ -211,7 +220,7 @@ npm test && npm run verify
 | 真实账号 E2E | 需人工扫码登录 + 操作真实网盘 |
 | 方案 B（官方原生精简版） | 依赖 Windows 版官方客户端 |
 | 方案 B 稳定性测试 | 同上 |
-| 生成 Windows 便携版 | 需 Windows Electron 运行时（`dist/win-unpacked` 未入库） |
+| 实际运行 Windows 便携版 | Linux 可在准备 Windows 运行时后组装；原生运行和界面验证仍需 Windows |
 | 验证实际下载/上传速度 | 需真实账号且受账号等级限速 |
 | 账号容量相关验证 | 当前账号容量超限（见 `docs/HANDOVER.md` §2.3） |
 

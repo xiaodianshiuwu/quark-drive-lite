@@ -35,6 +35,9 @@ function log(m) { console.log(m); }
   if (!fs.existsSync(exe)) {
     const runtimeExe = require('electron');
     if (typeof runtimeExe !== 'string' || !fs.existsSync(runtimeExe)) throw new Error('请先安装 Electron 运行时');
+    if (path.basename(runtimeExe) !== 'electron.exe') {
+      throw new Error('便携版需要 Windows Electron 运行时，请先将官方 Windows x64 运行时解压到 dist/win-unpacked');
+    }
     fs.mkdirSync(UNPACKED, { recursive: true });
     fs.cpSync(path.dirname(runtimeExe), UNPACKED, { recursive: true });
   }
