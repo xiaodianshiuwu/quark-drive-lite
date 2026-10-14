@@ -243,10 +243,22 @@ async function uploadFile(o) {
   const size = st.size;
   const workerAbort = new AbortController();
   const signal = outerSignal ? AbortSignal.any([outerSignal, workerAbort.signal]) : workerAbort.signal;
+  if (checkpoint.result && (checkpoint.localPath !== localPath || checkpoint.size !== size || checkpoint.mtimeMs !== st.mtimeMs)) {
+    throw new QuarkError('本地文件在服务端提交后发生变化，请核对原上传结果并重新创建任务', { code: ErrCode.INVALID_ARG });
+  }
   if (checkpoint.localPath !== localPath || checkpoint.size !== size || checkpoint.mtimeMs !== st.mtimeMs) {
     for (const key of Object.keys(checkpoint)) delete checkpoint[key];
     Object.assign(checkpoint, { localPath, size, mtimeMs: st.mtimeMs });
   }
+  // 已提交成功后的核对重试不能再次创建服务端上传或重复完成分片。
+  if (signal.aborted) throw new QuarkError('操作已取消', { code: ErrCode.ABORTED });
+  if (checkpoint.result) { reportCached(); return checkpoint.result; }
+  function reportCached() { if (onProgress) onProgress({ transferred: size, total: size, phase: 'confirming' }); }
+  const completeResult = instant => {
+    checkpoint.result = { name: fileName, size, instant };
+    report(size, 'done');
+    return checkpoint.result;
+  };
   const mime = guessMime(fileName);
 
   const report = (transferred, phase) => {
@@ -267,8 +279,7 @@ async function uploadFile(o) {
   checkpoint.pre = pre;
 
   if (pre.finish) {
-    report(size, 'done');
-    return { name: fileName, size, instant: true };
+    return completeResult(true);
   }
 
   // 秒传校验：告知服务端哈希，若已存在则可直接完成
@@ -276,8 +287,7 @@ async function uploadFile(o) {
     try {
       const instant = await api.updateHash({ md5, sha1, taskId: pre.taskId }, { signal });
       if (instant) {
-        report(size, 'done');
-        return { name: fileName, size, instant: true };
+        return completeResult(true);
       }
     } catch (e) {
       // 秒传校验失败不影响正常上传流程（例如该接口对某些账号不可用）
@@ -313,8 +323,7 @@ async function uploadFile(o) {
   // size 为 0 的空文件：无分片可传，直接走收尾
   if (parts.length === 0) {
     await finishUpload({ api, objKey, taskId: pre.taskId, signal });
-    report(size, 'done');
-    return { name: fileName, size, instant: false };
+    return completeResult(false);
   }
 
   // 再次确认没有"该传却没传"的情况
@@ -444,9 +453,7 @@ async function uploadFile(o) {
 
   // ---- 5. 收尾 ----
   await finishUpload({ api, objKey, taskId: pre.taskId, signal });
-  report(size, 'done');
-
-  return { name: fileName, size, instant: false };
+  return completeResult(false);
 }
 
 async function finishUpload({ api, objKey, taskId, signal }) {

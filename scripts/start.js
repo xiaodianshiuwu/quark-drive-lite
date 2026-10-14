@@ -15,32 +15,18 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { resolveElectron, electronEnvironment } = require('../src/main/core/platform');
 
 const root = path.join(__dirname, '..');
 
-function resolveElectron() {
-  // electron 包导出的就是可执行文件绝对路径
-  try {
-    const p = require('electron');
-    if (typeof p === 'string' && fs.existsSync(p)) return p;
-  } catch {
-    /* 继续尝试下面的回退路径 */
-  }
-  const fallback = path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe');
-  if (fs.existsSync(fallback)) return fallback;
-  return null;
-}
-
-const electronPath = resolveElectron();
+const electronPath = resolveElectron(root);
 if (!electronPath) {
   console.error('无法找到 Electron 可执行文件。请先运行：pnpm install && node node_modules/electron/install.js');
   process.exit(1);
 }
 
 // 关键：清除会强制纯 Node 模式的环境变量
-const env = { ...process.env };
-delete env.ELECTRON_RUN_AS_NODE;
-delete env.NODE_OPTIONS;
+const env = electronEnvironment();
 
 const args = [root, ...process.argv.slice(2)];
 

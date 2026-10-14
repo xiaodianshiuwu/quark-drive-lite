@@ -34,13 +34,13 @@ function defaultDownloadDir() {
   }
 }
 
-function createSettingsModule({ store }) {
+function createSettingsModule({ store, getDefaultDownloadDir = defaultDownloadDir }) {
   let cache = null;
 
   function readAll() {
     const raw = store.getItem('settings');
     const merged = { ...DEFAULTS, ...(raw && typeof raw === 'object' ? raw : {}) };
-    if (!merged.downloadDir) merged.downloadDir = defaultDownloadDir();
+    if (!merged.downloadDir) merged.downloadDir = getDefaultDownloadDir();
     // 文件级并发：过高会被服务端限流，也容易耗尽本机连接
     merged.uploadConcurrency = clampInt(merged.uploadConcurrency, 1, 8, DEFAULTS.uploadConcurrency);
     merged.downloadConcurrency = clampInt(merged.downloadConcurrency, 1, 5, DEFAULTS.downloadConcurrency);
@@ -72,8 +72,8 @@ function createSettingsModule({ store }) {
         next.uploadPartConcurrency, 1, 8, cur.uploadPartConcurrency
       );
       if (next.theme !== 'dark') next.theme = 'light';
-      cache = next;
       store.setItem('settings', next);
+      cache = next;
       return { ...next };
     },
 

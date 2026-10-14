@@ -60,16 +60,22 @@ function safeFileName(name) {
   n = n.replace(/[. ]+$/, '');
   if (!n) n = `未命名文件_${Date.now()}`;
   if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(n)) n = `_${n}`;
-  if (n.length > 180) {
-    const ext = path.extname(n).slice(0, 20);
-    n = n.slice(0, 180 - ext.length) + ext;
+  if (Buffer.byteLength(n, 'utf8') > 180) {
+    const originalExt = path.extname(n);
+    const trimBytes = (text, limit) => {
+      let result = '', bytes = 0;
+      for (const char of text) { const length = Buffer.byteLength(char, 'utf8'); if (bytes + length > limit) break; result += char; bytes += length; }
+      return result;
+    };
+    const ext = trimBytes(originalExt, 20);
+    n = trimBytes(originalExt ? n.slice(0, -originalExt.length) : n, 180 - Buffer.byteLength(ext, 'utf8')) + ext;
   }
   return n;
 }
 
 // 同一进程中的任务必须各自占有目标路径，包含尚未改名的临时文件。
 const activeTargets = new Set();
-function targetKey(p) { return process.platform === 'win32' ? p.toLowerCase() : p; }
+function targetKey(p) { return process.platform === 'win32' || process.platform === 'darwin' ? p.normalize('NFC').toLowerCase() : p; }
 async function reserveTarget(dir, fileName, fid, preferred) {
   const ext = path.extname(fileName);
   const base = ext ? fileName.slice(0, -ext.length) : fileName;
@@ -219,7 +225,8 @@ function divideParts(total, partSize) {
  * @returns {Promise<{total:number, rangeSupported:boolean}>}
  */
 async function probeRange(url, http, signal, hintTotal) {
-  const res = await http.request({
+  let res;
+  try { res = await http.request({
     path: url,
     absolute: true,
       direct: true,
@@ -229,7 +236,11 @@ async function probeRange(url, http, signal, hintTotal) {
     signal,
     retries: 0,
     timeout: 0,
-  });
+  }); } catch (error) {
+    // 空文件的 bytes=0-0 探测可合法返回 416；仍通过后续完整 GET 核验内容。
+    if (error.httpStatus === 416 && hintTotal === 0) return { total: 0, rangeSupported: false };
+    throw error;
+  }
   const status = res.status;
   let total = hintTotal > 0 ? hintTotal : -1;
   if (status === 206) {
@@ -622,17 +633,17 @@ async function downloadSingleStream({
     startAt = 0;
   }
 
-  let size = total > 0 ? total : 0;
+  let size = Number.isFinite(total) && total >= 0 ? total : null;
   const cr = res.headers.get('content-range');
   if (cr) {
     const m = /\/(\d+)\s*$/.exec(cr);
-    if (m) size = Number(m[1]) || size;
+    if (m && size === null) size = Number(m[1]);
   }
-  if (!size) {
-    const cl = Number(res.headers.get('content-length'));
-    if (Number.isFinite(cl) && cl > 0) size = startAt + cl;
+  if (size === null) {
+    const cl = res.headers.get('content-length');
+    if (cl !== null && Number.isFinite(Number(cl)) && Number(cl) >= 0) size = startAt + Number(cl);
   }
-  if (!size && cfg && cfg.total) size = cfg.total;
+  if (size === null && cfg && Number.isFinite(cfg.total) && cfg.total >= 0) size = cfg.total;
 
   const etag = (res.headers.get('etag') || '').replace(/^"|"$/g, '');
   const fh = await fsp.open(tempPath, startAt > 0 ? 'r+' : 'w');
@@ -661,18 +672,18 @@ async function downloadSingleStream({
       if (signal && signal.aborted) throw new QuarkError('操作已取消', { code: ErrCode.ABORTED });
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       if (!buf.length) continue;
-      if (size > 0 && pos + buf.length > size) throw new QuarkError('下载响应超出文件大小', { code: ErrCode.NETWORK });
+      if (size !== null && pos + buf.length > size) throw new QuarkError('下载响应超出文件大小', { code: ErrCode.NETWORK });
       await writeAll(fh, buf, pos);
       pos += buf.length;
       written += buf.length;
-      if (onProgress) onProgress({ transferred: written, total: size });
+      if (onProgress) onProgress({ transferred: written, total: size === null ? 0 : size });
       if (Date.now() - lastFlush > PROGRESS_FLUSH_MS) {
         lastFlush = Date.now();
         await persist();
       }
     }
 
-    if (size > 0 && written !== size) {
+    if (size !== null && written !== size) {
       await persist();
       throw new QuarkError(
         `下载未完成（已收到 ${written} 字节，应为 ${size} 字节）`,

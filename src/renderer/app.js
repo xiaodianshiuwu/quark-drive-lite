@@ -1622,20 +1622,16 @@
   }
 
   async function saveSettings(patch) {
-    Object.keys(patch).forEach(function (k) { state.settings[k] = patch[k]; });
-    renderSettings();
     try {
       var s = await API.settings.set(patch);
-      if (s && typeof s === 'object') {
-        if (s.theme) state.settings.theme = s.theme;
-        if (s.downloadDir !== undefined) state.settings.downloadDir = s.downloadDir;
-        if (s.uploadConcurrency) state.settings.uploadConcurrency = Number(s.uploadConcurrency);
-        if (s.downloadConcurrency) state.settings.downloadConcurrency = Number(s.downloadConcurrency);
-      }
+      if (s && typeof s === 'object') Object.assign(state.settings, s);
       applyTheme(state.settings.theme);
       renderSettings();
+      return true;
     } catch (err) {
+      renderSettings();
       reportError(err, '保存设置失败');
+      return false;
     }
   }
 
@@ -1643,8 +1639,7 @@
     try {
       var dir = await API.dialog.saveDir(state.settings.downloadDir || undefined);
       if (!dir) return;
-      await saveSettings({ downloadDir: dir });
-      toast('info', '下载目录已更新');
+      if (await saveSettings({ downloadDir: dir })) toast('info', '下载目录已更新');
     } catch (err) {
       reportError(err, '选择目录失败');
     }

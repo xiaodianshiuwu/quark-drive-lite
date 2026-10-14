@@ -833,3 +833,19 @@ npm run pack
    - 改变了打包/启动方式
 3. `README.md` 面向**最终用户**，只讲怎么用、有什么限制；技术细节放 `docs/`。
 4. 所有文档、注释、提交信息、界面文案**一律简体中文**。
+
+
+## 17. 2026-10-14 本机续作与存储变更
+
+PR #1 是环境修复基线，PR #2 在其上继续三平台与传输链路修复。当前完整状态以 `docs/P0_COMPATIBILITY.md` 和 `docs/REVIEW_2026-10-14.md` 为准。
+
+用户要求取消每次打开应用时的系统密码交互，当前默认存储改为 QCK2 / AES-256-GCM，本地随机密钥保存在同 profile 的 `session.key`。
+`system-store.js` 与 `storage-host.js` 只用于显式旧格式迁移和兼容样本，正常应用不调用它们。旧密文备份为 `session.bin.legacy-QCK1`。
+登录分区从持久化分区改为内存分区，跨启动凭据只由应用本地存储管理。macOS/Linux 浏览器内部存储也不再请求系统密钥环。
+
+新增 `local-store.js`、`browser-storage.js`、启动页及迁移命令；macOS 构建在缓存目录完成，产物位置记录在 `.work/macos-build.json`。
+审查修复设置落盘失败时内存缓存提前更新、全部 Cookie 过期仍标记已登录，以及 Electron 升级后 UA Chromium 版本仍写死的问题。
+Windows/Linux 构建显式 x64，避免在 Apple Silicon 主机上误生成 ARM64。
+
+真实 E2E 已通过 29 项；P0 扩展验收达到 32 MiB，包含零字节、多文件、上传/下载中断恢复及 SHA256。多 GB 按用户选择保留待验收。
+自动化启动验收与用户扫码操作分别记录；不把跨平台构建、旧稀疏文件检查或历史 CI 当成当前目标系统验证。

@@ -1,7 +1,11 @@
+> 公开版本：官方完整解包、原始日志、安装标识、历史原型和二进制只在私有归档中保存。下文对原研究材料的路径说明需在有权限的私有 checkout 中使用，产品构建不需要这些材料。
+
 # 云端开发环境搭建指南（CLOUD_DEV）
 
 > 面向：在 **Linux 云端环境**（容器 / 云主机 / GitHub Codespaces 等）克隆本仓库后开展开发与逆向分析。
 > 目标：明确**哪些能跑、哪些不能跑、需要什么条件**，避免在云端浪费时间去调本机才有的东西。
+
+当前 P0 的系统支持范围、原生 CI 与验收边界见 [三平台适配说明](P0_COMPATIBILITY.md)。
 
 ---
 
@@ -35,10 +39,10 @@ git sparse-checkout add reference
 
 | 依赖 | 版本 | 用途 | 必需性 |
 |---|---|---|---|
-| Node.js | **24.x**（开发依赖最低 22.12） | 源码、测试、CDP 工具 | 必需 |
-| pnpm | ≥ 9 | 安装依赖 | 推荐（用 npm 亦可） |
+| Node.js | **24.18+** | 源码、测试、CDP 工具与原生环境代理 | 必需 |
+| pnpm | **11.25.0** | 按锁文件安装依赖 | 推荐 |
 | Python | ≥ 3.8 | `tools/*.py`（端点挖掘、字符串取证） | 逆向分析时必需 |
-| Electron | 33.x（由 `pnpm install` 自动下载） | 真机冒烟 / 打包 | 跑 Electron 相关验证时必需 |
+| Electron | **44.7.2**（显式运行官方安装器） | 真机冒烟 / 打包 | 跑 Electron 相关验证时必需 |
 
 ```bash
 pnpm install --frozen-lockfile --ignore-scripts
@@ -58,13 +62,15 @@ node node_modules/electron/install.js
 
 | 命令 | 云端 Linux | 说明 |
 |---|---|---|
-| `npm test` | ✅ **可直接跑** | 216 项。纯 Node，不需要 Electron、不需要网络、不需要登录 |
+| `npm test` | ✅ **可直接跑** | 262 项。纯 Node，不需要 Electron、不需要外部网络、不需要登录 |
 | `npm run verify` | ✅ **可直接跑** | 48 项集成验证。纯 Node |
 | `npm run verify:smoke` | ⚠️ **需要虚拟显示** | 28 项。会真实启动 Electron，见下方 §3.1 |
 | `npm run e2e` | ❌ **云端不可用** | 需要**真实夸克账号扫码登录**（人工交互），且会操作真实网盘 |
 | `npm run stability` | ❌ **云端不可用** | 依赖 **Windows 版官方客户端**（`quark.exe`），Linux 无法运行 |
 | `npm run native` | ❌ **云端不可用** | 同上，方案 B 只能在 Windows 上跑 |
-| `npm run pack` | ⚠️ **需要 Windows 运行时** | 将与依赖版本一致的官方 Windows x64 Electron 解压到 `dist/win-unpacked` 后可在 Linux 组装；产物运行仍需 Windows 验证 |
+| `npm run pack` | ✅ **可生成 Windows 目录** | 自动构建匹配版本的 Windows x64 运行时并组装便携目录；原生运行由 Windows CI 验证 |
+| `npm run pack:linux` | ✅ **可直接跑** | Linux 原生目录构建；产物冒烟需要图形会话；旧格式样本额外需要密钥环服务 |
+| `npm run pack:mac` | ❌ **Linux 不适用** | 在 macOS 原生构建与验证，CI 覆盖 Intel 和 Apple Silicon |
 | `tools/*.py`（字符串取证、端点挖掘） | ✅ **可直接跑** | 纯文件读取分析，**Linux 上完全可用** |
 | `tools/dll_research/*` | ✅ 部分可用 | 字符串取证/Mojo 分析可跑；**实际启动客户端验证的部分不可用** |
 
@@ -73,11 +79,13 @@ node node_modules/electron/install.js
 ```bash
 # 在已配置 D-Bus 并解锁系统密钥环的 Linux 会话中
 xvfb-run -a npm run verify:smoke
+
+# 已安装上述依赖的无头验收环境，使用一次性的测试密钥环
+bash scripts/ci-linux-gui.sh npm run verify:all
 ```
 
-新版应用要求系统加密存储，单独使用 `xvfb-run` 不足以完成设置写入。
-其他 Linux 环境也需安装 Xvfb、D-Bus、libsecret 和可解锁的 Secret Service 密钥环，
-再在相同的 D-Bus 会话中启动应用。保留 Electron 沙箱和 TLS 验证。
+当前应用使用免系统密码的本地随机密钥，日常验证可直接使用 `xvfb-run`。一次性验收脚本不能用于真实账号日常启动。
+旧系统密文的兼容验收仍需 D-Bus、libsecret 与临时 Secret Service 密钥环；正常应用不依赖解锁。保留 Electron 沙箱和 TLS 验证。
 本次托管实例已配置辅助入口，可运行：
 
 ```bash
@@ -124,7 +132,7 @@ python tools/ctx.py                   # 抽取任意 JS 的上下文，用于查
 
 ```bash
 # 从 Release 下载 quark.dll（306 MB）
-gh release download research-assets-2026-10-14 --repo xiaodianshiuwu/quark-drive-lite -p 'quark.dll'
+gh release download research-assets-2026-10-14 --repo xiaodianshiuwu/quark-drive-lite-private-archive -p 'quark.dll'
 
 # 校验（必须是原版）
 sha256sum quark.dll
@@ -180,11 +188,10 @@ gh release upload research-assets-2026-10-14 <文件> --repo xiaodianshiuwu/quar
 
 ### 5.4 Node 版本差异
 
-- 完整开发与 CDP 验证使用 **Node 24**；`@electron/asar` 等开发依赖要求 **≥ 22.12**。
+- 完整开发、CDP 验证与原生环境代理使用 **Node 24.18+**。
 - ⚠️ **不要用裸 `node --test`**：它会把 `tools/` 下的工具脚本也当成测试（其中稳定性工具会尝试
   启动并强杀官方客户端）。正确口径是 `npm test`（脚本已限定为 `node --test test/*.test.js`）。
-  - `npm test` → **216 项**（正确）
-  - 裸 `node --test` → 218 项（多算 2 项，错误）
+  - `npm test` → **262 项**；裸 `node --test` 会误把历史工具计入测试。
 
 ---
 
@@ -199,7 +206,8 @@ cd quark-drive-lite
 pnpm install --frozen-lockfile --ignore-scripts
 
 # 3. 代码级验证（不需要 Electron / 网络 / 登录）
-npm test           # 216/216
+npm run check      # 语法与构建配置
+npm test           # 262/262
 npm run verify     # 48/48
 
 # 4. 协议与逆向分析
@@ -213,16 +221,16 @@ npm test && npm run verify
 
 ---
 
-## 7. 云端**做不到**的事（需要回到 Windows 本机）
+## 7. 云端**做不到**的事（需要原生系统或真实账号）
 
 | 事项 | 原因 |
 |---|---|
 | 真实账号 E2E | 需人工扫码登录 + 操作真实网盘 |
 | 方案 B（官方原生精简版） | 依赖 Windows 版官方客户端 |
 | 方案 B 稳定性测试 | 同上 |
-| 实际运行 Windows 便携版 | Linux 可在准备 Windows 运行时后组装；原生运行和界面验证仍需 Windows |
+| 实际运行 Windows 便携版 | Linux 可生成目录；原生运行和界面验证由 Windows CI 执行 |
 | 验证实际下载/上传速度 | 需真实账号且受账号等级限速 |
-| 账号容量相关验证 | 当前账号容量超限（见 `docs/HANDOVER.md` §2.3） |
+| 账号容量相关验证 | 当前实例未登录；历史账号容量限制见 `docs/HANDOVER.md` §2.3 |
 
 ---
 

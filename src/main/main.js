@@ -7,6 +7,9 @@
  *   渲染进程只能通过 preload.js 暴露的白名单访问主进程能力。
  */
 const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } = require('electron');
+// 应用身份稳定；正常启动不调用系统钥匙串或密钥环。
+app.setName('quark-mini');
+require('./core/browser-storage').configureBrowserStorage(app);
 const path = require('path');
 const fsPromises = require('fs/promises');
 
@@ -57,10 +60,13 @@ function handle(channel, fn) {
       if (!mainWindow || _evt.sender !== mainWindow.webContents || _evt.senderFrame !== mainWindow.webContents.mainFrame) {
         throw new QuarkError('已阻止未授权的窗口调用', { code: ErrCode.FORBIDDEN });
       }
+      if ((channel.startsWith('qk:fs:') || channel === 'qk:transfer:upload' || channel === 'qk:transfer:download') && !session.getCookie()) {
+        throw new QuarkError('请先登录后再操作网盘文件', { code: ErrCode.NEED_LOGIN });
+      }
       const data = await fn(...args);
       return { __qk: true, data };
     } catch (e) {
-      if (isNeedLogin(e)) {
+      if (isNeedLogin(e) && session.getCookie()) {
         try {
           session.markExpired();
           session.save();
@@ -167,10 +173,10 @@ function sanitizeTask(t) {
 // ---------------------------------------------------------------------------
 // 装配
 // ---------------------------------------------------------------------------
-function bootstrap() {
+function bootstrap(preparedStore) {
   const userDataDir = app.getPath('userData');
 
-  const store = createSecureStore({ userDataDir, requireEncryption: true });
+  const store = preparedStore || createSecureStore({ userDataDir, requireEncryption: true });
   session = createSession({ store }).load();
 
   http = new HttpClient({
@@ -186,7 +192,7 @@ function bootstrap() {
     },
   });
 
-  settings = createSettingsModule({ store });
+  settings = createSettingsModule({ store, getDefaultDownloadDir: () => app.getPath('downloads') });
   account = createAccountModule({ session, store, http, userDataDir });
   account.onStateChange(() => pushAuthState());
   fsModule = createFsModule({ http });
@@ -339,7 +345,7 @@ function registerIpc() {
 // ---------------------------------------------------------------------------
 // 窗口
 // ---------------------------------------------------------------------------
-function createWindow() {
+async function createWindow(prepare) {
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 780,
@@ -358,39 +364,48 @@ function createWindow() {
     },
   });
 
-  mainWindow.removeMenu();
-  mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
-
-  mainWindow.once('ready-to-show', async () => {
-    mainWindow.show();
-    // 启动后做一次静默判活：仅当本地存在登录态时才发起网络校验
-    try {
-      const st = await account.status();
-      if (st && st.loggedIn) {
-        account
-          .verify()
-          .then(() => pushAuthState())
-          .catch(() => pushAuthState());
-      }
-    } catch {
-      /* ignore */
-    }
-  });
-
+  const window = mainWindow;
   // 需求：不允许渲染进程被导航到外部站点
-  mainWindow.webContents.on('will-navigate', (e, url) => {
-    if (url !== mainWindow.webContents.getURL()) {
+  window.webContents.on('will-navigate', (e, url) => {
+    if (url !== window.webContents.getURL()) {
       e.preventDefault();
       pushToast('warn', '已阻止跳转到外部页面');
     }
   });
 
   // 禁止在应用内打开新窗口
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null;
+    if (!session) app.quit();
   });
+
+  if(prepare){
+    // 先显示启动界面，本地登录资料读取完成后再加载完整界面。
+    if(process.platform==='darwin') {
+      await window.loadFile(path.join(__dirname, '..', 'renderer', 'startup.html'));
+      window.show();
+    }
+    await prepare();
+    if (window.isDestroyed()) return;
+  }
+
+  window.removeMenu();
+  await window.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  if (window.isDestroyed()) return;
+  window.show();
+  // 启动后做一次静默判活：仅当本地存在登录态时才发起网络校验
+  try {
+    const st = await account.status();
+    if (st && st.loggedIn) {
+      account.verify().then(() => pushAuthState()).catch(() => pushAuthState());
+    }
+  } catch {
+    /* ignore */
+  }
+
+
 }
 
 // ---------------------------------------------------------------------------
@@ -407,14 +422,23 @@ if (!gotLock) {
     }
   });
 
-  app.whenReady().then(() => {
-    bootstrap();
-    registerIpc();
-    createWindow();
+  app.whenReady().then(async () => {
+    await createWindow(async()=>{
+      let store;
+      if(process.platform==='darwin') {
+        store=createSecureStore({userDataDir:app.getPath('userData'),requireEncryption:true});
+        await store.initialize();
+      }
+      if(!mainWindow || mainWindow.isDestroyed())return;
+      bootstrap(store);registerIpc();
+    });
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
+  }).catch(async () => {
+    await dialog.showMessageBox({type:'error',title:'启动失败',message:'无法读取本机登录资料',detail:'请恢复登录资料与本地密钥备份后重试。原登录资料未被修改。'});
+    app.quit();
   });
 
   app.on('window-all-closed', () => {
