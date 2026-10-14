@@ -1,8 +1,14 @@
 """Mine the extracted Quark PC client JS for API surface evidence."""
 import os, re, collections, json, sys
+from pathlib import Path
 
-ROOT = r"C:\Users\USER\Documents\qck\reference\quark_asar\dist"
-OUT = r"C:\Users\USER\Documents\qck\reference\MINED_ENDPOINTS.md"
+REPO = Path(__file__).resolve().parents[1]
+ROOT = REPO / "reference" / "quark_asar" / "dist"
+# 分析结果写入忽略目录，保留仓库中的历史取证材料。
+OUT = REPO / ".work" / "MINED_ENDPOINTS.md"
+if not ROOT.is_dir():
+    raise SystemExit(f"未找到官方解包材料：{ROOT}")
+OUT.parent.mkdir(parents=True, exist_ok=True)
 
 PATTERNS = {
     "clouddrive": re.compile(r"/(?:1/)?clouddrive/[A-Za-z0-9_\-/]+"),

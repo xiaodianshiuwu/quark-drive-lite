@@ -1,6 +1,9 @@
 import re, os
+from pathlib import Path
 
-ROOT = r"C:\Users\USER\Documents\qck\reference\quark_asar\dist"
+ROOT = Path(__file__).resolve().parents[1] / "reference" / "quark_asar" / "dist"
+if not ROOT.is_dir():
+    raise SystemExit(f"未找到官方解包材料：{ROOT}")
 
 # 只存在于官方定制环境里的私有/原生 API
 pats = {
