@@ -14,6 +14,14 @@ const { COMMON_QUERY } = require('../src/main/core/http.js');
 const { LoginController, buildCookieHeader, mergeCookies, ALIVE_PATH } = require('../src/main/core/login');
 const { QuarkError, ErrCode } = require('../src/main/core/errors');
 
+test('全部 Cookie 已到期时本地状态不再标记已登录，保留凭据供明确重新登录提示',()=>{
+  const session=createSession({store:memStore()});
+  session.setCookies([{name:'fixture',value:'仅测试',expires:Math.floor(Date.now()/1000)-10}]);
+  assert.equal(session.getCookie(),'');
+  assert.equal(session.isLoggedIn(),false);
+  assert.equal(session.hasCookies(),true);
+});
+
 // ---------------------------------------------------------------------------
 // 测试替身
 // ---------------------------------------------------------------------------

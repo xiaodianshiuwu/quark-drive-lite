@@ -12,6 +12,8 @@
  */
 
 const { QuarkError, ErrCode, fromEnvelope, asNetworkError, isRetryable } = require('./errors');
+const { deviceModel } = require('./platform');
+const { configureNativeProxy, configureChromiumSession } = require('./network-environment');
 
 /**
  * 请求使用的 User-Agent —— **严格按官方客户端的构造方式拼装**，而非自造。
@@ -34,9 +36,10 @@ const { QuarkError, ErrCode, fromEnvelope, asNetworkError, isRetryable } = requi
 const QUARK_PRODUCT_VERSION = '4.1.5.397'; // 本机官方客户端 build_info.json
 const QUARK_CLOUD_DRIVE_VERSION = '2.5.40'; // 官方 isPackaged 分支固定值
 const QUARK_CHANNEL = 'pckk_other_ch'; // "pckk@other_ch" 经官方 replace 后的结果
+const CHROMIUM_VERSION = process.versions.chrome || '130.0.6723.191';
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
-  `Chrome/130.0.6723.191 Safari/537.36 QuarkPC/${QUARK_PRODUCT_VERSION} ` +
+  `Chrome/${CHROMIUM_VERSION} Safari/537.36 QuarkPC/${QUARK_PRODUCT_VERSION} ` +
   `quark-cloud-drive/${QUARK_CLOUD_DRIVE_VERSION} Channel/${QUARK_CHANNEL}`;
 
 /**
@@ -52,26 +55,6 @@ const DEFAULT_UA =
 const UC_PARAMS_STR = 'dsdnfrpfbivesscpgimibtbmnijblauputogpintnwktprchmt';
 
 /** 本机设备型号（对应官方 getDeviceNameSync()）。 */
-function deviceModel() {
-  try {
-    const os = require('os');
-    const arch = os.arch();
-    const release = String(os.release() || '');
-    const [majorS, minorS] = release.split('.');
-    const major = Number(majorS);
-    const minor = Number(minorS);
-    let name = 'Windows 10';
-    if (major === 6 && minor === 1) name = 'Windows 7';
-    else if (major === 6 && minor === 2) name = 'Windows 8';
-    else if (major === 6 && minor === 3) name = 'Windows 8.1';
-    else if (major === 10 && minor === 0) name = 'Windows 10';
-    const bits = arch === 'x64' || arch === 'arm64' ? '64-bit' : '32-bit';
-    return `${name} ${bits}`;
-  } catch {
-    return 'Windows 10 64-bit';
-  }
-}
-
 const DEFAULT_DEVICE_MODEL = deviceModel();
 
 /** 公共查询参数：与官方一致（pr / fr / uc_param_str / device_model）。 */
@@ -208,13 +191,17 @@ class HttpClient {
    */
   _resolveFetch(req) {
     if (this._injectedFetch) return this._injectedFetch;
-    if (this.transportKind === 'electron') return this._fetch;
-    if (typeof globalThis.fetch === 'function') return globalThis.fetch;
+    if (this.transportKind === 'electron') return async (url, init) => {
+      await configureChromiumSession(require('electron').session.defaultSession);
+      return this._fetch(url, init);
+    };
+    if (typeof globalThis.fetch === 'function') { configureNativeProxy(); return globalThis.fetch; }
     return this._fetch;
   }
 
   /** 直连第三方域（CDN/OSS）时使用的原生 fetch。 */
   _nativeFetch() {
+    configureNativeProxy();
     if (typeof globalThis.fetch === 'function') return globalThis.fetch;
     return this._fetch;
   }

@@ -1,0 +1,90 @@
+name: 发布已验证的预发布
+on:
+  workflow_dispatch:
+    inputs:
+      validation_run_id:
+        description: 同一源码树且四个平台均成功的 P0 工作流运行 ID
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: publish-prerelease
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: 校验原生检查与源码一致性
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$VALIDATION_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$VALIDATION_RUN_ID" > validated-run.json
+          gh api "repos/$GH_REPO/actions/runs/$VALIDATION_RUN_ID/jobs?per_page=100" > validated-jobs.json
+          node <<'JS'
+          const fs=require('node:fs');
+          const run=JSON.parse(fs.readFileSync('validated-run.json'));
+          const jobs=JSON.parse(fs.readFileSync('validated-jobs.json')).jobs;
+          if(run.status!=='completed'||run.conclusion!=='success'||run.path!=='.github/workflows/p0-compatibility.yml')throw Error('P0 工作流未成功');
+          for(const name of ['ubuntu-22.04','windows-2022','macos-15','macos-15-intel']){
+            const job=jobs.find(job=>job.name===name);
+            if(!job||job.conclusion!=='success')throw Error('原生作业未全部成功');
+          }
+          fs.writeFileSync('validated-head.txt',run.head_sha);
+          JS
+          validated_head=$(cat validated-head.txt)
+          [[ "$validated_head" =~ ^[a-f0-9]{40}$ ]]
+          git fetch origin "$validated_head"
+          git diff --exit-code "$validated_head" HEAD
+          gh run download "$VALIDATION_RUN_ID" --pattern 'release-*' --dir release-assets
+      - name: 校验附件并创建预发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'JS'
+          const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+          const version=require('./package.json').version;
+          if(!/^\d+\.\d+\.\d+-rc\.\d+$/.test(version))throw Error('仅允许 rc 预发布版本');
+          const expected=['Windows-x64.zip','Linux-x64.tar.gz','macOS-arm64.zip','macOS-x64.zip'].map(suffix=>`quark-drive-lite-${version}-${suffix}`);
+          const files=[];
+          function walk(dir){for(const e of fs.readdirSync(dir,{withFileTypes:true})){const p=path.join(dir,e.name);if(e.isDirectory())walk(p);else files.push(p);}}
+          walk('release-assets');
+          (async()=>{
+            for(const name of expected){
+              const candidates=files.filter(file=>path.basename(file)===name);
+              if(candidates.length!==1)throw Error('缺少或重复的发布产物：'+name);
+              const file=candidates[0],record=fs.readFileSync(file+'.sha256','utf8').trim();
+              const hash=crypto.createHash('sha256');
+              for await(const chunk of fs.createReadStream(file))hash.update(chunk);
+              if(record!==hash.digest('hex')+'  '+name)throw Error('产物哈希不一致：'+name);
+            }
+            if(files.length!==8)throw Error('出现非预期发布附件');
+            fs.writeFileSync('release-tag.txt','v'+version);
+          })().catch(error=>{console.error(error.message);process.exitCode=1;});
+          JS
+          tag=$(cat release-tag.txt)
+          main_head=$(git rev-parse HEAD)
+          remote_main=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
+          [[ "$main_head" == "$remote_main" ]]
+          mapfile -t assets < <(find release-assets -type f | sort)
+          gh release create "$tag" --target "$main_head" --prerelease --latest=false \
+            --title "${tag#v} 预发布" --notes-file "docs/PRERELEASE_${tag#v}.md" "${assets[@]}"

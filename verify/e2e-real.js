@@ -27,23 +27,15 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { resolveElectron, electronEnvironment, userDataDir } = require('../src/main/core/platform');
 
 const root = path.join(__dirname, '..');
-const PORT = 9788;
+const PORT = Number(process.env.QCK_E2E_PORT || 9788);
 const ARGS = process.argv.slice(2);
 const KEEP = ARGS.includes('--keep');
 const ROOT_FID_ARG = (ARGS.find((a) => a.startsWith('--root=')) || '').split('=')[1] || '0';
 
-const electronPath = (() => {
-  try {
-    const p = require('electron');
-    if (typeof p === 'string' && fs.existsSync(p)) return p;
-  } catch {
-    /* fallthrough */
-  }
-  const f = path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe');
-  return fs.existsSync(f) ? f : null;
-})();
+const electronPath = resolveElectron(root);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -210,7 +202,7 @@ window.__E2E__ = {
   // 关键：E2E 用独立的临时 userData 启动，否则会污染真实用户数据。
   // 但登录态保存在真实 userData 里，因此必须把它复制过来，否则应用读不到会话。
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'qk-e2e-ud-'));
-  const realUserData = path.join(process.env.APPDATA || '', 'quark-mini');
+  const realUserData = userDataDir();
   const realSession = path.join(realUserData, 'session.bin');
   let sessionCopied = false;
   if (fs.existsSync(realSession)) {
@@ -238,9 +230,7 @@ window.__E2E__ = {
     );
   }
 
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
-  delete env.NODE_OPTIONS;
+  const env = electronEnvironment();
 
   const child = spawn(electronPath, [root, `--remote-debugging-port=${PORT}`, `--user-data-dir=${userData}`], {
     env,

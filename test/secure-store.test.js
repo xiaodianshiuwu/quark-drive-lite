@@ -11,8 +11,29 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { createSecureStore, isEncryptionAvailable } = require('../src/main/core/secure-store');
+const { createSystemSecureStore: createSecureStore } = require('../src/main/core/secure-store');
+const { isEncryptionAvailable } = require('../src/main/core/system-store');
 const { createSession } = require('../src/main/core/session');
+
+test('纯 Node 的离线存储不会加载或下载 Electron 运行时', () => {
+  const { spawnSync } = require('node:child_process');
+  const script = `
+    const Module = require('node:module');
+    const original = Module._load;
+    let electronLoads = 0;
+    Module._load = function (name, ...args) {
+      if (name === 'electron') {
+        electronLoads++;
+        throw new Error('离线测试不应加载 Electron');
+      }
+      return original.call(this, name, ...args);
+    };
+    const { isEncryptionAvailable } = require(${JSON.stringify(path.resolve(__dirname, '../src/main/core/system-store'))});
+    if (isEncryptionAvailable() !== false || electronLoads !== 0) process.exit(1);
+  `;
+  const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+});
 
 let tmpRoot;
 test.before(() => {
@@ -301,4 +322,52 @@ test('存储文件不含任何明文 Cookie（明文回退模式下的预期行�
   // 回退模式下明文落盘是**已知且已标记**的行为，测试显式固定该契约
   assert.equal(raw.includes('SECRET'), true);
   assert.equal(JSON.parse(raw).encrypted, false);
+});
+
+test('异步初始化读取已有密文，期间事件循环可响应且不调用同步解密', async () => {
+  const dir = freshDir('async-read');
+  const original = Buffer.concat([Buffer.from('QCK1'), Buffer.from('固定测试密文')]);
+  fs.mkdirSync(dir,{recursive:true});
+  fs.writeFileSync(path.join(dir,'session.bin'),original);
+  let resolveDecrypt;
+  let decryptStarted;
+  const started=new Promise(resolve=>{decryptStarted=resolve;});
+  const store=createSecureStore({userDataDir:dir,requireEncryption:true,safeStorage:{
+    isAsyncEncryptionAvailable:async()=>true,
+    decryptString(){throw new Error('不应调用同步解密');},
+    decryptStringAsync:()=>{decryptStarted();return new Promise(resolve=>{resolveDecrypt=resolve;});},
+  }});
+  const initialization=store.initialize();
+  await started;
+  let responsive=false;
+  await new Promise(resolve=>setImmediate(()=>{responsive=true;resolve();}));
+  assert.equal(responsive,true);
+  resolveDecrypt({result:JSON.stringify({v:1,encrypted:true,data:{settings:{theme:'dark'},fixture:'跨版本测试'}}),shouldReEncrypt:false});
+  await initialization;
+  assert.equal(store.getItem('fixture'),'跨版本测试');
+  assert.deepEqual(store.getItem('settings'),{theme:'dark'});
+  assert.equal(store.isEncrypted(),true);
+  assert.deepEqual(fs.readFileSync(store.filePath),original);
+});
+
+test('异步密钥授权被拒绝时保留原密文并明确报错',async()=>{
+  const dir=freshDir('async-denied');fs.mkdirSync(dir,{recursive:true});
+  const original=Buffer.concat([Buffer.from('QCK1'),Buffer.from('固定测试密文')]);
+  fs.writeFileSync(path.join(dir,'session.bin'),original);
+  const store=createSecureStore({userDataDir:dir,requireEncryption:true,safeStorage:{
+    isAsyncEncryptionAvailable:async()=>false,decryptStringAsync:async()=>{throw new Error('不应解密');},
+  }});
+  await assert.rejects(store.initialize(),/系统加密存储不可用/);
+  assert.deepEqual(fs.readFileSync(store.filePath),original);
+});
+
+test('异步解密返回无效结构时拒绝启动读取，不能把已有资料当作空会话',async()=>{
+  const dir=freshDir('async-invalid');fs.mkdirSync(dir,{recursive:true});
+  const original=Buffer.concat([Buffer.from('QCK1'),Buffer.from('固定测试密文')]);
+  fs.writeFileSync(path.join(dir,'session.bin'),original);
+  const store=createSecureStore({userDataDir:dir,requireEncryption:true,safeStorage:{
+    isAsyncEncryptionAvailable:async()=>true,decryptStringAsync:async()=>({wrongField:'无效测试结果'}),
+  }});
+  await assert.rejects(store.initialize(),/解密返回格式无效/);
+  assert.deepEqual(fs.readFileSync(store.filePath),original);
 });

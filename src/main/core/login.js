@@ -5,7 +5,7 @@
  * 机制与官方 PC 客户端一致：官方客户端本身不实现登录协议，而是调用 Chromium 原生
  * `chrome.account.openLoginWindow()` 打开应用内登录窗口，登录完成后直接读取浏览器
  * 原生 Cookie；本模块用 Electron 的 `BrowserWindow` + `session.cookies` 达到同样效果：
- *   1. 用独立持久化分区 `persist:quark-login` 打开一个真实登录窗口，用户在窗口内扫码/
+ *   1. 用独立内存分区 `quark-login` 打开一个真实登录窗口，用户在窗口内扫码/
  *      输手机号，滑块等风控由真实 Chromium 完成
  *   2. 轮询 `session.cookies.get()` 读取 `.quark.cn` 下**全部** Cookie（含 HttpOnly）
  *   3. 用「带 Cookie 调用判活接口」确认登录成功，而不是猜测 Cookie 名
@@ -32,13 +32,14 @@ const LOGIN_URL = 'https://pan.quark.cn/';
  * 避免两处各写一份导致不一致（官方以 UA 中的 QuarkPC 标识做客户端识别）。
  */
 const { DEFAULT_UA } = require('./http');
+const { configureChromiumSession, configureNativeProxy } = require('./network-environment');
 
 const DEFAULT_TIMEOUT = 180000;   // 登录总超时：180 秒
 const DEFAULT_POLL = 1500;        // 登录态轮询间隔
 const ALIVE_TIMEOUT = 20000;      // 单次判活请求超时
 
-/** 持久化分区名：登录态保存在 userData/Partitions/quark-login，下次免扫码。 */
-const LOGIN_PARTITION = 'persist:quark-login';
+/** 登录窗口使用内存分区；跨启动登录态仅由应用本地随机密钥保存。 */
+const LOGIN_PARTITION = 'quark-login';
 
 /**
  * 需要覆盖的 Cookie 域。实测登录后 Cookie 分散在 `pan.quark.cn`、`.quark.cn` 等域上，
@@ -96,7 +97,7 @@ function mergeCookies(lists) {
 class LoginController {
   /**
    * @param {object} opts
-   * @param {string} [opts.partition='persist:quark-login'] 持久化分区（登录态复用）
+   * @param {string} [opts.partition='quark-login'] 内存分区
    * @param {(stage:string)=>void} [opts.onProgress] 进度回调（中文文案，不含 Cookie）
    * @param {number} [opts.timeout]        登录总超时，默认 180000ms
    * @param {number} [opts.pollInterval]   轮询间隔，默认 1500ms
@@ -146,8 +147,11 @@ class LoginController {
   _fetch() {
     const em = this._electron || electronModule();
     if (!this._injectedFetch) {
-      if (em && em.net && typeof em.net.fetch === 'function') return em.net.fetch.bind(em.net);
-      if (typeof globalThis.fetch === 'function') return globalThis.fetch.bind(globalThis);
+      if (em && em.net && typeof em.net.fetch === 'function') return async (url, init) => {
+        await configureChromiumSession(em.session.defaultSession);
+        return em.net.fetch(url, init);
+      };
+      if (typeof globalThis.fetch === 'function') { configureNativeProxy(); return globalThis.fetch.bind(globalThis); }
     }
     const f = this._injectedFetch || globalThis.fetch;
     if (typeof f !== 'function') throw zh('运行环境缺少可用的网络实现', ErrCode.NETWORK);
@@ -224,6 +228,7 @@ class LoginController {
   async _run() {
     const em = this._electronModule();
     const ses = em.session.fromPartition(this.partition);
+    await configureChromiumSession(ses);
 
     this._progress('正在打开登录窗口…');
     const win = new em.BrowserWindow({

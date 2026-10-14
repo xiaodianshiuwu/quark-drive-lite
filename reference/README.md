@@ -1,3 +1,5 @@
+> 公开版本：官方完整解包、原始日志、安装标识、历史原型和二进制只在私有归档中保存。下文对原研究材料的路径说明需在有权限的私有 checkout 中使用，产品构建不需要这些材料。
+
 # reference/ — 逆向研究与协议对照材料
 
 > ⚠️ **本目录仅用于开发期协议核对，不是项目运行依赖。**
@@ -37,7 +39,7 @@
 ```bash
 # 1) 从 Release 下载 app.asar（261 MB）
 gh release download research-assets-2026-10-14 \
-  --repo xiaodianshiuwu/quark-drive-lite -p 'app.asar'
+  --repo xiaodianshiuwu/quark-drive-lite-private-archive -p 'app.asar'
 
 # 2) 解包
 node -e "require('@electron/asar').extractAll('app.asar','reference/quark_asar')"

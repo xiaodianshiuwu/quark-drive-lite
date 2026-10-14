@@ -7,9 +7,15 @@
     "buildResources": "build"
   },
   "asar": true,
+  "afterPack": "scripts/after-pack.js",
   "compression": "maximum",
   "npmRebuild": false,
   "removePackageScripts": true,
+  "electronFuses": {
+    "runAsNode": false,
+    "enableNodeOptionsEnvironmentVariable": false,
+    "enableNodeCliInspectArguments": false
+  },
 
   "nodeGypRebuild": false,
   "files": [
@@ -21,6 +27,7 @@
     "main": "src/main/main.js"
   },
   "win": {
+    "signAndEditExecutable": false,
     "target": [
       {
         "target": "portable",
@@ -32,6 +39,18 @@
       }
     ],
     "artifactName": "${productName}-${version}-${arch}.${ext}"
+  },
+  "linux": {
+    "target": "dir",
+    "category": "Utility",
+    "executableName": "quark-mini"
+  },
+  "mac": {
+    "target": "dir",
+    "category": "public.app-category.utilities",
+    "minimumSystemVersion": "13.0",
+    "identity": "-",
+    "timestamp": "none"
   },
   "portable": {
     "artifactName": "${productName}-${version}-便携版.${ext}"

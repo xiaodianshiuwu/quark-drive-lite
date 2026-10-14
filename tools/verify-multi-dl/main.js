@@ -10,6 +10,7 @@
  * 走 UI 真实路径（modules/transfer.js），不是直接调底层引擎。
  */
 const { app } = require('electron');
+require('../../src/main/core/browser-storage').configureBrowserStorage(app);
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -30,10 +31,13 @@ app.whenReady().then(async () => {
   const { createFsModule } = require(path.join(S, 'modules', 'fs.js'));
   const { createTransferModule } = require(path.join(S, 'modules', 'transfer.js'));
 
-  const real = path.join(process.env.APPDATA || '', 'quark-mini');
+  const real = require('../../src/main/core/platform').userDataDir();
   const ud = app.getPath('userData');
   fs.mkdirSync(ud, { recursive: true });
+  if (path.resolve(real) === path.resolve(ud)) throw Error('验收目录不能覆盖真实用户目录');
   fs.copyFileSync(path.join(real, 'session.bin'), path.join(ud, 'session.bin'));
+  if (fs.existsSync(path.join(real, 'session.key'))) fs.copyFileSync(path.join(real, 'session.key'), path.join(ud, 'session.key'));
+  if (process.platform !== 'win32' && fs.existsSync(path.join(ud, 'session.key'))) fs.chmodSync(path.join(ud, 'session.key'), 0o600);
 
   const store = createSecureStore({ userDataDir: ud, requireEncryption: true });
   const session = createSession({ store }).load();
