@@ -359,6 +359,13 @@ pub fn sha256_hex(text: &str) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// SHA-256 hex（字节缓冲；文本读取回读校验用）。
+pub fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
