@@ -309,7 +309,16 @@ impl AgentConfigManager {
             cur.write_mode = wm.to_string();
         }
         if let Some(v) = patch.get("remoteRoots") {
-            cur.remote_roots = normalize_remote_root_entries(v);
+            let roots = normalize_remote_root_entries(v);
+            // 与 qck UI 语义一致：不允许把根目录（fid="0"）授权为 Agent 根——
+            // 那等价于对 Agent 开放整个网盘，范围校验将失去意义。
+            if roots.iter().any(|(fid, _)| fid == crate::policy::ROOT_FID) {
+                return Err(AgentToolError::new(
+                    AgentError::InvalidArg,
+                    "不能把根目录设为授权目录，请选择具体的子目录",
+                ));
+            }
+            cur.remote_roots = roots;
         }
         for (key, target) in [
             ("localReadRoots", &mut cur.local_read_roots),

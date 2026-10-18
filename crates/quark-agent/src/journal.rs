@@ -18,7 +18,10 @@ const SECRET_KEYS: [&str; 10] = [
 ];
 
 /// URL 查询中常见的签名参数：出现即整段剔除（值再短也视为敏感）。
-const URL_SECRET_PARAMS: [&str; 6] = ["sign", "signature", "token", "auth", "key", "credential"];
+/// 补齐夸克下载直链实际使用的签名参数（st/__puus/__pus/ctoken，qck 同款）。
+const URL_SECRET_PARAMS: [&str; 10] = [
+    "sign", "signature", "token", "auth", "key", "credential", "st", "__puus", "__pus", "ctoken",
+];
 
 fn is_secret_key(k: &str) -> bool {
     let lower = k.to_ascii_lowercase();
@@ -26,11 +29,19 @@ fn is_secret_key(k: &str) -> bool {
 }
 
 fn looks_like_signed_url(v: &str) -> bool {
-    // 对应 qck URL_WITH_SIGN_RE：http(s) 链接中携带 sign/token 类查询参数。
+    // 对应 qck URL_WITH_SIGN_RE：携带签名参数的直链。覆盖三种形态：
+    // http(s)://…、协议相对 //cdn…（夸克直链实际形态）、";st=" 分号分隔（qck 同款）。
     let lower = v.to_ascii_lowercase();
-    (lower.starts_with("http://") || lower.starts_with("https://"))
+    let is_urlish = lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("//")
+        || lower.contains(";http")
+        || lower.contains(";//");
+    is_urlish
         && URL_SECRET_PARAMS.iter().any(|p| {
-            lower.contains(&format!("{p}=")) || lower.contains(&format!("{p}%3d"))
+            lower.contains(&format!("{p}="))
+                || lower.contains(&format!("{p}%3d"))
+                || lower.contains(&format!(";{p}="))
         })
 }
 

@@ -291,16 +291,14 @@ impl ToolEnv {
                     last_err = Some(AgentToolError::new(AgentError::Upstream, "info 响应形状异常"));
                 }
                 Err(e) => {
-                    // NOT_FOUND（含上游 21001 资源不存在）是终态：立即返回，
-                    // 不能重试或被 recent 兜底成"仍存在"（删除核对依赖它）。
-                    if is_not_found(&e) {
-                        return Err(e);
-                    }
-                    let transient = matches!(e.code, AgentError::InvalidArg | AgentError::Upstream)
-                        || e.upstream_code
-                            .as_ref()
-                            .and_then(|v| v.as_str())
-                            .map(|c| c == "INVALID_ARG" || c == "SERVER")
+                    // 与 qck 一致：INVALID_ARG/NOT_FOUND/SERVER（含 biz 14001/21001）都按
+                    // transient 处理——服务端对刚创建/刚删除对象的 info 有收敛窗口，
+                    // 14001"Bad Parameter"正是"尚未收敛"。重试耗尽后才走 recent 兜底。
+                    // 删除核对不走本函数（直接查 fs.info 判终态），互不影响。
+                    let transient = matches!(e.code, AgentError::InvalidArg | AgentError::NotFound | AgentError::Upstream)
+                        || e.raw_code
+                            .as_deref()
+                            .map(|c| c == "INVALID_ARG" || c == "NOT_FOUND" || c == "SERVER")
                             .unwrap_or(false);
                     if !transient {
                         return Err(e);
@@ -589,7 +587,8 @@ pub fn tool_defs() -> Vec<ToolDef> {
     out.push(s("查询传输队列（含 GUI 发起的任务）。", schema(json!({
         "task_ids": {"type": "array", "items": {"type": "string"}},
         "kind": {"type": "string"},
-        "status": {"type": "string"}
+        "status": {"type": "string"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200}
     }), &[]), false, "list_transfers"));
     out.push(s("读取文本文件正文（下载到本地授权目录后读取）。", schema(json!({
         "fid": {"type": "string"},
@@ -711,20 +710,17 @@ impl QuarkTools {
         let started = std::time::Instant::now();
         let env = self.env(ctx);
         let result = self.dispatch(&env, name, args).await;
-        let (result_val, ok) = match &result {
-            Ok(v) => (v.clone(), true),
-            Err(e) => (json!({ "error": e.to_json() }), false),
-        };
+        let ok = result.is_ok();
+        // 规格 §7：正文内容只记字节数不记内容。结果审计归入口层（gateway/chat 已有
+        // summarize 白名单审计）；execute 层只记耗时，避免 read_text_file 正文片段、
+        // 大结果整段落盘，也避免与入口层重复记账。
         self.journal.append(
             "tool",
             name,
             &ctx.actor,
             if ok { "ok" } else { "error" },
             &json!({ "args": crate::journal::sanitize(args) }),
-            &json!({
-                "ms": started.elapsed().as_millis() as u64,
-                "result": crate::journal::sanitize(&result_val),
-            }),
+            &json!({ "ms": started.elapsed().as_millis() as u64 }),
         );
         result
     }
@@ -1027,11 +1023,20 @@ impl QuarkTools {
             filtered.push(ToolEnv::serialize_task(&t));
         }
         let total = filtered.len();
+        // 对齐 qck：limit 1..200 默认 100，取最近 limit 条；超出如实标记 truncated。
+        let limit = clamp_int(&a("limit"), 1, 200, 100) as usize;
+        let truncated = total > limit;
+        let tasks_out: Vec<Value> = filtered.split_off(total.saturating_sub(limit.min(total)));
         Ok(json!({
-            "tasks": filtered,
-            "truncated": false,
+            "tasks": tasks_out,
+            "count": total.min(limit),
             "total": total,
-            "note": "任务 id 是查询过滤条件，不是入队凭证；入队请用 download_files/upload_file。",
+            "truncated": truncated,
+            "note": if truncated {
+                format!("共 {total} 条，只返回最近 {limit} 条；请加 task_ids/kind/status 过滤。")
+            } else {
+                "任务 id 是查询过滤条件，不是入队凭证；入队请用 download_files/upload_file。".to_string()
+            },
         }))
     }
 
@@ -1442,17 +1447,29 @@ impl QuarkTools {
             if all_done {
                 env.remember_uploaded(&target, &desired).await;
             }
-            // 只清理 agent-out/<stamp>/ 这一层（不递归）
-            if let Some(st) = &staged {
-                if let Some(dir) = st.parent() {
-                    let ok = dir.parent().and_then(|p| p.file_name()).map(|n| n == "agent-out").unwrap_or(false);
-                    if ok {
-                        let _ = std::fs::remove_dir_all(dir);
+            // staged 副本清理（对齐 qck）：全部任务到达**任意终态**（done/error/canceled）
+            // 即清理，失败/取消也不能把文件内容副本留在用户授权目录；超时（timedOut，
+            // 有 pending 项）时保留副本供排查/续传。
+            let reached_terminal = !tasks.is_empty()
+                && tasks.iter().all(|t| {
+                    matches!(
+                        t.get("status").and_then(|v| v.as_str()),
+                        Some("done") | Some("error") | Some("canceled")
+                    )
+                });
+            let mut cleaned = false;
+            if reached_terminal {
+                if let Some(st) = &staged {
+                    if let Some(dir) = st.parent() {
+                        let ok = dir.parent().and_then(|p| p.file_name()).map(|n| n == "agent-out").unwrap_or(false);
+                        if ok {
+                            cleaned = std::fs::remove_dir_all(dir).is_ok();
+                        }
                     }
                 }
+                out["staged_path"] = Value::Null;
             }
-            out["staged_path"] = Value::Null;
-            out["staged_cleaned"] = json!(staged.is_some());
+            out["staged_cleaned"] = json!(cleaned);
             out["wait"] = waited;
         }
         Ok(out)
@@ -2060,7 +2077,11 @@ impl QuarkTools {
                         AgentError::OutOfScope => ("skipped", "skipped"),
                         _ => ("failed", "failed"),
                     };
-                    results.push(json!({"index": entry.index, "fid": entry.fid, "status": status, "reason": e.message, "code": e.code.as_str()}));
+                    let code_out = e
+                        .raw_code
+                        .clone()
+                        .unwrap_or_else(|| e.code.as_str().to_string());
+                    results.push(json!({"index": entry.index, "fid": entry.fid, "status": status, "reason": e.message, "code": code_out}));
                     counters[bucket] = json!(counters[bucket].as_i64().unwrap_or(0) + 1);
                     if stop_on_error {
                         stopped = true;
@@ -2156,15 +2177,17 @@ impl QuarkTools {
             ).await;
         }
         // 逐项核对是否真的已不可见（NOT_FOUND=已删除；超时仍可见=不确定）。
-        // 删除是写操作：核对必须新鲜读取（清掉本次调用内的旧缓存），
-        // 且服务端删除是异步任务，条目从列表消失有最终一致延迟——轮询等待而非单次判定。
+        // 删除是写操作：核对必须新鲜读取（清掉本次调用内的旧缓存）。
+        // 批量轮询：每轮同时查所有未确认 fid，最多 15 轮 × 2s（最坏 30s）——
+        // 50 个 fid 若逐个串行最坏 25 分钟，会超出 MCP 适配器 15 分钟超时。
         env.info_cache.lock().unwrap().clear();
         env.list_cache.lock().unwrap().clear();
+        let mut pending: Vec<(String, String)> =
+            current.iter().map(|(f, n, _)| (f.clone(), n.clone())).collect();
         let mut results: Vec<Value> = Vec::new();
-        for (fid, name, _dir) in &current {
-            let mut status = "uncertain";
-            // 最多等 30s（15 次 × 2s）：service task 完成后条目才从 info/list 消失
-            for _ in 0..15 {
+        for _round in 0..15u32 {
+            let mut next: Vec<(String, String)> = Vec::new();
+            for (fid, name) in &pending {
                 // 每次查询都绕过 info 缓存与 recent 兜底（删除后的 NOT_FOUND 不能被重试吞掉）
                 match env
                     .deps
@@ -2172,16 +2195,25 @@ impl QuarkTools {
                     .await
                 {
                     Err(e) if is_not_found(&e) => {
-                        status = "deleted";
-                        break;
+                        results.push(json!({"fid": fid, "name": name, "status": "deleted"}));
                     }
-                    Err(_) => break, // 网络等其他错误：如实 uncertain
-                    Ok(_) => {
-                        tokio::time::sleep(Duration::from_millis(2000)).await;
+                    Err(_) => {
+                        // 网络等其他错误：如实 uncertain，不再重试该项
+                        results.push(json!({"fid": fid, "name": name, "status": "uncertain"}));
                     }
+                    Ok(_) => next.push((fid.clone(), name.clone())),
                 }
             }
-            results.push(json!({"fid": fid, "name": name, "status": status}));
+            pending = next;
+            if pending.is_empty() {
+                break;
+            }
+            if _round + 1 < 15 {
+                tokio::time::sleep(Duration::from_millis(2000)).await;
+            }
+        }
+        for (fid, name) in &pending {
+            results.push(json!({"fid": fid, "name": name, "status": "uncertain"}));
         }
         Ok(json!({
             "deleted_to_recycle": true,
@@ -2311,6 +2343,44 @@ mod tests {
         let rec = shared.recall("recent-x").unwrap();
         assert_eq!(rec.parent_fid, "parent-1");
         assert_eq!(rec.name, "n.txt");
+    }
+
+    #[test]
+    fn read_text_at_handles_encoding_and_truncation() {
+        let dir = std::env::temp_dir().join(format!("qk-rt-{}", &uuid::Uuid::new_v4().to_string()[..8]));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 正常 UTF-8
+        let p1 = dir.join("ok.txt");
+        std::fs::write(&p1, "你好 world").unwrap();
+        let r = read_text_at(&p1, 256 * 1024).unwrap();
+        assert_eq!(r["text"], json!("你好 world"));
+        assert_eq!(r["truncated"], json!(false));
+        assert_eq!(r["encoding"], json!("utf-8"));
+        // BOM 去除但 bytes 如实
+        let p2 = dir.join("bom.txt");
+        std::fs::write(&p2, "\u{feff}abc".as_bytes()).unwrap();
+        let r2 = read_text_at(&p2, 1024).unwrap();
+        assert_eq!(r2["text"], json!("abc"));
+        // NUL → LIMIT（二进制不猜编码）
+        let p3 = dir.join("bin.txt");
+        std::fs::write(&p3, [0x61, 0x00, 0x62]).unwrap();
+        assert_eq!(read_text_at(&p3, 1024).unwrap_err().code, AgentError::Limit);
+        // 截断切在多字节中间 → 回退到字符边界
+        let p4 = dir.join("cut.txt");
+        std::fs::write(&p4, "你好你好".as_bytes()).unwrap();
+        let r4 = read_text_at(&p4, 5).unwrap(); // "你"(3B)+"你"前2B → 回退到 3 字节
+        assert_eq!(r4["truncated"], json!(true));
+        assert_eq!(r4["text"], json!("你"));
+        // 非 UTF-8（无效序列，非截断所致）→ LIMIT
+        let p5 = dir.join("bad.txt");
+        std::fs::write(&p5, [0xFF, 0xFE, 0xFD]).unwrap();
+        assert_eq!(read_text_at(&p5, 1024).unwrap_err().code, AgentError::Limit);
+        // 不存在的文件 → NOT_FOUND
+        assert_eq!(
+            read_text_at(&dir.join("nope.txt"), 100).unwrap_err().code,
+            AgentError::NotFound
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2564,6 +2634,37 @@ mod fake_tests {
             let out = run(&h, &ctx, name, args).await;
             assert_eq!(out["error"]["code"], "AGENT_READ_ONLY", "{name}");
         }
+    }
+
+    #[tokio::test]
+    async fn all_write_tools_rejected_in_read_only_mode() {
+        // qck 10.6.4：全部写入口逐一验证只读拦截（不止 4 个）。
+        let tmp = std::env::temp_dir();
+        let h = harness(scope(&["root"], false, &[&tmp]));
+        h.deps.add("f", "node.txt", false, "root", 1);
+        h.deps.add("a", "aaa.txt", false, "root", 1);
+        h.deps.transfers.lock().unwrap().push(json!({"id":"t1","kind":"download","name":"a","size":1,"transferred":0,"status":"running","attempts":0,"createdAt":0,"updatedAt":0}));
+        let src = tmp.join("qk-agent-ro-src.txt");
+        std::fs::write(&src, b"x").unwrap();
+        let ctx = ctx_with(scope(&["root"], false, &[&tmp]));
+        for (name, args) in [
+            ("create_folder", json!({"name": "x"})),
+            ("rename_entry", json!({"fid": "f", "name": "n"})),
+            ("move_entries", json!({"fids": ["a"], "to_fid": "root"})),
+            ("copy_entries", json!({"fids": ["a"], "to_fid": "root"})),
+            ("download_files", json!({"fids": ["a"]})),
+            ("upload_file", json!({"local_path": src.to_string_lossy()})),
+            ("save_text_file", json!({"name": "n.txt", "text": "t"})),
+            ("transfer_control", json!({"task_id": "t1", "action": "pause"})),
+            ("plan_execute", json!({"plan_id": "p", "revision": 1, "content_hash": "h"})),
+            ("delete_entries", json!({"fids": ["a"], "dry_run": true})),
+        ] {
+            let out = run(&h, &ctx, name, args).await;
+            assert_eq!(out["error"]["code"], "AGENT_READ_ONLY", "{name} 应被只读拦截: {out}");
+        }
+        // 假网盘确认没有任何写发生
+        assert!(h.deps.uploads.lock().unwrap().is_empty());
+        let _ = std::fs::remove_file(&src);
     }
 
     #[tokio::test]

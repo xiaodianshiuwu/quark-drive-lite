@@ -946,7 +946,12 @@ pub fn pack_tool_result(payload: &Value) -> String {
 
 /// 工具失败时送给模型的结构化说明（保留 code/hint，让模型能解释原因）。
 pub fn pack_tool_error(err: &AgentToolError) -> String {
-    let mut error = json!({ "code": err.code.as_str(), "message": err.message });
+    // raw_code（白名单上游语义）优先：模型据此判断是否该提示重新登录。
+    let code_out = err
+        .raw_code
+        .clone()
+        .unwrap_or_else(|| err.code.as_str().to_string());
+    let mut error = json!({ "code": code_out, "message": err.message });
     if let Some(hint) = &err.hint {
         error["hint"] = json!(hint);
     }
