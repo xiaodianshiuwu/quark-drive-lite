@@ -190,3 +190,26 @@ interface Settings { downloadDir: string; uploadConcurrency: number; downloadCon
 - 列表：复选框、图标、名称、大小、修改时间、行内操作。
 - 传输抽屉：进度条、速度、剩余时间、暂停/继续/重试/取消。
 - 中文文案；深浅色主题跟随设置。
+
+## Agent 接入与内置对话（0.3.0-alpha 新增）
+
+`qk_call` 新增 `agent.*` 与 `chat.*` 两组方法（Rust 侧分发见 `crates/quark-agent/src/runtime.rs` 的 `handle`）：
+
+| 方法 | 参数 | 返回 |
+|---|---|---|
+| `agent.status` | `{}` | 状态快照（开关/端点/写模式/授权目录/连接数/审计文件名；不含 token） |
+| `agent.enable` | 可选配置补丁 | 启用接入并启动本机网关（失败自动回滚停用） |
+| `agent.disable` | `{}` | 停止网关并删除桥接凭据文件 |
+| `agent.updateScope` | `{ writeMode?, remoteRoots?, localReadRoots?, localWriteRoots? }` | 修改授权范围（运行中即时生效，无需重启） |
+| `agent.rotate` | `{}` | 重新生成网关凭据（旧凭据立即失效） |
+| `agent.journal` | `{ limit }` | `{ records: [...] }` 已脱敏操作记录 |
+| `agent.mcpConfig` | `{}` | MCP 客户端配置片段（命令/参数/环境变量，不含凭据值） |
+| `agent.tools` | `{}` | 20 个工具定义（OpenAI tools 形状） |
+| `chat.status` / `chat.history` / `chat.clear` | `{}` / `{ limit }` | 对话状态 / 历史（不含 Key）/ 清空 |
+| `chat.saveConfig` / `chat.clearConfig` | 配置补丁（apiKey 省略=保留，null=清空） | 对话配置（加密存储，快照仅 `hasKey`） |
+| `chat.test` / `chat.models` | `{}` | 连接测试 / 模型列表（走用户配置的 OpenAI 兼容端点） |
+| `chat.send` | `{ text }` | 发送一条消息并跑完工具循环；过程事件经 `qk:chat-event` 推送 |
+
+事件 `qk:chat-event` 载荷类型：`round` / `assistant_note` / `tool_start` / `tool_end` / `done` / `error`（字段见 `crates/quark-agent/src/chat.rs`）。
+
+错误形状沿用 `qk_call` 统一错误（`code`/`message`，Agent 的操作提示合并进 `message`）。

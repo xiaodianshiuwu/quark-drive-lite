@@ -40,3 +40,13 @@ Tauri 使用独立应用资料目录 `cn.quarkdrive.lite.tauri`，不会自动�
 ## 协议与许可
 
 接口证据见 [docs/API_NOTES.md](docs/API_NOTES.md)、桥接契约见 [docs/IPC_CONTRACT.md](docs/IPC_CONTRACT.md)。原型和第三方协议参考保留各自许可；本应用源码采用 MIT，详见 [LICENSE](LICENSE)。
+
+## Agent 接入与内置对话
+
+本版本移植了原 Electron 版的 AI Agent 子系统（工具层 + 本机网关 + 内置对话），全部运行在 Rust 侧：
+
+- **接入**：设置页「Agent 接入」卡启用后，客户端在本机 Unix socket 上提供 MCP 兼容网关；外部 Agent（如 Claude Desktop、Cursor）通过 `tools/agent-mcp.js` 适配器连接，凭据在资料目录 `agent/bridge.json`（0600，启用时生成、停用时删除）。命令行可用 `node tools/agent-cli.js status|tools|call <tool> '<json>'` 直接验证。
+- **授权**：默认只读；写入需把写入模式切到「授权范围内可写」并添加授权目录（网盘目录与本地读写目录分开授权）。修改授权即时生效，无需重启。操作记录（已脱敏）保存在资料目录 `agent/journal.jsonl`。
+- **删除**：Agent 工具层提供 `delete_entries`（本版本新增，原版未开放）。双阶段确认——先 `dry_run` 返回目标清单，再带与清单一致的 `confirm_names` 执行；删除进入夸克网盘回收站（可恢复），逐项返回 `deleted/uncertain` 核对状态。客户端界面的删除功能不受影响。
+- **内置对话**：「对话」视图配置任意 OpenAI 兼容端点（Base URL 仅允许 https 或本机回环 http；API Key 加密保存在资料目录 `agent/chat.bin`，只写不读）。对话与外部 Agent 共用同一套工具与授权范围，批量改动走 plan_create/plan_execute（带 revision + content_hash 授权绑定）。
+- **资料目录**：macOS `~/Library/Application Support/cn.quarkdrive.lite.tauri`；Windows `%APPDATA%\cn.quarkdrive.lite.tauri`（Windows 命名管道网关尚未实现，接入入口会明确报错）。
