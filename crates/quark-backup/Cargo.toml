@@ -1,0 +1,17 @@
+[package]
+name = "quark-backup"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+quark-core = { path = "../quark-core" }
+quark-transfer = { path = "../quark-transfer" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "fs"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+walkdir = "2.5"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

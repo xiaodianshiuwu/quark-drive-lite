@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/quark-core", "crates/quark-transfer", "crates/quark-agent", "src-tauri"]
+members = ["crates/quark-core", "crates/quark-transfer", "crates/quark-agent",
+        "crates/quark-backup", "src-tauri"]
 resolver = "2"
 
 [profile.release]
