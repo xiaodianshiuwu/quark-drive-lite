@@ -38,7 +38,8 @@ impl Task {
 }
 
 pub struct Store {
-    conn: Connection,
+    /// rusqlite::Connection 是 !Sync；Mutex 使 Store 可跨线程共享（worker 池并发认领）。
+    conn: std::sync::Mutex<Connection>,
 }
 
 impl Store {
@@ -76,7 +77,11 @@ impl Store {
             );
             "#,
         )?;
-        Ok(Self { conn })
+        Ok(Self { conn: std::sync::Mutex::new(conn) })
+    }
+
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn now() -> i64 {
@@ -92,7 +97,8 @@ impl Store {
         let mut added = 0;
         let mut requeued = 0;
         let mut unchanged = 0;
-        let tx = self.conn.unchecked_transaction()?;
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
         {
             let mut stmt = tx.prepare_cached(
                 r#"SELECT size, mtime_ms, state FROM tasks
@@ -158,7 +164,8 @@ impl Store {
     pub fn claim_batch(&self, account: &str, limit: usize) -> rusqlite::Result<Vec<Task>> {
         let mut out = Vec::new();
         let now = Self::now();
-        let tx = self.conn.unchecked_transaction()?;
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
         {
             let seq: i64 = tx.query_row("SELECT COALESCE(MAX(claim_seq),0)+1 FROM tasks", [], |r| r.get(0))?;
             let mut promote = tx.prepare_cached(
@@ -196,7 +203,7 @@ impl Store {
         let old = self.state_of(task)?;
         old.can_transition_to(next)
             .map_err(|e| rusqlite::Error::InvalidParameterName(e))?;
-        self.conn.execute(
+        self.conn().execute(
             r#"UPDATE tasks SET state=?5, last_error=?6, attempts=?7, remote_fid=?8,
                 chunk_progress=?9, updated_at_ms=?10, claim_seq=0
                WHERE account=?1 AND root_dir=?2 AND target_fid=?3 AND rel_path=?4"#,
@@ -214,7 +221,8 @@ impl Store {
     }
 
     fn state_of(&self, task: &Task) -> rusqlite::Result<TaskState> {
-        let s: String = self.conn.query_row(
+        let conn = self.conn();
+        let s: String = conn.query_row(
             r#"SELECT state FROM tasks WHERE account=?1 AND root_dir=?2 AND target_fid=?3 AND rel_path=?4"#,
             params![task.account, task.root_dir, task.target_fid, task.rel_path],
             |r| r.get(0),
@@ -224,7 +232,8 @@ impl Store {
 
     /// 各状态计数（水位判定用）。
     pub fn counts(&self, account: &str) -> rusqlite::Result<std::collections::HashMap<String, i64>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
             "SELECT state, COUNT(*) FROM tasks WHERE account=?1 GROUP BY state",
         )?;
         let rows = stmt.query_map(params![account], |r| {
@@ -248,7 +257,8 @@ impl Store {
 
     /// 拉取某状态的全部任务（验证清单用）。
     pub fn all_in_state(&self, account: &str, state: TaskState) -> rusqlite::Result<Vec<Task>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
             r#"SELECT account, root_dir, target_fid, rel_path, local_path, size, mtime_ms,
                 state, remote_fid, attempts, last_error, chunk_progress, updated_at_ms
                FROM tasks WHERE account=?1 AND state=?2 ORDER BY rel_path"#,
@@ -263,7 +273,7 @@ impl Store {
 
     /// 目录 relPath → remoteFid 映射（幂等建目录用）。
     pub fn put_dir(&self, account: &str, target_fid: &str, rel_path: &str, remote_fid: &str) -> rusqlite::Result<()> {
-        self.conn.execute(
+        self.conn().execute(
             r#"INSERT OR REPLACE INTO dirs (account, target_fid, rel_path, remote_fid) VALUES (?1,?2,?3,?4)"#,
             params![account, target_fid, rel_path, remote_fid],
         )?;
@@ -271,7 +281,8 @@ impl Store {
     }
 
     pub fn get_dir(&self, account: &str, target_fid: &str, rel_path: &str) -> rusqlite::Result<Option<String>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
             "SELECT remote_fid FROM dirs WHERE account=?1 AND target_fid=?2 AND rel_path=?3",
         )?;
         let mut rows = stmt.query_map(params![account, target_fid, rel_path], |r| r.get::<_, String>(0))?;

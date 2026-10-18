@@ -3068,6 +3068,7 @@ dependencies = [
  "fs2",
  "open",
  "quark-agent",
+ "quark-backup",
  "quark-core",
  "quark-transfer",
  "rfd",

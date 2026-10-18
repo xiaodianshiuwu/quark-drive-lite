@@ -15,12 +15,16 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 
+mod backup_host;
+
 #[derive(Clone)]
 struct State {
     core: Core,
     transfers: TransferManager,
     /// Agent 子系统（工具层 + 网关 + 内置对话）。
     agent: Arc<AgentRuntime>,
+    /// 备份会话管理（Phase-2）。
+    backup: backup_host::BackupManager,
     login: Arc<AtomicBool>,
     login_generation: Arc<AtomicU64>,
     account_control: Arc<tokio::sync::Mutex<()>>,
@@ -111,7 +115,33 @@ async fn qk_call(
             let _ = login.close();
         }
     }
-    let result = if method.starts_with("agent.") || method.starts_with("chat.") {
+    let result = if method.starts_with("backup.") {
+        let core = state.core.clone();
+        let profile = app.path().app_data_dir().unwrap_or_default();
+        let m = method.as_str();
+        match m {
+            "backup.plan" => {
+                let root = params["rootDir"].as_str().unwrap_or("").to_string();
+                let fid = params["targetFid"].as_str().unwrap_or("0").to_string();
+                backup_host::BackupManager::plan(core, root, fid).await
+            }
+            "backup.start" => {
+                let account = params["account"].as_str().unwrap_or("default").to_string();
+                let root = params["rootDir"].as_str().unwrap_or("").to_string();
+                let fid = params["targetFid"].as_str().unwrap_or("0").to_string();
+                let cfgp = params.get("config").cloned().unwrap_or(Value::Null);
+                state.backup.start(core, account, root, fid, profile, cfgp).await
+            }
+            "backup.status" => Ok(state.backup.status().await),
+            "backup.retry" => state.backup.retry_failed().await,
+            "backup.cancel" => state.backup.cancel().await,
+            "backup.verify" => {
+                let rate = params["sampleRatePpm"].as_u64().unwrap_or(10_000) as u32;
+                state.backup.verify(rate).await
+            }
+            _ => Err(Error::new("INVALID_ARG", format!("未知备份方法：{m}"))),
+        }
+    } else if method.starts_with("agent.") || method.starts_with("chat.") {
         // 事件回调：对话过程中的工具进度实时推送到界面（事件不含凭据）。
         let event_handle = app.clone();
         let event: quark_agent::chat::EventCallback = Arc::new(move |ev: Value| {
@@ -385,6 +415,7 @@ fn main() {
                 core,
                 transfers: transfers.clone(),
                 agent: agent.clone(),
+                backup: backup_host::BackupManager::default(),
                 login: Arc::new(AtomicBool::new(false)),
                 login_generation: Arc::new(AtomicU64::new(0)),
                 account_control: Arc::new(tokio::sync::Mutex::new(())),
