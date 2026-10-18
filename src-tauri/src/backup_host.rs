@@ -22,42 +22,165 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex as AsyncMutex};
 
-/// 真实远端操作：直接用 Core 的 fs.* 调用（上传用 transfer.upload 会进 GUI 队列——
-/// 海量任务不走那条路；这里用 Core 的直传能力。为保持零新增端点，上传复用
-/// `transfer.upload` 的核心函数——quark-transfer 未导出，故 Phase-2 首版用
-/// TransferManager 限流模式：一次最多 10000 条（每次分页提交），把任务分页入队）。
-/// 权衡如实记录：首版上传仍走 TransferManager（GUI 可见任务）， Scheduler 控制并发与重试；
-/// 后续若需完全绕开，把 quark-transfer/src/upload.rs 的 run_upload 提为 pub 再切换。
-struct CoreRemote;
+/// 真实远端操作（首版）：全部经 Core 的 fs.*（mkdir/list/info），
+/// 上传经 TransferManager 单文件入队 → 轮询终态 → clear。
+/// 权衡如实记录：任务短暂出现在 GUI 传输列表（每文件一条，完成即清理）；
+/// Scheduler 控制并发（backup worker 数限制实际并发度）。
+/// 后续优化：把 quark-transfer/src/upload.rs 核心提为独立入口，绕开任务队列。
+pub struct CoreRemote {
+    core: Core,
+    transfers: quark_transfer::TransferManager,
+}
+
+impl CoreRemote {
+    pub fn new(core: Core, transfers: quark_transfer::TransferManager) -> Self {
+        Self { core, transfers }
+    }
+
+    /// 等待单个传输任务到终态；返回 (status, error)。
+    async fn wait_task(&self, id: &str, timeout_ms: u64) -> Result<(String, Option<String>), String> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        loop {
+            let tasks = self
+                .transfers
+                .call("transfer.list", Value::Null)
+                .await
+                .map_err(|e| e.message)?;
+            if let Some(arr) = tasks.as_array() {
+                if let Some(t) = arr.iter().find(|t| t["id"] == json!(id)) {
+                    let st = t["status"].as_str().unwrap_or("").to_string();
+                    if ["done", "error", "canceled"].contains(&st.as_str()) {
+                        let err = t["error"].as_str().map(|s| s.to_string());
+                        let _ = self.transfers.call("transfer.clear", json!([id])).await;
+                        return Ok((st, err));
+                    }
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let _ = self.transfers.call("transfer.cancel", json!(id)).await;
+                let _ = self.transfers.call("transfer.clear", json!([id])).await;
+                return Err("上传等待超时".into());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+    }
+
+    async fn list_children(&self, parent_fid: &str) -> Result<Value, String> {
+        self.core
+            .call("fs.list", json!({"pdirFid": parent_fid, "page": 1, "size": 200}))
+            .await
+            .map_err(|e| e.message)
+    }
+}
 
 impl RemoteOps for CoreRemote {
     fn ensure_dir<'a>(
         &'a self,
-        _target_fid: &'a str,
-        _rel_path: &'a str,
+        target_fid: &'a str,
+        rel_path: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async move {
-            // 首版：调用 fs.mkdir（幂等由调用方 find 冲突保证）——但 scheduler 的 ensure_dir
-            // 需要返回"整条 rel 链的末端 fid"，这里简化：由 rel 直接 mkdir 逐级（Core 不支持 mkdir -p）。
-            // 真实实现放在接线层 build_remote（见下），CoreRemote 仅用于测试替换。
-            Err("CoreRemote 未实现（使用 build_remote 构造的实现）".to_string())
+            // 全链创建：逐段 list 确认（幂等）→ mkdir → 轮询拿 fid
+            let mut cur = target_fid.to_string();
+            let mut acc = String::new();
+            for seg in rel_path.split('/') {
+                acc = if acc.is_empty() { seg.to_string() } else { format!("{acc}/{seg}") };
+                let listed = self.list_children(&cur).await?;
+                let mut found: Option<String> = None;
+                if let Some(items) = listed["list"].as_array() {
+                    for x in items {
+                        if x["dir"] == json!(true) && x["name"] == json!(seg) {
+                            found = x["fid"].as_str().map(|s| s.to_string());
+                            break;
+                        }
+                    }
+                }
+                if let Some(fid) = found {
+                    cur = fid;
+                    continue;
+                }
+                let _ = self
+                    .core
+                    .call("fs.mkdir", json!({"pdirFid": cur, "name": seg}))
+                    .await
+                    .map_err(|e| e.message)?;
+                let mut new_fid = None;
+                for _ in 0..30 {
+                    let listed = self.list_children(&cur).await?;
+                    if let Some(items) = listed["list"].as_array() {
+                        for x in items {
+                            if x["dir"] == json!(true) && x["name"] == json!(seg) {
+                                new_fid = x["fid"].as_str().map(|s| s.to_string());
+                                break;
+                            }
+                        }
+                    }
+                    if new_fid.is_some() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                cur = new_fid.ok_or_else(|| format!("目录 {seg} 创建后未确认 fid"))?;
+            }
+            Ok(cur)
         })
     }
 
     fn upload_file<'a>(
         &'a self,
-        _local_path: &'a str,
-        _parent_fid: &'a str,
+        local_path: &'a str,
+        parent_fid: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
-        Box::pin(async move { Err("CoreRemote 未实现".to_string()) })
+        Box::pin(async move {
+            let ids = self
+                .transfers
+                .call("transfer.upload", json!({"localPaths": [local_path], "pdirFid": parent_fid}))
+                .await
+                .map_err(|e| e.message)?;
+            let id = ids
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "上传入队失败".to_string())?
+                .to_string();
+            let (st, err) = self.wait_task(&id, 600_000).await?;
+            if st != "done" {
+                return Err(err.unwrap_or_else(|| format!("上传失败（{st}）")));
+            }
+            let name = std::path::Path::new(local_path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let listed = self.list_children(parent_fid).await?;
+            if let Some(items) = listed["list"].as_array() {
+                for x in items {
+                    if x["dir"] == json!(false) && x["name"] == json!(name) {
+                        if let Some(f) = x["fid"].as_str() {
+                            return Ok(f.to_string());
+                        }
+                    }
+                }
+            }
+            Err("上传完成后未在目录中确认文件".into())
+        })
     }
 
     fn file_visible<'a>(
         &'a self,
-        _parent_fid: &'a str,
-        _name: &'a str,
+        parent_fid: &'a str,
+        name: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<String>, String>> + Send + 'a>> {
-        Box::pin(async move { Err("CoreRemote 未实现".to_string()) })
+        Box::pin(async move {
+            let listed = self.list_children(parent_fid).await?;
+            if let Some(items) = listed["list"].as_array() {
+                for x in items {
+                    if x["dir"] == json!(false) && x["name"] == json!(name) {
+                        return Ok(x["fid"].as_str().map(|s| s.to_string()));
+                    }
+                }
+            }
+            Ok(None)
+        })
     }
 }
 
@@ -68,6 +191,7 @@ pub struct BackupSession {
     pub target_fid: String,
     pub store: Arc<quark_backup::Store>,
     pub stop_tx: watch::Sender<bool>,
+    #[allow(dead_code)]
     pub scan_joined: Arc<AtomicBool>,
     pub started_at: u64,
     pub uploaded_bytes: Arc<AtomicU64>,
@@ -81,7 +205,7 @@ pub struct BackupManager {
 
 impl BackupManager {
     /// backup.plan：只扫描不入库，返回统计与每类示例。
-    pub async fn plan(core: Core, root_dir: String, target_fid: String) -> Result<Value, quark_core::Error> {
+    pub async fn plan(_core: Core, root_dir: String, target_fid: String) -> Result<Value, quark_core::Error> {
         let cfg = quark_backup::scanner::ScanConfig {
             account: String::new(),
             root_dir: PathBuf::from(&root_dir),
@@ -135,6 +259,7 @@ impl BackupManager {
     pub async fn start(
         &self,
         core: Core,
+        transfers: quark_transfer::TransferManager,
         account: String,
         root_dir: String,
         target_fid: String,
@@ -172,20 +297,38 @@ impl BackupManager {
             target_fid: target_fid.clone(),
             batch_size: cfg.discovery_batch_size,
         };
-        let (tx, rx) = mpsc::channel::<Vec<quark_backup::scanner::ScanItem>>(cfg.high_watermark);
-        let store_scan = store.clone();
-        let account_scan = account.clone();
+        let (tx, mut rx) = mpsc::channel::<Vec<quark_backup::scanner::ScanItem>>(cfg.high_watermark);
+        // 消费循环：批次入库（upsert 幂等）；channel 满时扫描端阻塞 = 背压
+        {
+            let store_up = store.clone();
+            tokio::spawn(async move {
+                while let Some(batch) = rx.recv().await {
+                    let tasks: Vec<quark_backup::Task> = batch
+                        .into_iter()
+                        .filter_map(|it| match it {
+                            quark_backup::scanner::ScanItem::File(t) => Some(t),
+                            _ => None,
+                        })
+                        .collect();
+                    if !tasks.is_empty() {
+                        let _ = store_up.upsert_discovered(&tasks);
+                    }
+                }
+            });
+        }
+        // 扫描协程（阻塞线程池）
+        let scan_store = store.clone();
         tokio::task::spawn_blocking(move || {
-            let _ = quark_backup::scanner::scan(&scan_cfg, tx);
-            // 扫描结束后把 discovered 挂起不需要动作：worker 会 claim
-            let _ = store_scan;
-            let _ = account_scan;
+            if let Err(e) = quark_backup::scanner::scan(&scan_cfg, tx) {
+                eprintln!("[backup] 扫描终止：{e}");
+            }
+            let _ = scan_store;
         });
 
         // worker 池：真实远端 = Core fs.*（首版：mkdir/list/上传均经 Core 直调——
         // 上传的文件字节走 Core 的 upload 原语；为控制 Phase-2 范围，首版 RemoteOps
         // 实现用 Core 的 fs.* + transfer 核心接口，见 build_core_ops）
-        let ops = build_core_ops(core.clone());
+        let ops = build_core_ops(core.clone(), transfers);
         let n_workers = cfg.upload_concurrency.clamp(1, 8);
         for _ in 0..n_workers {
             let store_w = store.clone();
@@ -311,9 +454,7 @@ impl quark_backup::verifier::VerifyOps for NullVerify {
     }
 }
 
-/// 构造真实 Core 远端操作（Phase-2 剩余项：上传核心需要 quark-transfer 导出）。
-fn build_core_ops(_core: Core) -> Arc<dyn RemoteOps> {
-    // Phase-2 剩余项：真实上传接线需要 quark-transfer 导出上传核心（run_upload）。
-    // 首版占位：所有远端操作返回明确错误，backup.start 会产生 failed 任务而非假成功。
-    Arc::new(CoreRemote)
+/// 构造真实 Core 远端操作。
+fn build_core_ops(core: Core, transfers: quark_transfer::TransferManager) -> Arc<dyn RemoteOps> {
+    Arc::new(CoreRemote::new(core, transfers))
 }

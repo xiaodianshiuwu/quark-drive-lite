@@ -130,7 +130,8 @@ async fn qk_call(
                 let root = params["rootDir"].as_str().unwrap_or("").to_string();
                 let fid = params["targetFid"].as_str().unwrap_or("0").to_string();
                 let cfgp = params.get("config").cloned().unwrap_or(Value::Null);
-                state.backup.start(core, account, root, fid, profile, cfgp).await
+                let transfers = state.transfers.clone();
+                state.backup.start(core, transfers, account, root, fid, profile, cfgp).await
             }
             "backup.status" => Ok(state.backup.status().await),
             "backup.retry" => state.backup.retry_failed().await,
