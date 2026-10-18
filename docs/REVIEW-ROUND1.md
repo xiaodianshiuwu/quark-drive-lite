@@ -147,3 +147,35 @@
 
 ## 5. 第二轮结论
 树 `78a59aa` 通过第二轮全量审查。两轮共修复 3×P0、9×P1、12×P2（其余 4 项记录理由未修），测试从 75 增至 78。
+
+---
+
+# Phase-2 审查记录（一轮深审 + 修复闭环 + 终验）
+
+**审查对象**：Phase-2 备份（quark-backup crate + backup_host + 前端视图），基线 93a1b87。
+**审查方式**：独立审查子智能体（8c0a7168，逐文件 + 文档逐条比对 + transfer.clear 重点排除）+ Lead 修复 + 回归。
+
+## 发现与处置
+| 级别 | 问题 | 处置 | 提交 |
+|---|---|---|---|
+| P1-1 | 崩溃恢复未接线（uploading/verifying 重启后卡死） | Lead 审查报告送达前独立发现并修复：recover_interrupted + 回归测试 | 59ad5f4 |
+| P1-2 | 多 worker 绕过退避→重试风暴 | next_retry_at_ms 入库 + claim 过滤 + ALTER 迁移 + 测试 | 0c27b5b |
+| P1-3 | worker 全退出后 retry 永挂 | retry_failed 重拉 worker 池（会话保存 cfg/ops/stop_rx） | 0c27b5b |
+| P1-4 | 大目录（>200 项）完成确认/冲突预检漏查→误报 | find_child 跨页查找统一三处 | 0c27b5b |
+| P2-1 | cancel 后扫描继续入库+旧 Store 并发写 | scan_stop 标志，消费循环停写 | 0c27b5b |
+| P2-2 | 文档称核对 remoteFid 但实现只比 name+size | 实现补齐 fid 比对（fid_mismatch 如实报） | 0c27b5b |
+| P2-3 | 上传中重扫把任务改回 discovered 的窗口竞态 | upsert 排除 active 态 + 测试 | 0c27b5b |
+| P2-4 | wait_task 每文件 300ms 全量轮询（IO 放大） | 记录为已知边界（BACKUP.md 权衡条目），后续把 upload.rs 核心提独立入口 | 文档已述 |
+| P2-5 | 前端 running=false 空轮询 | 会话结束停轮询并收起运行区 | b85bdc6 |
+| 前端复核（另一子智能体） | verify 字段 snake_case 错读/toast 反序/errText 未定义/pickDirs 数组 | 全部修复 | 93a1b87 |
+
+## Phase-2 最终回归（全部实跑）
+- cargo test --workspace：**147 通过 / 0 失败**（quark-agent 79、quark-backup 26+2 集成、quark-core/transfer 全量）
+- npm test（Chrome）：**70/70**
+- cargo check --workspace：0 error 0 warning
+- 真实账号备份验收：**ok=true**（上传 8/8、清单 8/8、SHA-256 全量比对 8/8 一致，云端测试目录删除进回收站）
+- 真实账号 Agent 删除验收：**exit=0**（file/dir 均 deleted）
+
+## 未验证项（如实）
+- Windows 真机（长路径/保留名/junction/大小写不敏感）：发现期标注已实现，运行时未实测（BACKUP.md 已声明）
+- 打包产物（tauri build）内的 backup 前端集成：仅 dev 模式验证
