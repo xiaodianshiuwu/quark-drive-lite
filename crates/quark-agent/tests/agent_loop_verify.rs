@@ -387,7 +387,8 @@ async fn agent_loop_verify() {
     .unwrap()
     .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let cli_ok = out.status.success() && (stdout.contains("a.txt") || stdout.contains("b.jpg"));
+    // 步骤 7 的 plan_execute 已把 a.txt/b.jpg 移入分组目录；root 直属应含本测试建的"整理"目录
+    let cli_ok = out.status.success() && stdout.contains("整理");
     h.record(
         "Node CLI 子进程经网关调用 list_dir",
         cli_ok,
