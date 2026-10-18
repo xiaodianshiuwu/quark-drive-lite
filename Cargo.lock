@@ -2962,6 +2962,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "quark-agent"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64 0.22.1",
+ "dirs 6.0.0",
+ "libc",
+ "quark-core",
+ "quark-transfer",
+ "rand 0.8.8",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "quark-core"
 version = "0.3.0"
 dependencies = [

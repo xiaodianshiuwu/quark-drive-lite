@@ -1,0 +1,23 @@
+[package]
+name = "quark-agent"
+version = "0.1.0"
+edition = "2021"
+description = "夸克网盘极简版 Agent 接入子系统：授权策略、工具层、网关与内置对话"
+
+[dependencies]
+quark-core = { path = "../quark-core" }
+quark-transfer = { path = "../quark-transfer" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-util", "net", "macros", "fs"] }
+aes-gcm = "0.10"
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+dirs = "6"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
