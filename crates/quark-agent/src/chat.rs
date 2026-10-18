@@ -333,7 +333,20 @@ impl AgentChat {
 
             // 单轮工具数量上限：防止一次返回几十个调用把上游打爆。
             let mut records: Vec<Value> = Vec::new();
-            for call in calls.iter().take(MAX_TOOL_CALLS_PER_ROUND) {
+            // 与 normalized_calls 同一 filter：无 function.name 的调用既不回填也不执行/补
+            // tool 响应——否则会产生引用不存在 tool_call_id 的"孤儿 tool 消息"，严格
+            // OpenAI 兼容服务下一轮整条 400 无法自愈。
+            let executable_calls: Vec<&Value> = calls
+                .iter()
+                .filter(|c| {
+                    c.get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(|v| v.as_str())
+                        .map(|n| !n.trim().is_empty())
+                        .unwrap_or(false)
+                })
+                .collect();
+            for call in executable_calls.iter().take(MAX_TOOL_CALLS_PER_ROUND) {
                 let name = tool_call_name(call);
                 let args_raw = call
                     .get("function")
@@ -391,7 +404,7 @@ impl AgentChat {
             // ⚠️ 被丢弃的调用**必须**补一条 tool 响应：OpenAI 兼容接口要求
             // assistant.tool_calls 里每一条都有对应的 role:'tool' 消息，缺一条下一轮请求直接 400
             // （qck 测试实测抓出：保留 20 条 tool_calls 只回 8 条 tool 消息）。
-            for call in calls.iter().skip(MAX_TOOL_CALLS_PER_ROUND) {
+            for call in executable_calls.iter().skip(MAX_TOOL_CALLS_PER_ROUND) {
                 let call_id = call.get("id").and_then(|v| v.as_str()).map(|x| x.to_string());
                 self.state.lock().unwrap().messages.push(tool_message(
                     call_id.as_deref(),
@@ -1357,6 +1370,40 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[tokio::test]
+    async fn tool_calls_without_name_are_dropped_everywhere() {
+        // 复核 P1：无 function.name 的调用不回填/不执行/不补 tool 响应——
+        // 否则产生孤儿 tool 消息，严格 OpenAI 兼容服务下一轮 400 无法自愈。
+        let f = new_fixture("no-name-drop");
+        f.configure(4);
+        f.llm.push(tool_calls_round(json!([
+            one_call("c1", "list_dir", "{\"pdir_fid\":\"root1\"}"),
+            {"id": "c2", "type": "function", "function": {"name": "", "arguments": "{}"}},
+            {"id": "c3", "type": "function", "function": {"arguments": "{}"}},
+        ])));
+        f.llm.push(final_round("完成"));
+        let out = f.chat.send("触发畸形调用", None).await.unwrap();
+        // 只执行了 1 个有效调用
+        assert_eq!(out.tool_calls.len(), 1, "无 name 调用应被丢弃: {}", serde_json::to_string(&out.tool_calls).unwrap());
+        // history 中不应有指向已丢弃 id 的孤儿 tool 消息，assistant.tool_calls 不含空 name
+        let st = f.chat.state.lock().unwrap();
+        for m in &st.messages {
+            if m["role"] == json!("tool") {
+                let id = m.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
+                assert_ne!(id, "c2", "孤儿 tool 消息（c2 无 name 却补了响应）");
+                assert_ne!(id, "c3", "孤儿 tool 消息（c3 无 name 却补了响应）");
+            }
+            if m["role"] == json!("assistant") {
+                if let Some(tc) = m.get("tool_calls").and_then(|v| v.as_array()) {
+                    for c in tc {
+                        let n = c["function"]["name"].as_str().unwrap_or("");
+                        assert!(!n.trim().is_empty(), "assistant.tool_calls 不应含空 name: {c}");
+                    }
+                }
+            }
+        }
+    }
+
+#[tokio::test]
     async fn two_round_flow_asserts_openai_request_shape_and_events() {
         let f = new_fixture("two-round");
         f.configure(4);
