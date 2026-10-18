@@ -648,8 +648,14 @@ impl AgentGateway {
                 match self.call_tool(&name, &args, &actor).await {
                     Ok(result) => GatewayResponse::reply(json!({ "id": id, "ok": true, "result": result })),
                     Err(e) => {
+                        // raw_code（白名单上游语义）优先：MCP/CLI 调用方与 IPC 侧
+                        // 同样需要 NEED_LOGIN 等原始语义来触发重登/重试。
+                        let code_out = e
+                            .raw_code
+                            .clone()
+                            .unwrap_or_else(|| e.code.as_str().to_string());
                         let mut payload = json!({
-                            "code": e.code.as_str(),
+                            "code": code_out,
                             "message": e.message,
                         });
                         if let Some(hint) = &e.hint {
@@ -798,6 +804,8 @@ impl AgentGateway {
         // worker 也纳入 stop 追踪：disable/rotate 后正在执行的工具调用被取消，
         // 消除"停用后仍可能写入网盘"的窗口（工具层无贯穿取消信号，tokio abort 在
         // await 点取消 HTTP/传输等待，工具内部已完成的部分不受影响）。
+        // key 用 u64::MAX - conn_id 与正常 conn_id 隔离：conn_id 从 1 递增，
+        // 冲突需要约 9.2e18 次连接（实际不可达）。
         self.shared.conn_aborts.lock().unwrap().insert(u64::MAX - conn_id, worker.abort_handle());
         self.reader_loop(rd, wr, line_tx, close_tx, close_rx, authenticated, inflight)
             .await;

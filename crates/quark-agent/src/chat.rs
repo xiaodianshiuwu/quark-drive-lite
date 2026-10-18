@@ -308,18 +308,27 @@ impl AgentChat {
                 })
                 .collect();
             {
-                let mut st = self.state.lock().unwrap();
-                st.messages.push(json!({
-                    "role": "assistant",
-                    // qck：`content: message.content || ''` —— null/false/空串/0 都归一为空串，
-                    // 否则 OpenAI 兼容接口会因 content 为 null 而 400。
-                    "content": message
+                let mut assistant = serde_json::Map::new();
+                assistant.insert("role".into(), json!("assistant"));
+                // qck：`content: message.content || ''` —— null/false/空串/0 都归一为空串，
+                // 否则 OpenAI 兼容接口会因 content 为 null 而 400。
+                assistant.insert(
+                    "content".into(),
+                    message
                         .get("content")
                         .cloned()
                         .filter(|v| !is_falsy(v))
                         .unwrap_or_else(|| json!("")),
-                    "tool_calls": normalized_calls,
-                }));
+                );
+                // 全部调用因缺 name 被丢弃时不写 tool_calls 键：空数组同样会被严格服务拒绝。
+                if !normalized_calls.is_empty() {
+                    assistant.insert("tool_calls".into(), json!(normalized_calls));
+                }
+                self.state
+                    .lock()
+                    .unwrap()
+                    .messages
+                    .push(Value::Object(assistant));
             }
 
             // 单轮工具数量上限：防止一次返回几十个调用把上游打爆。
