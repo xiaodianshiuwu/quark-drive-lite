@@ -98,13 +98,16 @@ impl TaskState {
     }
 }
 
-/// 计算下次重试时间（毫秒时间戳）：指数退避 2^n × base，n 从 0 起。
+/// 计算下次重试延迟：指数 2^n × base。`attempts` 是**已失败次数**（本次失败后传入的值
+/// 含本次）。返回 None 表示达到上限不再重试。
 pub fn next_retry_delay_ms(attempts: u32, base_ms: u64, max_attempts: u32) -> Option<u64> {
+    // attempts=1 表示第一次失败；还允许重试当且仅当已重试次数 < max_attempts-1 …
+    // 语义简化：max_attempts 是"总尝试上限"。已尝试 attempts 次，若 attempts >= max 则停。
     if attempts >= max_attempts {
-        return None; // 不再重试
+        return None;
     }
-    let n = attempts.min(16) as u32; // 防溢出
-    Some(base_ms.saturating_mul(1u64 << n.min(16)))
+    let n = attempts.saturating_sub(1).min(16); // 第一次失败退避 base，第二次 2×base…
+    Some(base_ms.saturating_mul(1u64 << n))
 }
 
 #[cfg(test)]
@@ -152,10 +155,10 @@ mod tests {
     #[test]
     fn backoff_is_exponential_with_cap_and_stop() {
         let base = 30_000u64;
-        assert_eq!(next_retry_delay_ms(0, base, 6), Some(30_000));
-        assert_eq!(next_retry_delay_ms(1, base, 6), Some(60_000));
-        assert_eq!(next_retry_delay_ms(2, base, 6), Some(120_000));
-        assert_eq!(next_retry_delay_ms(5, base, 6), Some(960_000));
+        // attempts = 已失败总次数：1=首次失败（退避 base），2=第二次（2×base）…
+        assert_eq!(next_retry_delay_ms(1, base, 6), Some(30_000));
+        assert_eq!(next_retry_delay_ms(2, base, 6), Some(60_000));
+        assert_eq!(next_retry_delay_ms(3, base, 6), Some(120_000));
         assert_eq!(next_retry_delay_ms(6, base, 6), None, "达到上限不再重试");
     }
 

@@ -8,9 +8,11 @@
 //! - `uploader`：复用 quark-transfer 的单文件上传核心，绕过其 GUI 任务队列
 //! - `verifier`：清单核对 + 抽样下载比对
 //!
+pub mod scheduler;
 pub mod scanner;
 pub mod state;
 pub mod store;
 
 pub use state::{next_retry_delay_ms, TaskState};
+pub use scheduler::{worker_loop, BackupConfig, RemoteOps, SchedulerStats};
 pub use store::{Store, Task};

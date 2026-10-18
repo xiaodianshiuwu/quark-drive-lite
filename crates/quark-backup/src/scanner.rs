@@ -112,7 +112,7 @@ pub fn scan(cfg: &ScanConfig, tx: mpsc::Sender<Vec<ScanItem>>) -> std::io::Resul
     }
     let mut stats = ScanStats::default();
     let mut batch: Vec<ScanItem> = Vec::with_capacity(cfg.batch_size);
-    let mut flush = |batch: &mut Vec<ScanItem>, stats: &mut ScanStats, tx: &mpsc::Sender<Vec<ScanItem>>| {
+    let flush = |batch: &mut Vec<ScanItem>, stats: &mut ScanStats, tx: &mpsc::Sender<Vec<ScanItem>>| {
         if batch.is_empty() {
             return;
         }
