@@ -83,7 +83,10 @@
   api.agent.journal = function (limit) {
     return call('agent.journal', { limit: Number(limit) || 20 }).then(function (res) {
       if (res && Array.isArray(res.records)) return res.records;
-      return Array.isArray(res) ? res : [];
+      if (Array.isArray(res)) return res;
+      // 契约漂移不应表现为"空记录"：warn 而非静默
+      console.warn('[qk] agent.journal 返回形状异常', res);
+      return [];
     });
   };
   api.agent.mcpConfig = function () { return call('agent.mcpConfig'); };

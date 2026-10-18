@@ -124,11 +124,11 @@ CI 使用 `scripts/ci-linux-gui.sh` 提供一次性的图形与密钥环环境�
 
 | 平台 | 路径 |
 |---|---|
-| Windows | `%APPDATA%\quark-mini` |
-| macOS | `~/Library/Application Support/quark-mini` |
-| Linux | `$XDG_CONFIG_HOME/quark-mini` 或 `~/.config/quark-mini` |
+| Windows | `%APPDATA%\cn.quarkdrive.lite.tauri` |
+| macOS | `~/Library/Application Support/cn.quarkdrive.lite.tauri` |
+| Linux | `$XDG_CONFIG_HOME/cn.quarkdrive.lite.tauri` 或 `~/.config/cn.quarkdrive.lite.tauri` |
 
-命令行工具可用 `QCK_USER_DATA_DIR` 指定其他 profile 目录。
+命令行工具可用 `QCK_PROFILE_DIR` 指定其他 profile 目录（与 Tauri 应用 `tauri.conf.json` 的 identifier 一致）。
 
 ### 旧格式迁移
 
