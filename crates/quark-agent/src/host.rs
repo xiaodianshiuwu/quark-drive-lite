@@ -43,11 +43,21 @@ impl HostDeps for ToolHost {
         method: &'a str,
         params: &'a Value,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, AgentToolError>> + Send + 'a>> {
-        // 会话绑定调用（fs.* 内部本来就按当前 generation 取，这里透传 generation 仅用于
-        // 需要显式绑定的场景；Core::call 内部自行读取 session_generation）。
-        let _ = generation;
+        // 会话绑定：调用前后各核对一次 generation。账号在长跑工具执行中途被切换时
+        // 返回 ABORTED，而不是静默在新账号上继续（quark-core 的 ensure_session 语义）。
+        // generation==0 表示"不绑定"（MCP 源未提供真实 generation 的测试场景）。
         Box::pin(async move {
+            if generation != 0 {
+                self.core
+                    .ensure_session(generation)
+                    .map_err(Self::map_core_error)?;
+            }
             let result = self.core.call(method, params.clone()).await;
+            if generation != 0 {
+                self.core
+                    .ensure_session(generation)
+                    .map_err(Self::map_core_error)?;
+            }
             result.map_err(Self::map_core_error)
         })
     }

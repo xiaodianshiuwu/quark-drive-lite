@@ -62,11 +62,14 @@ pub struct AgentToolError {
     /// 上游原始 message（脱敏后随结果返回，帮助模型判断是否重试）。
     pub upstream_message: Option<String>,
     pub upstream_code: Option<Value>,
+    /// 上游原始 code 的字符串（白名单内的 NEED_LOGIN 等透传给调用方；
+    /// 序列化时优先于 AGENT_ 前缀输出，对齐 qck policy.js 的透传语义）。
+    pub raw_code: Option<String>,
 }
 
 impl AgentToolError {
     pub fn new(code: AgentError, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), hint: None, upstream_message: None, upstream_code: None }
+        Self { code, message: message.into(), hint: None, upstream_message: None, upstream_code: None, raw_code: None }
     }
 
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
@@ -81,14 +84,12 @@ impl AgentToolError {
             "NEED_LOGIN", "ABORTED", "TIMEOUT", "RATE_LIMIT", "FORBIDDEN", "NOT_FOUND", "CONFLICT",
             "INVALID_ARG", "LINK_EXPIRED", "TASK_FAILED", "NETWORK", "SERVER",
         ];
-        let mapped = if known.contains(&code) {
-            // 与 qck 一致：已知上游语义原样保留其字符串（调用方按字符串比对）。
-            // 这里借用 Upstream 枚举承载，但 as_json 时输出原始 code 字符串。
-            AgentError::Upstream
-        } else {
-            AgentError::Upstream
-        };
-        let mut e = Self::new(mapped, message);
+        let mut e = Self::new(AgentError::Upstream, message);
+        // 已知上游语义（NEED_LOGIN/NOT_FOUND/…）透传原始 code：调用方据此触发
+        // 重新登录/重试等处理（规格 §2.2、qck policy.js passthrough 一致）。
+        if known.contains(&code) {
+            e.raw_code = Some(code.to_string());
+        }
         e.upstream_code = Some(Value::String(code.to_string()));
         if let Some(r) = raw {
             if let Some(m) = r.get("message").and_then(|v| v.as_str()) {
@@ -103,7 +104,12 @@ impl AgentToolError {
 
     /// 序列化为跨 IPC 的 JSON 形状（与 qck AgentToolError 字段对应）。
     pub fn to_json(&self) -> Value {
-        let mut out = serde_json::json!({ "code": self.code.as_str(), "message": self.message });
+        // 白名单内的上游 code 原样输出（NEED_LOGIN 等）；否则 AGENT_ 前缀。
+        let code_out = self
+            .raw_code
+            .as_deref()
+            .unwrap_or_else(|| self.code.as_str());
+        let mut out = serde_json::json!({ "code": code_out, "message": self.message });
         if let Some(h) = &self.hint {
             out["hint"] = Value::String(h.clone());
         }
@@ -466,6 +472,10 @@ mod tests {
         assert_eq!(e.upstream_code.as_ref().and_then(|v| v.as_str()), Some("NEED_LOGIN"));
         assert_eq!(e.upstream_message.as_deref(), Some("move file fail:[不能移动至相同目录]"));
         let j = e.to_json();
-        assert_eq!(j["code"], "AGENT_UPSTREAM");
+        // NEED_LOGIN 在白名单内：顶层 code 透传原始值（规格 §2.2 / qck passthrough）
+        assert_eq!(j["code"], "NEED_LOGIN");
+        // 白名单外仍归一为 AGENT_UPSTREAM
+        let other = AgentToolError::from_upstream("WEIRD_CODE", "其他", None);
+        assert_eq!(other.to_json()["code"], "AGENT_UPSTREAM");
     }
 }

@@ -773,12 +773,21 @@ impl AgentGateway {
                 this.worker_loop(line_rx, wr, close_rx, close_tx, control, inflight).await
             })
         };
+        // worker 也纳入 stop 追踪：disable/rotate 后正在执行的工具调用被取消，
+        // 消除"停用后仍可能写入网盘"的窗口（工具层无贯穿取消信号，tokio abort 在
+        // await 点取消 HTTP/传输等待，工具内部已完成的部分不受影响）。
+        self.shared.conn_aborts.lock().unwrap().insert(u64::MAX - conn_id, worker.abort_handle());
         self.reader_loop(rd, wr, line_tx, close_tx, close_rx, authenticated, inflight)
             .await;
         // 连接一断开就从池中移除（qck 的 close 事件同样立即 cleanup）：
         // 正在执行的工具不能继续占着连接位，否则 8 条慢工具会把适配器全部挡在门外。
         closed.store(true, Ordering::SeqCst);
         self.shared.release(conn_id);
+        {
+            let mut aborts = self.shared.conn_aborts.lock().unwrap();
+            aborts.remove(&conn_id);
+            aborts.remove(&(u64::MAX - conn_id));
+        }
         // worker 可能仍在执行已进入工具内部的调用；它无法被中断（与 qck 一致），
         // 这里只是等它收尾，避免测试结束时留下悬挂任务。
         let _ = worker.await;

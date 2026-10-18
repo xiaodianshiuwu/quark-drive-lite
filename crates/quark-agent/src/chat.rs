@@ -371,27 +371,27 @@ impl AgentChat {
                 let mut end_event = record;
                 end_event["type"] = json!("tool_end");
                 emit(on_event, end_event);
-                self.state.lock().unwrap().messages.push(json!({
-                    "role": "tool",
-                    "tool_call_id": call.get("id").cloned().unwrap_or(Value::Null),
-                    "name": name,
-                    "content": packed,
-                }));
+                let call_id = call.get("id").and_then(|v| v.as_str()).map(|x| x.to_string());
+                self.state
+                    .lock()
+                    .unwrap()
+                    .messages
+                    .push(tool_message(call_id.as_deref(), &name, packed));
             }
             // ⚠️ 被丢弃的调用**必须**补一条 tool 响应：OpenAI 兼容接口要求
             // assistant.tool_calls 里每一条都有对应的 role:'tool' 消息，缺一条下一轮请求直接 400
             // （qck 测试实测抓出：保留 20 条 tool_calls 只回 8 条 tool 消息）。
             for call in calls.iter().skip(MAX_TOOL_CALLS_PER_ROUND) {
-                self.state.lock().unwrap().messages.push(json!({
-                    "role": "tool",
-                    "tool_call_id": call.get("id").cloned().unwrap_or(Value::Null),
-                    "name": tool_call_name(call),
-                    "content": json!({
+                let call_id = call.get("id").and_then(|v| v.as_str()).map(|x| x.to_string());
+                self.state.lock().unwrap().messages.push(tool_message(
+                    call_id.as_deref(),
+                    &tool_call_name(call),
+                    json!({
                         "ok": false,
                         "error": { "code": AgentError::Limit.as_str(), "message": OVERFLOW_NOTE },
                     })
                     .to_string(),
-                }));
+                ));
             }
             tool_calls.extend(records);
             {
@@ -907,6 +907,20 @@ fn preview_args(raw: &Value) -> Value {
 /// 它们不应该被发送到第三方大模型服务，也不该留在对话上下文里。
 /// 体积截断统一由 [`MAX_TOOL_RESULT_CHARS`] 负责（journal 的 sanitize 是给日志用的 600 字符版，
 /// 会把 JSON 切成非法文本，模型永远拿不到完整列表）。
+/// role:'tool' 消息。id 缺失时省略 tool_call_id 字段（qck 语义：undefined 被
+/// JSON.stringify 丢弃；显式 null 会被严格 OpenAI 兼容服务拒绝为 400）。
+fn tool_message(tool_call_id: Option<&str>, name: &str, content: String) -> Value {
+    #![allow(clippy::needless_pass_by_value)]
+    let mut obj = serde_json::Map::new();
+    obj.insert("role".into(), json!("tool"));
+    if let Some(id) = tool_call_id {
+        obj.insert("tool_call_id".into(), json!(id));
+    }
+    obj.insert("name".into(), json!(name));
+    obj.insert("content".into(), json!(content));
+    Value::Object(obj)
+}
+
 pub fn pack_tool_result(payload: &Value) -> String {
     let redacted = crate::journal::redact(payload);
     let mut text = match &redacted {
