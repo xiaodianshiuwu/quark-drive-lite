@@ -3020,14 +3020,34 @@
    * 重装前备份（Phase-2）：分批发现 + 水位背压 + 可恢复上传
    * ================================================================== */
 
+  var BACKUP_POLL_MS = 2000;      // 运行中状态轮询周期（离开/隐藏视图即停）
+  var BACKUP_SAMPLE_MAX = 5;      // plan 预览最多展示的示例条数
+  var BACKUP_ISSUE_MAX = 5;       // 验证问题最多逐条展示数（明细始终纯文本）
+
   var backup = {
-    pollTimer: null,
-    planned: null,
+    pollTimer: null,              // 轮询句柄（真实环境 setInterval；测试沙箱为可手动驱动的桩）
+    planned: null,                // 最近一次 backup.plan 结果
+    bindDone: false               // 事件绑定只做一次
   };
 
-  function ensureBackup() {
-    if (backup.inited) return;
-    backup.inited = true;
+  /** 备份是否可用（桥接层已注入且提供 backup.plan）。 */
+  function backupBridgeReady() {
+    return !!API.injected && API.has('backup', 'plan');
+  }
+
+  /** 备份任务归属的账号标识：登录态带 userId 就用它；单账号桌面端兜底 'local'。 */
+  function backupAccount() {
+    return (state.account && state.account.userId) ? String(state.account.userId) : 'local';
+  }
+
+  function backupNum(v) {
+    var n = Number(v);
+    return isFinite(n) ? n : 0;
+  }
+
+  function backupBindOnce() {
+    if (backup.bindDone) return;
+    backup.bindDone = true;
     var pick = $('backup-pick-dir');
     var plan = $('backup-plan');
     var start = $('backup-start');
@@ -3038,33 +3058,35 @@
       API.dialog.pickDirs().then(function (picked) {
         var dir = Array.isArray(picked) ? picked[0] : picked;
         if (!dir) return;
-        $('backup-root').value = dir;
+        $('backup-root').value = String(dir);
         $('backup-plan-result').hidden = true;
         $('backup-verify-result').hidden = true;
       }).catch(function (e) { toast('error', '选择目录失败：' + agentErrText(e)); });
     });
     if (plan) plan.addEventListener('click', function () {
+      if (!backupBridgeReady()) { toast('error', '未注入桥接层，无法预览备份'); return; }
       var root = String($('backup-root').value || '').trim();
       if (!root) { toast('error', '请先选择本地目录'); return; }
-      var fid = String($('backup-target').value || '0').trim() || '0';
+      var fid = String($('backup-target').value || '').trim() || '0';
       plan.disabled = true;
       API.backup.plan({ rootDir: root, targetFid: fid }).then(function (r) {
-        backup.planned = r;
-        start.disabled = false;
-        var box = $('backup-plan-result');
-        box.hidden = false;
-        box.textContent = '发现 ' + fmtInt(r.files) + ' 个文件、' + fmtInt(r.dirs) + ' 个目录，共 '
-          + fmtBytes(r.totalBytes) + (r.warnings ? '；' + fmtInt(r.warnings) + ' 个不可读项（将跳过并记录）' : '');
+        backup.planned = r && typeof r === 'object' ? r : null;
+        $('backup-start').disabled = false;
+        renderBackupPlan(r);
       }).catch(function (e) {
+        // 预览失败：收回旧结果并锁住「开始备份」，不允许盲传
+        $('backup-start').disabled = true;
+        renderBackupPlan(null);
         toast('error', '预览失败：' + agentErrText(e));
       }).finally(function () { plan.disabled = false; });
     });
     if (start) start.addEventListener('click', function () {
+      if (!backupBridgeReady()) { toast('error', '未注入桥接层，无法开始备份'); return; }
       var root = String($('backup-root').value || '').trim();
-      var fid = String($('backup-target').value || '0').trim() || '0';
+      var fid = String($('backup-target').value || '').trim() || '0';
       if (!root) { toast('error', '请先选择本地目录'); return; }
       start.disabled = true;
-      API.backup.start({ account: 'local', rootDir: root, targetFid: fid }).then(function () {
+      API.backup.start({ account: backupAccount(), rootDir: root, targetFid: fid }).then(function () {
         $('backup-plan-result').hidden = true;
         $('backup-run').hidden = false;
         startBackupPolling();
@@ -3074,47 +3096,48 @@
     });
     if (retry) retry.addEventListener('click', function () {
       API.backup.retry().then(function (r) {
-        toast('ok', '已重新入队 ' + fmtInt(r.requeued) + ' 个失败任务');
+        toast('ok', '已重新入队 ' + fmtInt(r && r.requeued) + ' 个失败任务');
       }).catch(function (e) { toast('error', '重试失败：' + agentErrText(e)); });
     });
     if (cancel) cancel.addEventListener('click', function () {
       API.backup.cancel().then(function () {
         stopBackupPolling();
         $('backup-run').hidden = true;
-        toast('ok', '备份已取消（任务现场保留，同目录再次开始=续扫）');
+        toast('ok', '备份已取消（任务现场保留，同一目录再次开始会续传）');
       }).catch(function (e) { toast('error', '取消失败：' + agentErrText(e)); });
     });
     if (verify) verify.addEventListener('click', function () {
       verify.disabled = true;
       API.backup.verify({ sampleRatePpm: 10000 }).then(function (r) {
-        var box = $('backup-verify-result');
-        box.hidden = false;
-        var cls = r.status === 'verified' ? 'ok' : (r.status === 'partial' ? 'warn' : 'error');
-        // 后端 VerifyReport serde 无 rename_all → snake_case 字段（真实验收输出为证）
-        var lines = ['验证结果：' + r.status + '（清单 ' + fmtInt(r.listed_ok) + '/' + fmtInt(r.total_success)
-          + ' 一致，缺失 ' + fmtInt(r.listed_missing) + '，大小不符 ' + fmtInt(r.size_mismatch)
-          + '；抽样哈希 ' + fmtInt(r.sample_ok) + '/' + fmtInt(r.sample_checked) + ' 一致）'];
-        (r.issues || []).slice(0, 5).forEach(function (it) {
-          lines.push('· ' + (it.kind || '') + ' ' + (it.rel_path || it.dir || '') + (it.detail ? '：' + it.detail : ''));
-        });
-        box.textContent = lines.join('\n');
-        box.dataset.level = cls;
+        renderBackupVerify(r);
       }).catch(function (e) { toast('error', '验证失败：' + agentErrText(e)); })
         .finally(function () { verify.disabled = false; });
     });
-    // 进入视图时若已有会话在跑则恢复轮询
+  }
+
+  /** 进入备份视图：绑定事件并探测是否已有会话在跑（恢复运行区与轮询）。 */
+  function ensureBackup() {
+    backupBindOnce();
+    if (!backupBridgeReady()) return;
     API.backup.status().then(function (st) {
-      if (st && st.running) {
-        $('backup-run').hidden = false;
-        startBackupPolling();
-      }
-    }).catch(function () {});
+      if (!st || typeof st !== 'object' || !st.running) return;
+      var runBox = $('backup-run');
+      if (runBox) runBox.hidden = false;
+      startBackupPolling();
+    }).catch(function () { /* 状态探测失败不打扰用户 */ });
   }
 
   function startBackupPolling() {
     stopBackupPolling();
+    if (state.view !== 'backup') return;
     backupPollOnce();
-    backup.pollTimer = setInterval(backupPollOnce, 2000);
+    backup.pollTimer = setInterval(backupPollTick, BACKUP_POLL_MS);
+  }
+
+  function backupPollTick() {
+    // 离开/隐藏视图：立即停掉周期，不再发任何查询
+    if (state.view !== 'backup') { stopBackupPolling(); return; }
+    backupPollOnce();
   }
 
   function stopBackupPolling() {
@@ -3122,37 +3145,144 @@
   }
 
   function backupPollOnce() {
-    // 视图隐藏时不查询（恢复可见时 ensureBackup 重启轮询）
-    if (state.view !== 'backup') { stopBackupPolling(); return; }
-    API.backup.status().then(function (st) {
-      if (!st || !st.running) { return; }
-      var grid = $('backup-stats');
-      if (!grid) return;
-      var cells = [
-        ['已发现', fmtInt(st.discovered)],
-        ['排队', fmtInt(st.pending)],
-        ['上传中', fmtInt(st.uploading)],
-        ['核对中', fmtInt(st.verifying)],
-        ['成功', fmtInt(st.success)],
-        ['失败', fmtInt(st.failed)],
-        ['跳过', fmtInt(st.skipped)],
-        ['队列深度', fmtInt(st.queueDepth)],
-        ['已上传', fmtBytes(st.uploadedBytes)],
-      ];
+    if (!backupBridgeReady() || state.view !== 'backup') return Promise.resolve(null);
+    return API.backup.status().then(function (st) {
+      if (!st || typeof st !== 'object') return st;
+      if (!st.running) {
+        // 会话已结束（完成或被取消）：收起运行区并停止轮询，任务现场由后端保留
+        stopBackupPolling();
+        var runBox = $('backup-run');
+        if (runBox) runBox.hidden = true;
+        return st;
+      }
+      renderBackupStats(st);
+      return st;
+    }).catch(function () { return null; /* 单次轮询失败下一周期重试 */ });
+  }
+
+  /** 状态网格键位（已上传单独用字节格式化）。 */
+  var BACKUP_STAT_KEYS = [
+    ['discovered', '已发现'], ['pending', '排队'], ['uploading', '上传中'], ['verifying', '核对中'],
+    ['success', '成功'], ['failed', '失败'], ['skipped', '跳过'], ['queueDepth', '队列深度']
+  ];
+
+  function renderBackupStats(st) {
+    var grid = $('backup-stats');
+    if (grid) {
       grid.textContent = '';
-      cells.forEach(function (c) {
-        var cell = document.createElement('div');
-        cell.className = 'backup-cell';
-        var k = document.createElement('div');
-        k.className = 'backup-k';
-        k.textContent = c[0];
-        var v = document.createElement('div');
-        v.className = 'backup-v';
-        v.textContent = c[1];
-        cell.appendChild(k); cell.appendChild(v);
+      BACKUP_STAT_KEYS.forEach(function (kv) {
+        var cell = h('div', 'backup-cell');
+        cell.appendChild(h('div', 'backup-k', kv[1]));
+        cell.appendChild(h('div', 'backup-v', fmtInt(st[kv[0]])));
         grid.appendChild(cell);
       });
-    }).catch(function () { stopBackupPolling(); });
+      var upCell = h('div', 'backup-cell');
+      upCell.appendChild(h('div', 'backup-k', '已上传'));
+      upCell.appendChild(h('div', 'backup-v', fmtBytes(st.uploadedBytes)));
+      grid.appendChild(upCell);
+    }
+    renderBackupProgress(st);
+  }
+
+  /** 进度条：success / (discovered + success)，与后端任务库口径一致。 */
+  function renderBackupProgress(st) {
+    var bar = $('backup-bar');
+    var pct = $('backup-pct');
+    var success = Math.max(0, backupNum(st.success));
+    var base = success + Math.max(0, backupNum(st.discovered));
+    var p = base > 0 ? Math.min(100, (success / base) * 100) : 0;
+    if (bar) {
+      var fill = (bar.querySelector && bar.querySelector('i')) || bar.firstChild;
+      if (fill) fill.style.width = p.toFixed(2) + '%';
+    }
+    if (pct) {
+      pct.textContent = base > 0
+        ? '进度 ' + Math.floor(p) + '%（成功 ' + fmtInt(success) + ' / 共 ' + fmtInt(base) + ' 项）'
+        : '';
+    }
+  }
+
+  /** plan 预览：统计摘要 + samples 前 5 条（全部 textContent）。 */
+  function renderBackupPlan(r) {
+    var box = $('backup-plan-result');
+    if (!box) return;
+    box.textContent = '';
+    if (!r || typeof r !== 'object') { box.hidden = true; return; }
+    box.hidden = false;
+    box.appendChild(h('div', null, '发现 ' + fmtInt(r.files) + ' 个文件、' + fmtInt(r.dirs)
+      + ' 个目录，共 ' + fmtBytes(r.totalBytes) + '（警告 ' + fmtInt(r.warnings)
+      + ' 条，不可读项会跳过并记录）'));
+    var samples = Array.isArray(r.samples) ? r.samples : [];
+    if (samples.length) {
+      box.appendChild(h('div', 'sethint',
+        '示例（前 ' + Math.min(BACKUP_SAMPLE_MAX, samples.length) + ' 条）：'));
+      var ul = h('ul', 'backup-samples');
+      samples.slice(0, BACKUP_SAMPLE_MAX).forEach(function (s) {
+        var li = h('li');
+        li.textContent = backupSampleText(s);
+        ul.appendChild(li);
+      });
+      box.appendChild(ul);
+    }
+  }
+
+  /** plan 示例条目 → 单行文本（文件路径 + 大小，或不可读警告）。 */
+  function backupSampleText(s) {
+    if (!s || typeof s !== 'object') return '';
+    if (s.warning) {
+      return '不可读：' + asText(s.warning) + (s.detail ? '（' + asText(s.detail) + '）' : '');
+    }
+    var name = asText(s.relPath) || '未知路径';
+    var size = typeof s.size === 'number' ? '，' + fmtBytes(s.size) : '';
+    return name + size;
+  }
+
+  var BACKUP_VERIFY_BADGE = { verified: '验证通过', partial: '部分一致', failed: '验证失败' };
+
+  /** 验证结果：status 徽章 + 原始状态码 + 汇总 + issues 前 5 条（纯文本）。 */
+  function renderBackupVerify(r) {
+    var box = $('backup-verify-result');
+    if (!box) return;
+    if (!r || typeof r !== 'object') { box.hidden = true; return; }
+    box.hidden = false;
+    var status = asText(r.status) || 'unknown';
+    box.dataset.level = status === 'verified' ? 'ok' : (status === 'partial' ? 'warn' : 'error');
+    box.textContent = '';
+    var badge = h('span', 'backup-verify-badge backup-verify-' + status,
+      BACKUP_VERIFY_BADGE[status] || status);
+    badge.title = '验证状态：' + status;
+    box.appendChild(badge);
+    box.appendChild(h('span', 'backup-verify-raw', status));
+    box.appendChild(h('span', null, '清单一致 ' + fmtInt(r.listed_ok) + '/' + fmtInt(r.total_success)
+      + '，缺失 ' + fmtInt(r.listed_missing) + '，大小不符 ' + fmtInt(r.size_mismatch)
+      + '；抽样哈希一致 ' + fmtInt(r.sample_ok) + '/' + fmtInt(r.sample_checked)));
+    var issues = Array.isArray(r.issues) ? r.issues : [];
+    if (issues.length) {
+      var ul = h('ul', 'backup-issues');
+      issues.slice(0, BACKUP_ISSUE_MAX).forEach(function (it) {
+        var li = h('li');
+        li.textContent = backupIssueText(it);
+        ul.appendChild(li);
+      });
+      if (issues.length > BACKUP_ISSUE_MAX) {
+        ul.appendChild(h('li', null, '…等共 ' + issues.length + ' 条问题'));
+      }
+      box.appendChild(ul);
+    }
+  }
+
+  /** 单条验证问题 → 一行摘要（字段名来自后端 VerifyReport.issues，全部按文本拼接）。 */
+  function backupIssueText(it) {
+    if (!it || typeof it !== 'object') return '';
+    var kind = asText(it.kind);
+    var path = asText(it.rel_path) || asText(it.dir) || asText(it.relPath);
+    var extra = [];
+    if (it.local_size !== undefined) extra.push('本地 ' + fmtBytes(it.local_size));
+    if (it.remote_size !== undefined) extra.push('远端 ' + fmtBytes(it.remote_size));
+    var detail = asText(it.detail);
+    if (extra.length) detail = detail ? detail + '，' + extra.join('，') : extra.join('，');
+    var head = (kind ? kind + '：' : '') + path;
+    return head + (detail ? '（' + detail + '）' : '');
   }
 
   function fmtInt(n) {
@@ -3167,7 +3297,9 @@
     var units = ['B', 'KB', 'MB', 'GB', 'TB'];
     var i = 0;
     while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
-    return (i === 0 ? v : v.toFixed(1)) + ' ' + units[i];
+    // 去掉无意义的 ".0"（2.0 KB → 2 KB），保留非整形的 1 位小数
+    var s = i === 0 ? String(v) : (Number.isInteger(v) ? String(v) : v.toFixed(1));
+    return s + ' ' + units[i];
   }
 
   function setView(view) {
@@ -3180,6 +3312,7 @@
     el.viewSettings.hidden = view !== 'settings';
     if (el.viewChat) el.viewChat.hidden = view !== 'chat';
     if (el.viewBackup) el.viewBackup.hidden = view !== 'backup';
+    if (view !== 'backup') stopBackupPolling();   // 离开备份视图立即停轮询
     setTopbarForView();
     if (view === 'files') scheduleRows();
     if (view === 'transfers') refreshTransfers();

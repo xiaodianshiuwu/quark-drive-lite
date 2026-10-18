@@ -84,9 +84,9 @@ function parseHtml(source, doc) {
   return root;
 }
 
-/** 一个选择器字符串 → 匹配函数（支持 tag / #id / .class / [attr] / [attr="value"] 的组合）。 */
-function selectorMatcher(selector) {
-  const parts = String(selector).trim().split(/(?=[.#[])/);
+/** 单个复合选择器（tag/#id/.class/[attr] 的组合）→ 匹配函数。 */
+function compoundMatcher(compound) {
+  const parts = String(compound).trim().split(/(?=[.#[])/);
   const checks = parts.map((part) => {
     if (part.startsWith('#')) return (el) => el.id === part.slice(1);
     if (part.startsWith('.')) return (el) => el.hasClass(part.slice(1));
@@ -103,6 +103,24 @@ function selectorMatcher(selector) {
     return (el) => el.tagName === part.toLowerCase();
   });
   return (el) => checks.every((fn) => fn(el));
+}
+
+/** 支持后代组合（".a li"）：末段匹配自身，其余段自底向上在祖先链上按序匹配。 */
+function selectorMatcher(selector) {
+  const compounds = String(selector).trim().split(/\s+/).filter(Boolean).map(compoundMatcher);
+  if (compounds.length === 1) return compounds[0];
+  return (el) => {
+    let idx = compounds.length - 1;
+    let cur = el;
+    while (cur) {
+      if (compounds[idx](cur)) {
+        idx -= 1;
+        if (idx < 0) return true;
+      }
+      cur = cur.parentNode;
+    }
+    return false;
+  };
 }
 
 /** data-foo-bar → dataset.fooBar（与浏览器一致）。 */
@@ -523,10 +541,18 @@ async function bootApp(opts = {}) {
     }
     if (opts.sendImpl && bridgeMode === 'full') qk.chat.send = opts.sendImpl;
     // 备份（Phase-2）：backupImpl = { plan, start, status, verify } 可覆盖；默认空响应
+    // backupOverrides 直接替换 qk.backup 上的方法（用例级，优先级最高）。
     if (bridgeMode === 'full') {
       const bkImpl = opts.backupImpl || {};
       const bkDefault = {
-        plan: { files: 8, dirs: 2, warnings: 0, totalBytes: 4096, samples: [] },
+        plan: {
+          files: 8, dirs: 2, warnings: 1, totalBytes: 4096,
+          samples: [
+            { relPath: 'docs/说明.pdf', size: 1024, mtimeMs: 1750000000000 },
+            { relPath: '图片/封面.png', size: 2048, mtimeMs: 1750000000001 },
+            { warning: '受限目录/System Volume Information', detail: '读取失败：权限不足' }
+          ]
+        },
         start: { running: true },
         status: null, // 动态（跑/不跑两态由 opts.backupRunning 决定）
         retry: { requeued: 0 },
@@ -546,7 +572,7 @@ async function bootApp(opts = {}) {
         if (bkImpl.status) return Promise.resolve(clone(bkImpl.status));
         const running = !!opts.backupRunning;
         return Promise.resolve(running ? {
-          running: true, account: 'local', discovered: 0, pending: 1, uploading: 1,
+          running: true, account: 'fixture-user', discovered: 10, pending: 2, uploading: 1,
           verifying: 0, success: 6, failed: 0, skipped: 0, canceled: 0, queueDepth: 2, uploadedBytes: 4096,
         } : { running: false });
       };
@@ -666,6 +692,7 @@ async function bootApp(opts = {}) {
 
   // 用例级覆盖放在完整桥构造之后，避免被默认方法覆盖
   if (opts.agentOverrides && qk.agent) Object.assign(qk.agent, opts.agentOverrides);
+  if (opts.backupOverrides && qk.backup) Object.assign(qk.backup, opts.backupOverrides);
   if (opts.chatOverrides && qk.chat) Object.assign(qk.chat, opts.chatOverrides);
 
   const win = {
@@ -686,6 +713,12 @@ async function bootApp(opts = {}) {
   };
   win.window = win;
 
+  // 可控时钟：真实 setInterval 会把测试进程挂住，死桩又让「轮询启停」无法被用例驱动。
+  // 这里提供手动推进的桩：返回可识别的句柄（对象），由返回值 backupTick 逐格触发。
+  const timers = new Set();
+  const fakeSetInterval = (fn) => { timers.add(fn); return fn; };
+  const fakeClearInterval = (fn) => { timers.delete(fn); };
+
   const sandbox = {
     window: win,
     document: doc,
@@ -694,8 +727,8 @@ async function bootApp(opts = {}) {
     console,
     setTimeout,
     clearTimeout,
-    setInterval: () => 0,
-    clearInterval: () => {},
+    setInterval: fakeSetInterval,
+    clearInterval: fakeClearInterval,
     // 同步执行回调：列表/弹层动画不依赖真实帧调度
     requestAnimationFrame: (fn) => { fn(); return null; },
     getComputedStyle: () => ({ getPropertyValue: () => '' }),
@@ -789,6 +822,17 @@ async function bootApp(opts = {}) {
     chatListeners: () => listeners.chat.length,
     openSettings: async () => { ui.setView('settings'); await flush(); await flush(); await flush(); },
     openChat: async () => { ui.setView('chat'); await flush(); await flush(); await flush(); },
+    /** 当前仍在挂着的周期回调数（app.js 的 setInterval 句柄）。 */
+    timerCount: () => timers.size,
+    /** 手动把所有挂着的周期回调各触发一次（等价于时间前进一步），返回触发次数。 */
+    backupTick: async () => {
+      const fns = [...timers];
+      for (const fn of fns) {
+        try { fn(); } catch (e) { /* 单个回调异常不中断推进 */ }
+      }
+      await flush();
+      return fns.length;
+    },
     flush,
     plain
   };

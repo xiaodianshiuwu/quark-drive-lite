@@ -343,36 +343,72 @@
       </div>
     </section>
 
-    <!-- ======================= 视图：对话 ======================= -->
+    <!-- ======================= 视图：备份 ======================= -->
     <section class="view" id="view-backup" hidden>
-      <div class="card" id="backup-wizard">
-        <h2>重装前备份</h2>
-        <p class="muted">把整个本地目录分批、限速、可恢复地备份到网盘指定目录。只读取本地文件；绝不删除或移动本地内容。</p>
-        <div class="row">
-          <button type="button" class="btn" id="backup-pick-dir">选择本地目录</button>
-          <input type="text" id="backup-root" readonly placeholder="未选择目录" />
+      <div class="section-head">
+        <h2 class="section-title">重装前备份</h2>
+        <div class="section-actions">
+          <span class="muted">把本地目录分批、可恢复地备份到网盘指定目录；只读取本地文件，不改动本地内容。</span>
         </div>
-        <div class="row">
-          <label for="backup-target">云端目标目录 fid（可在「文件」视图复制）</label>
-          <input type="text" id="backup-target" placeholder="0（根目录）" />
-        </div>
-        <div class="row">
-          <button type="button" class="btn" id="backup-plan">预览</button>
-          <button type="button" class="btn btn-primary" id="backup-start" disabled>开始备份</button>
-        </div>
-        <div id="backup-plan-result" class="muted" hidden></div>
       </div>
-      <div class="card" id="backup-run" hidden>
-        <h2>备份进行中</h2>
-        <div class="backup-grid" id="backup-stats"></div>
-        <div class="row">
-          <button type="button" class="btn" id="backup-retry">重试失败</button>
-          <button type="button" class="btn btn-danger" id="backup-cancel">取消</button>
-          <button type="button" class="btn" id="backup-verify">验证</button>
+
+      <div class="setcard">
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">备份向导</div>
+            <div class="sethint">先选择本地目录与云端目标，点「预览」确认规模后再开始；同一目录再次开始会续传，不会重复上传。</div>
+          </div>
+          <div class="setcontrol backup-row">
+            <button type="button" class="btn" id="backup-pick-dir">选择本地目录</button>
+            <input type="text" id="backup-root" class="input input-path" readonly placeholder="未选择目录" aria-label="本地备份目录">
+          </div>
         </div>
-        <div id="backup-verify-result" class="muted" hidden></div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">云端目标目录 fid</div>
+            <div class="sethint">备份内容会放到这个目录下；填 0 表示网盘根目录。可在「全部文件」视图进入目标目录后从地址栏复制。</div>
+          </div>
+          <div class="setcontrol backup-row">
+            <input type="text" id="backup-target" class="input input-path" placeholder="0（根目录）" autocomplete="off" spellcheck="false" aria-label="云端目标目录 fid">
+            <button type="button" class="btn" id="backup-plan">预览</button>
+            <button type="button" class="btn btn-primary" id="backup-start" disabled>开始备份</button>
+          </div>
+        </div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="sethint" id="backup-plan-result" hidden></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="setcard" id="backup-run" hidden>
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">备份进行中</div>
+            <div class="backup-progress">
+              <div class="backup-bar" id="backup-bar" role="progressbar" aria-label="备份进度"><i></i></div>
+              <div class="backup-pct" id="backup-pct" aria-live="polite"></div>
+            </div>
+            <div class="backup-grid" id="backup-stats"></div>
+          </div>
+          <div class="setcontrol backup-row">
+            <button type="button" class="btn" id="backup-retry">重试失败</button>
+            <button type="button" class="btn btn-danger" id="backup-cancel">取消</button>
+            <button type="button" class="btn" id="backup-verify">验证</button>
+          </div>
+        </div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="sethint" id="backup-verify-result" hidden></div>
+          </div>
+        </div>
       </div>
     </section>
+
+    <!-- ======================= 视图：对话 ======================= -->
     <section class="view" id="view-chat" hidden>
       <div class="section-head">
         <h2 class="section-title">对话</h2>
