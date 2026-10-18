@@ -183,7 +183,7 @@ fn base_name(p: &str) -> String {
 async fn process_one(
     store: &Store,
     remote: &dyn RemoteOps,
-    cfg: &BackupConfig,
+    _cfg: &BackupConfig,
     task: &Task,
 ) -> std::result::Result<(), Fail> {
     // 1) 源变更检测：上传前重 stat，与发现时不一致 → 重新发现（mtime/size 变了）

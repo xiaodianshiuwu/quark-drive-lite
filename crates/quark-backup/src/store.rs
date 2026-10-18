@@ -246,6 +246,21 @@ impl Store {
             + c.get("verifying").copied().unwrap_or(0))
     }
 
+    /// 拉取某状态的全部任务（验证清单用）。
+    pub fn all_in_state(&self, account: &str, state: TaskState) -> rusqlite::Result<Vec<Task>> {
+        let mut stmt = self.conn.prepare(
+            r#"SELECT account, root_dir, target_fid, rel_path, local_path, size, mtime_ms,
+                state, remote_fid, attempts, last_error, chunk_progress, updated_at_ms
+               FROM tasks WHERE account=?1 AND state=?2 ORDER BY rel_path"#,
+        )?;
+        let rows = stmt.query_map(params![account, state.as_str()], row_to_task)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// 目录 relPath → remoteFid 映射（幂等建目录用）。
     pub fn put_dir(&self, account: &str, target_fid: &str, rel_path: &str, remote_fid: &str) -> rusqlite::Result<()> {
         self.conn.execute(

@@ -9,10 +9,12 @@
 //! - `verifier`：清单核对 + 抽样下载比对
 //!
 pub mod scheduler;
+pub mod verifier;
 pub mod scanner;
 pub mod state;
 pub mod store;
 
 pub use state::{next_retry_delay_ms, TaskState};
 pub use scheduler::{worker_loop, BackupConfig, RemoteOps, SchedulerStats};
+pub use verifier::{verify_manifest, verify_sample, VerifyReport};
 pub use store::{Store, Task};
