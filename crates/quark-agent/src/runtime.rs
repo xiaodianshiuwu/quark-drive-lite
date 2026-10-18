@@ -173,7 +173,18 @@ impl AgentRuntime {
         let started = self.start_gateway().await;
         if let Err(e) = started {
             let mut mgr = self.config.lock().unwrap();
+            // 回滚必须完整：deactivate 只删 bridge.json，新写入的 token 仍在 store 里；
+            // rotate_token 回收凭据并回到 Disabled，避免"enabled 但网关未运行"的残留态。
+            let _ = mgr.rotate_token(crate::journal::now_ms());
             let _ = mgr.deactivate(crate::journal::now_ms());
+            self.journal.append(
+                "config",
+                "",
+                "user",
+                "enable_failed",
+                &Value::Null,
+                &json!({ "error": crate::journal::sanitize(&json!(e.message)) }),
+            );
             return Err(e);
         }
         self.journal.append("config", "", "user", "enabled", &Value::Null, &json!({}));
@@ -239,7 +250,18 @@ impl AgentRuntime {
             mgr.rotate_token(crate::journal::now_ms())?;
         }
         if was_running {
-            self.start_gateway().await?;
+            if let Err(e) = self.start_gateway().await {
+                // 中间态已由 status.lastError 暴露；审计补一手证据便于排查。
+                self.journal.append(
+                    "config",
+                    "",
+                    "user",
+                    "rotate_failed",
+                    &Value::Null,
+                    &json!({ "error": crate::journal::sanitize(&json!(e.message)) }),
+                );
+                return Err(e);
+            }
         }
         self.journal.append("config", "", "user", "token_rotated", &Value::Null, &json!({}));
         Ok(self.status())
@@ -324,13 +346,13 @@ impl AgentRuntime {
             "agent.updateScope" | "agent.scope" => self.update_scope(&params),
             "agent.rotate" => self.rotate().await,
             "agent.recentJournal" | "agent.journal" => {
-                let limit = params
-                    .get("limit")
-                    .or_else(|| params.as_u64().map(|_| &Value::Null))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(30) as usize;
-                let rows = self.recent_journal(limit);
-                Ok(rows)
+                let limit = match &params {
+                    Value::Number(n) => n.as_u64(),
+                    Value::Object(o) => o.get("limit").and_then(|v| v.as_u64()),
+                    _ => None,
+                }
+                .unwrap_or(30) as usize;
+                Ok(self.recent_journal(limit))
             }
             "agent.mcpConfig" | "agent.mcp-config" | "agent.copyMcpConfig" => Ok(self.mcp_config()),
             "agent.tools" => Ok(json!(self.list_tools())),

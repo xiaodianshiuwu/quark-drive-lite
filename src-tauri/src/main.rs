@@ -122,8 +122,11 @@ async fn qk_call(
             .handle(&method, params, Some(event))
             .await
             .map_err(|e| {
-                // core::Error 无 hint 字段：把操作提示并入 message（渲染层展示 message），
-                // 避免「只读模式不能写」这类可操作指引在界面上丢失。
+                // ① code：raw_code（白名单上游语义，如 NEED_LOGIN）优先——
+                //    保证下方 NEED_LOGIN → qk:auth-changed 重新登录链路对 agent/chat 失败同样生效；
+                //    其余用 AGENT_ 前缀稳定码。② core::Error 无 hint 字段：操作提示并入 message
+                //    （渲染层展示 message），避免「只读模式不能写」这类可操作指引丢失。
+                let code_out = e.raw_code.clone().unwrap_or_else(|| e.code.as_str().to_string());
                 let mut message = e.message.clone();
                 if let Some(h) = &e.hint {
                     message.push_str("（提示：");
@@ -133,7 +136,7 @@ async fn qk_call(
                 if let Some(u) = &e.upstream_message {
                     message.push_str(&format!("（上游：{u}）"));
                 }
-                Error::new(e.code.as_str(), message)
+                Error::new(code_out, message)
             })
     } else if method.starts_with("transfer.") {
         state.transfers.call(&method, params).await

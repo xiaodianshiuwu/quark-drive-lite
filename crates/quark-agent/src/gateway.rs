@@ -77,6 +77,16 @@ pub const PRE_AUTH_METHODS: [&str; 3] = ["auth", "ping", "hello"];
 
 const SERVER_NAME: &str = "quark-mini";
 
+/// 审计里的端点脱敏：只保留最后一段文件名/管道名。
+/// profile 内端点无敏感信息；tmpdir 回退端点含 token 前 12 位，不能整串落盘。
+fn audit_endpoint(endpoint: &str) -> String {
+    endpoint
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("hidden")
+        .to_string()
+}
+
 /// 宿主侧实时配置源：网关**不缓存**任何授权状态。
 ///
 /// 对应 qck 每次 `config.isActive()` / `config.get().token` / `config.scope()` 都实时读 store：
@@ -355,7 +365,13 @@ impl AgentGateway {
             *self.shared.started_at.lock().unwrap() = (self.now_fn)();
             self.shared.last_error.lock().unwrap().clear();
             self.shared.running.store(true, Ordering::SeqCst);
-            self.audit("gateway", "", "client", "started", &json!({ "endpoint": endpoint }));
+            self.audit(
+                "gateway",
+                "",
+                "client",
+                "started",
+                &json!({ "endpoint": audit_endpoint(&endpoint) }),
+            );
 
             let this = self.clone();
             let accept = tokio::spawn(async move {
@@ -414,7 +430,13 @@ impl AgentGateway {
             let _ = std::fs::remove_file(&endpoint);
         }
         if !endpoint.is_empty() {
-            self.audit("gateway", "", "client", "stopped", &json!({ "endpoint": endpoint }));
+            self.audit(
+                "gateway",
+                "",
+                "client",
+                "stopped",
+                &json!({ "endpoint": audit_endpoint(&endpoint) }),
+            );
         }
     }
 

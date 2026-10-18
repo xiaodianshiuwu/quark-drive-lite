@@ -284,26 +284,27 @@ impl AgentChat {
             }
 
             // 回填 assistant 消息：tool_calls 的 id 必须与后续 tool 响应一一对应。
+            // 无 function.name 的调用直接丢弃：回填 name:null 会被严格 OpenAI 兼容服务
+            // 整轮 400，之后每轮都 400 直到上限、对话无法自愈。
             let normalized_calls: Vec<Value> = calls
                 .iter()
-                .map(|c| {
+                .filter_map(|c| {
+                    let name = c
+                        .get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(|v| v.as_str())
+                        .filter(|n| !n.trim().is_empty())?;
                     let function = c.get("function");
                     let arguments = function
                         .and_then(|f| f.get("arguments"))
                         .cloned()
                         .filter(|v| !is_falsy(v))
                         .unwrap_or_else(|| json!("{}"));
-                    json!({
+                    Some(json!({
                         "id": c.get("id").cloned().unwrap_or(Value::Null),
                         "type": "function",
-                        "function": {
-                            "name": function
-                                .and_then(|f| f.get("name"))
-                                .cloned()
-                                .unwrap_or(Value::Null),
-                            "arguments": arguments,
-                        },
-                    })
+                        "function": { "name": name, "arguments": arguments },
+                    }))
                 })
                 .collect();
             {
@@ -977,7 +978,15 @@ fn sanitize_text(text: &str) -> String {
 
 fn emit(cb: Option<&EventCallback>, event: Value) {
     if let Some(cb) = cb {
-        cb(event);
+        // 回调（宿主 emit_to 包装）panic 不应炸掉整次对话/调用：
+        // 隔离在 catch_unwind 内，事件丢失优于整个 qk_call 失败。
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(std::boxed::Box::new(|_| {}));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cb(event)));
+        std::panic::set_hook(prev);
+        if result.is_err() {
+            eprintln!("[agent] 对话事件回调 panic（已隔离）");
+        }
     }
 }
 
