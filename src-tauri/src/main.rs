@@ -121,7 +121,20 @@ async fn qk_call(
             .agent
             .handle(&method, params, Some(event))
             .await
-            .map_err(|e| Error::new(e.code.as_str(), e.message))
+            .map_err(|e| {
+                // core::Error 无 hint 字段：把操作提示并入 message（渲染层展示 message），
+                // 避免「只读模式不能写」这类可操作指引在界面上丢失。
+                let mut message = e.message.clone();
+                if let Some(h) = &e.hint {
+                    message.push_str("（提示：");
+                    message.push_str(h);
+                    message.push('）');
+                }
+                if let Some(u) = &e.upstream_message {
+                    message.push_str(&format!("（上游：{u}）"));
+                }
+                Error::new(e.code.as_str(), message)
+            })
     } else if method.starts_with("transfer.") {
         state.transfers.call(&method, params).await
     } else {
