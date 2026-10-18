@@ -45,6 +45,15 @@ test('Tauri bridge preserves the renderer contract and named scalar parameters',
   await qk.agent.setScope({ writeMode: 'read-only' });
   await qk.chat.history(100);
   await qk.chat.send('你好');
+  // journal 返回 { records } 包装时在桥层解包为数组
+  const bridge2 = (invoke) => {
+    const window = { navigator: { platform: 'MacIntel' }, __TAURI__: { core: { invoke }, event: { listen: async () => () => {} } } };
+    vm.runInNewContext(source, { window });
+    return window.qk;
+  };
+  const records = await bridge2(async () => ({ records: [{ seq: 1 }, { seq: 2 }] })).agent.journal(20);
+  assert.equal(Array.isArray(records), true, 'journal 应解包 records 为数组');
+  assert.equal(records.length, 2);
   assert.deepEqual(calls.slice(-5), [
     ['qk_call', { method: 'agent.journal', params: { limit: 20 } }],
     ['qk_call', { method: 'agent.mcpConfig', params: {} }],
