@@ -51,6 +51,7 @@ backup.verify {sampleRatePpm}
 - 10 万条目离线性能（Apple M 系列）：扫描 ~11.4 万条/秒、SQLite upsert ~11.5 万条/秒、认领 ~2.5 万条/秒（`cargo test -p quark-backup --test massive_scan`）。Windows 机械硬盘数字会低一个数量级，属正常。
 - 空目录：只建云端目录，不产生上传任务（如实）。
 - 抽样验证是**抽样**：未抽中的文件只有"远端存在且 size 一致"证据，无内容哈希证据。要全量哈希核对，用 `sampleRatePpm: 1000000`。
+- UI 侧：云端目标目录为 fid 文本输入（可在「文件」视图复制），暂无目录树选择器；大目录「预览」期间无进度反馈（后端全量扫完才返回）；verify 固定 1% 抽样率未在 UI 暴露配置。
 
 ## 验证记录（真实账号）
 
