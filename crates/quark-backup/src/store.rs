@@ -80,6 +80,19 @@ impl Store {
         Ok(Self { conn: std::sync::Mutex::new(conn) })
     }
 
+    /// 崩溃恢复：应用重启后 uploading/verifying 任务无人认领（claim 只取
+    /// discovered/pending），统一降回 pending。状态机守卫允许该迁移；
+    /// chunk_progress 保留（分片级续传证据），attempts 不清零（防无限重启风暴）。
+    pub fn recover_interrupted(&self, account: &str) -> rusqlite::Result<usize> {
+        let conn = self.conn();
+        let n = conn.execute(
+            r#"UPDATE tasks SET state='pending', updated_at_ms=?2, claim_seq=0
+               WHERE account=?1 AND state IN ('uploading','verifying')"#,
+            params![account, Self::now()],
+        )?;
+        Ok(n)
+    }
+
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -404,6 +417,27 @@ mod tests {
         assert_eq!(store.queue_depth("acc1").unwrap(), 0, "discovered 不计入队列深度");
         store.claim_batch("acc1", 5).unwrap();
         assert_eq!(store.queue_depth("acc1").unwrap(), 5);
+    }
+
+    #[test]
+    fn recover_interrupted_maps_to_pending_and_keeps_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("t.db")).unwrap();
+        store.upsert_discovered(&[task("crash.txt", 1, 1)]).unwrap();
+        let mut t = store.claim_batch("acc1", 1).unwrap().remove(0);
+        store.transition(&t, TaskState::Uploading, None).unwrap();
+        t.chunk_progress = Some(r#"{"etag":3}"#.into());
+        store.transition(&t, TaskState::Verifying, None).unwrap();
+        // 应用重启：恢复
+        let n = store.recover_interrupted("acc1").unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(store.state_of(&t).unwrap(), TaskState::Pending);
+        // 恢复后可被 claim（否则任务永久卡死）
+        let again = store.claim_batch("acc1", 1).unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].rel_path, "crash.txt");
+        // 二次恢复无动作
+        assert_eq!(store.recover_interrupted("acc1").unwrap(), 0);
     }
 
     #[test]

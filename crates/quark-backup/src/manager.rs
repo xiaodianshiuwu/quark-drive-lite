@@ -282,6 +282,12 @@ impl BackupManager {
             serde_json::from_value(cfg_patch)
                 .map_err(|e| BackupError::new("INVALID_ARG", format!("backup 配置无效：{e}")))?
         };
+        // 崩溃恢复：上次会话中断的 uploading/verifying 任务降回 pending
+        let recovered = store
+            .recover_interrupted(&account)
+            .map_err(|e| BackupError::new("SYSTEM", format!("恢复中断任务失败：{e}")))?;
+        let _ = recovered;
+
         let (stop_tx, stop_rx) = watch::channel(false);
         let uploaded = Arc::new(AtomicU64::new(0));
 
