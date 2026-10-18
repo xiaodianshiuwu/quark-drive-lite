@@ -1,5 +1,5 @@
 
-use crate::scheduler::{anyhow_lite, BackupConfig, RemoteOps};
+use crate::scheduler::{anyhow_lite, worker_loop, BackupConfig, RemoteOps};
 use crate::state::TaskState;
 use crate::verifier::{verify_manifest, verify_sample, RemoteEntry, VerifyOps};
 use quark_core::Core;
@@ -57,11 +57,33 @@ impl CoreRemote {
         }
     }
 
-    async fn list_children(&self, parent_fid: &str) -> Result<Value, String> {
-        self.core
-            .call("fs.list", json!({"pdirFid": parent_fid, "page": 1, "size": 200}))
-            .await
-            .map_err(|e| e.message)
+    /// 跨页查找：在 parent 的全部子项中找 name（dir=目录/文件）。
+    /// 单页 200 的子目录 >200 项时会漏查——上传完成确认与冲突预检都必须跨页。
+    async fn find_child(&self, parent_fid: &str, name: &str, want_dir: bool) -> Result<Option<String>, String> {
+        let mut page = 1i64;
+        loop {
+            let listed = self
+                .core
+                .call("fs.list", json!({"pdirFid": parent_fid, "page": page, "size": 200}))
+                .await
+                .map_err(|e| e.message)?;
+            if let Some(items) = listed["list"].as_array() {
+                for x in items {
+                    if x["dir"] == json!(want_dir) && x["name"] == json!(name) {
+                        return Ok(x["fid"].as_str().map(|s| s.to_string()));
+                    }
+                }
+                if items.is_empty()
+                    || listed["hasMore"].as_bool().unwrap_or(false) == false
+                    || page >= 100
+                {
+                    return Ok(None);
+                }
+            } else {
+                return Ok(None);
+            }
+            page += 1;
+        }
     }
 }
 
@@ -77,17 +99,7 @@ impl RemoteOps for CoreRemote {
             let mut acc = String::new();
             for seg in rel_path.split('/') {
                 acc = if acc.is_empty() { seg.to_string() } else { format!("{acc}/{seg}") };
-                let listed = self.list_children(&cur).await?;
-                let mut found: Option<String> = None;
-                if let Some(items) = listed["list"].as_array() {
-                    for x in items {
-                        if x["dir"] == json!(true) && x["name"] == json!(seg) {
-                            found = x["fid"].as_str().map(|s| s.to_string());
-                            break;
-                        }
-                    }
-                }
-                if let Some(fid) = found {
+                if let Some(fid) = self.find_child(&cur, seg, true).await? {
                     cur = fid;
                     continue;
                 }
@@ -98,15 +110,7 @@ impl RemoteOps for CoreRemote {
                     .map_err(|e| e.message)?;
                 let mut new_fid = None;
                 for _ in 0..30 {
-                    let listed = self.list_children(&cur).await?;
-                    if let Some(items) = listed["list"].as_array() {
-                        for x in items {
-                            if x["dir"] == json!(true) && x["name"] == json!(seg) {
-                                new_fid = x["fid"].as_str().map(|s| s.to_string());
-                                break;
-                            }
-                        }
-                    }
+                    new_fid = self.find_child(&cur, seg, true).await?;
                     if new_fid.is_some() {
                         break;
                     }
@@ -143,17 +147,9 @@ impl RemoteOps for CoreRemote {
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let listed = self.list_children(parent_fid).await?;
-            if let Some(items) = listed["list"].as_array() {
-                for x in items {
-                    if x["dir"] == json!(false) && x["name"] == json!(name) {
-                        if let Some(f) = x["fid"].as_str() {
-                            return Ok(f.to_string());
-                        }
-                    }
-                }
-            }
-            Err("上传完成后未在目录中确认文件".into())
+            self.find_child(parent_fid, &name, false)
+                .await?
+                .ok_or_else(|| "上传完成后未在目录中确认文件".into())
         })
     }
 
@@ -163,15 +159,7 @@ impl RemoteOps for CoreRemote {
         name: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<String>, String>> + Send + 'a>> {
         Box::pin(async move {
-            let listed = self.list_children(parent_fid).await?;
-            if let Some(items) = listed["list"].as_array() {
-                for x in items {
-                    if x["dir"] == json!(false) && x["name"] == json!(name) {
-                        return Ok(x["fid"].as_str().map(|s| s.to_string()));
-                    }
-                }
-            }
-            Ok(None)
+            self.find_child(parent_fid, name, false).await
         })
     }
 }
@@ -182,6 +170,13 @@ pub struct BackupSession {
     /// 验证用的 Core/Transfer 句柄（不在 Drop 时关闭，仅引用）。
     pub core_handle: Option<Core>,
     pub transfers_handle: Option<quark_transfer::TransferManager>,
+    /// worker 池重建所需（retry_failed 时 worker 可能已全部退出）。
+    pub cfg: BackupConfig,
+    pub ops: Arc<dyn RemoteOps>,
+    pub stop_rx: tokio::sync::watch::Receiver<bool>,
+    /// 扫描停止标志：cancel 置位，upsert 消费循环检测到即不再写库（扫描协程自然跑到头）。
+    pub scan_stop: Arc<AtomicBool>,
+    pub uploaded_bytes: Arc<AtomicU64>,
     pub root_dir: PathBuf,
     pub target_fid: String,
     pub store: Arc<crate::Store>,
@@ -189,7 +184,6 @@ pub struct BackupSession {
     #[allow(dead_code)]
     pub scan_joined: Arc<AtomicBool>,
     pub started_at: u64,
-    pub uploaded_bytes: Arc<AtomicU64>,
 }
 
 #[derive(Clone, Default)]
@@ -298,6 +292,7 @@ impl BackupManager {
             target_fid: target_fid.clone(),
             batch_size: cfg.discovery_batch_size,
         };
+        let scan_stop = Arc::new(AtomicBool::new(false));
         let (tx, mut rx) = mpsc::channel::<Vec<crate::scanner::ScanItem>>(cfg.high_watermark);
         // 消费循环：批次入库（upsert 幂等）；channel 满时扫描端阻塞 = 背压
         {
@@ -346,6 +341,10 @@ impl BackupManager {
             account: account.clone(),
             core_handle: Some(core.clone()),
             transfers_handle: Some(transfers.clone()),
+            cfg: cfg.clone(),
+            ops: ops.clone(),
+            stop_rx: stop_rx.clone(),
+            scan_stop: scan_stop.clone(),
             root_dir: PathBuf::from(&root_dir),
             target_fid,
             store,
@@ -410,6 +409,22 @@ impl BackupManager {
                 n += 1;
             }
         }
+        // worker_loop 全部退出后（remaining==0），手动重试需要重新拉起 worker 池，
+        // 否则 pending 永挂、会话假 running。
+        if n > 0 {
+            let n_workers = s.cfg.upload_concurrency.clamp(1, 8);
+            for _ in 0..n_workers {
+                let cfg_w = s.cfg.clone();
+                let ops_w = s.ops.clone();
+                let acc_w = s.account.clone();
+                let bytes_w = s.uploaded_bytes.clone();
+                let stop_w = s.stop_rx.clone();
+                let store_w = s.store.clone();
+                tokio::spawn(async move {
+                    worker_loop(store_w, ops_w, cfg_w, acc_w, bytes_w, stop_w).await;
+                });
+            }
+        }
         Ok(json!({ "requeued": n }))
     }
 
@@ -420,6 +435,7 @@ impl BackupManager {
             return Err(BackupError::new("CONFLICT", "没有运行中的备份任务"));
         };
         let _ = s.stop_tx.send(true);
+        s.scan_stop.store(true, Ordering::Relaxed);
         *guard = None;
         Ok(json!({ "canceled": true }))
     }

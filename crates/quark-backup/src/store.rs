@@ -65,6 +65,7 @@ impl Store {
                 updated_at_ms INTEGER NOT NULL,
                 claimed_at_ms INTEGER NOT NULL DEFAULT 0,
                 claim_seq INTEGER NOT NULL DEFAULT 0,
+                next_retry_at_ms INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (account, root_dir, target_fid, rel_path)
             );
             CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
@@ -77,6 +78,8 @@ impl Store {
             );
             "#,
         )?;
+        // 存量库迁移：next_retry_at_ms 列（旧库无此列时补上；已存在则忽略）
+        let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN next_retry_at_ms INTEGER NOT NULL DEFAULT 0");
         Ok(Self { conn: std::sync::Mutex::new(conn) })
     }
 
@@ -86,7 +89,7 @@ impl Store {
     pub fn recover_interrupted(&self, account: &str) -> rusqlite::Result<usize> {
         let conn = self.conn();
         let n = conn.execute(
-            r#"UPDATE tasks SET state='pending', updated_at_ms=?2, claim_seq=0
+            r#"UPDATE tasks SET state='pending', updated_at_ms=?2, claim_seq=0, next_retry_at_ms=0
                WHERE account=?1 AND state IN ('uploading','verifying')"#,
             params![account, Self::now()],
         )?;
@@ -155,7 +158,10 @@ impl Store {
                             && TaskState::parse(&old_state).is_some_and(|s| s.is_terminal() || s.is_active())
                         {
                             unchanged += 1;
-                        } else if changed || old_state != "discovered" && old_state != "pending" {
+                        } else if (changed
+                            && TaskState::parse(&old_state).is_some_and(|st| !st.is_active()))
+                            || (!changed && old_state != "discovered" && old_state != "pending")
+                        {
                             update.execute(params![
                                 t.account, t.root_dir, t.target_fid, t.rel_path, t.local_path,
                                 t.size as i64, t.mtime_ms, now
@@ -193,10 +199,11 @@ impl Store {
                    WHERE rowid IN (
                      SELECT rowid FROM tasks
                      WHERE account=?1 AND state='pending' AND claim_seq=0
+                       AND next_retry_at_ms <= ?4
                      ORDER BY updated_at_ms, rel_path LIMIT ?3
                    )"#,
             )?;
-            mark.execute(params![account, seq, limit as i64])?;
+            mark.execute(params![account, seq, limit as i64, now])?;
             let mut q = tx.prepare_cached(
                 r#"SELECT account, root_dir, target_fid, rel_path, local_path, size, mtime_ms,
                     state, remote_fid, attempts, last_error, chunk_progress, updated_at_ms
@@ -213,12 +220,24 @@ impl Store {
 
     /// 更新状态（带迁移守卫；非法迁移返回 Err）。
     pub fn transition(&self, task: &Task, next: TaskState, error: Option<&str>) -> rusqlite::Result<()> {
+        self.transition_with_retry_at(task, next, error, 0)
+    }
+
+    /// 同 transition，但为 Pending 态附带最早可认领时间（退避窗口，毫秒时间戳）。
+    /// claim 只取 next_retry_at_ms <= now 的任务，防止多 worker 绕过退避形成重试风暴。
+    pub fn transition_with_retry_at(
+        &self,
+        task: &Task,
+        next: TaskState,
+        error: Option<&str>,
+        next_retry_at_ms: i64,
+    ) -> rusqlite::Result<()> {
         let old = self.state_of(task)?;
         old.can_transition_to(next)
             .map_err(|e| rusqlite::Error::InvalidParameterName(e))?;
         self.conn().execute(
             r#"UPDATE tasks SET state=?5, last_error=?6, attempts=?7, remote_fid=?8,
-                chunk_progress=?9, updated_at_ms=?10, claim_seq=0
+                chunk_progress=?9, updated_at_ms=?10, claim_seq=0, next_retry_at_ms=?11
                WHERE account=?1 AND root_dir=?2 AND target_fid=?3 AND rel_path=?4"#,
             params![
                 task.account, task.root_dir, task.target_fid, task.rel_path,
@@ -228,9 +247,15 @@ impl Store {
                 task.remote_fid,
                 task.chunk_progress,
                 Self::now(),
+                next_retry_at_ms,
             ],
         )?;
         Ok(())
+    }
+
+    /// 当前毫秒时间戳（测试与退避窗计算共用）。
+    pub fn now_ms(&self) -> i64 {
+        Self::now()
     }
 
     fn state_of(&self, task: &Task) -> rusqlite::Result<TaskState> {
@@ -417,6 +442,49 @@ mod tests {
         assert_eq!(store.queue_depth("acc1").unwrap(), 0, "discovered 不计入队列深度");
         store.claim_batch("acc1", 5).unwrap();
         assert_eq!(store.queue_depth("acc1").unwrap(), 5);
+    }
+
+    #[test]
+    fn upsert_does_not_reset_active_tasks() {
+        // P2-3：任务 uploading 中重扫（源同内容）不得改回 discovered（窗口竞态）；
+        // 源变化也不重置 active 任务（worker 上传前重 stat 兜底）。
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("t.db")).unwrap();
+        store.upsert_discovered(&[task("u.txt", 10, 100)]).unwrap();
+        let mut t = store.claim_batch("acc1", 1).unwrap().remove(0);
+        store.transition(&t, TaskState::Uploading, None).unwrap();
+        // 同内容重扫
+        let (a, r, u) = store.upsert_discovered(&[task("u.txt", 10, 100)]).unwrap();
+        assert_eq!((a, r, u), (0, 0, 1));
+        assert_eq!(store.state_of(&t).unwrap(), TaskState::Uploading);
+        // 源变化重扫：仍不重置 active（changed 且 active → skip，计入 unchanged）
+        let (a, r, u) = store.upsert_discovered(&[task("u.txt", 99, 100)]).unwrap();
+        assert_eq!((a, r, u), (0, 0, 1), "active 任务源变化也不重置（归为未变化）");
+        assert_eq!(store.state_of(&t).unwrap(), TaskState::Uploading);
+    }
+
+    #[test]
+    fn claim_respects_backoff_window() {
+        // P1-2：失败任务转 pending 携带 next_retry_at_ms；窗口到期前 claim 不认领
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("t.db")).unwrap();
+        store.upsert_discovered(&[task("b.txt", 1, 1)]).unwrap();
+        let mut t = store.claim_batch("acc1", 1).unwrap().remove(0);
+        store.transition(&t, TaskState::Uploading, None).unwrap();
+        // 失败 → pending，退避窗设到 1 小时后
+        let far = store.now_ms() + 3_600_000;
+        store.transition_with_retry_at(&t, TaskState::Pending, Some("网络错误"), far).unwrap();
+        assert!(store.claim_batch("acc1", 5).unwrap().is_empty(), "退避窗内不得认领");
+        // 窗口改到过去 → 可认领（经 uploading→pending 合法迁移重设窗）
+        let past = store.now_ms() - 1;
+        store.transition(&t, TaskState::Uploading, None).unwrap();
+        store.transition_with_retry_at(&t, TaskState::Pending, Some("网络错误"), past).unwrap();
+        assert_eq!(store.claim_batch("acc1", 5).unwrap().len(), 1, "到期后可认领");
+        // 普通 transition（无退避参数）不设窗
+        store.transition(&t, TaskState::Uploading, None).unwrap();
+        store.transition(&t, TaskState::Verifying, None).unwrap();
+        store.transition_with_retry_at(&t, TaskState::Pending, None, 0).unwrap();
+        assert_eq!(store.claim_batch("acc1", 5).unwrap().len(), 1, "无退避窗立即认领");
     }
 
     #[test]

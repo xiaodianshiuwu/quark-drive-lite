@@ -138,14 +138,15 @@ pub async fn worker_loop(
                 let attempts = task.attempts + 1;
                 let mut t2 = task.clone();
                 t2.attempts = attempts;
-                if next_retry_delay_ms(attempts, cfg.retry_base_ms, cfg.max_attempts).is_some() {
-                    // 回到 pending 等待重试（next_retry_at 由 worker 轮询检查——简化：
-                    // 直接重试由退避 sleep 承担；store 只记 attempts 与错误）
-                    let _ = store.transition(&t2, TaskState::Pending, Some(&err));
-                    tokio::time::sleep(Duration::from_millis(
-                        next_retry_delay_ms(attempts, cfg.retry_base_ms, cfg.max_attempts).unwrap_or(0),
-                    ))
-                    .await;
+                if let Some(delay_ms) = next_retry_delay_ms(attempts, cfg.retry_base_ms, cfg.max_attempts) {
+                    // 回到 pending：退避窗写入库（next_retry_at_ms），其他 worker 的 claim
+                    // 在窗口到期前不会认领——避免多 worker 全速重试耗尽 attempts（重试风暴）。
+                    let retry_at = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64)
+                        + delay_ms as i64;
+                    let _ = store.transition_with_retry_at(&t2, TaskState::Pending, Some(&err), retry_at);
                 } else {
                     let _ = store.transition(&t2, TaskState::Failed, Some(&err));
                     stats.failed += 1;

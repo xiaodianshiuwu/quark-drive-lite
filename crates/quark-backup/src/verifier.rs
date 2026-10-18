@@ -120,6 +120,19 @@ pub async fn verify_manifest(
             let name = t.rel_path.rsplit('/').next().unwrap_or("");
             match entries.iter().find(|e| e.name == name) {
                 Some(e) if e.size == t.size && !e.is_dir => {
+                    // fid 一致才算完全通过（任务带 remote_fid 时）；不一致记 fid_mismatch
+                    if let Some(want) = &t.remote_fid {
+                        if e.fid != *want {
+                            report.size_mismatch += 1;
+                            report.status = "partial".into();
+                            report.issues.push(json!({
+                                "kind": "fid_mismatch", "rel_path": t.rel_path,
+                                "expect_fid": want, "remote_fid": e.fid,
+                                "detail": "远端同名同大小但 fid 不一致（可能被覆盖/移动），请人工核对",
+                            }));
+                            continue;
+                        }
+                    }
                     report.listed_ok += 1;
                 }
                 Some(e) => {
