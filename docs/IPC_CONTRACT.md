@@ -148,6 +148,7 @@ interface Settings { downloadDir: string; uploadConcurrency: number; downloadCon
 | `cancel(id)` | `(id: string) => Promise<void>` | 取消并清理临时文件 |
 | `clear(ids)` | `(ids: string[]) => Promise<void>` | 从列表移除已结束任务 |
 | `onUpdate(cb)` | `(cb: (tasks: TransferTask[]) => void) => () => void` | 全量推送（节流 ≤ 4 次/秒） |
+| `on('qk:chat-event')` | 对话进度事件（round/assistant_note/tool_start/tool_end/done/error） | Agent 内置对话（0.3.0-alpha，见下方新章节） |
 
 **行为要求**
 - 上传/下载均在主进程异步执行，`upload()`/`download()` 立即返回，**不得阻塞 UI**。
@@ -181,11 +182,11 @@ interface Settings { downloadDir: string; uploadConcurrency: number; downloadCon
 
 **保留**：文件浏览（面包屑 + 列表 + 目录分页加载）、搜索、新建文件夹、移动、复制、重命名、批量删除、上传、下载、传输任务管理、登录/退出、设置（下载目录/并发数）。
 
-**禁止出现**：AI 助手/问答、音视频播放器、推广/会员购买/活动入口、同步盘/备份、分享、回收站深度恢复、相册/时间线、文档预览转换、加速器、聊天。
+**禁止出现**：音视频播放器、推广/会员购买/活动入口、同步盘/备份、分享、回收站深度恢复、相册/时间线、文档预览转换、加速器。（0.3.0-alpha 起，Agent 接入与内置对话为已批准功能，见下方章节。）
 
 ## 8. 视觉要求
 
-- 界面简洁：左侧极简导航（全部文件 / 传输列表 / 设置），右侧主区。
+- 界面简洁：左侧极简导航（全部文件 / 传输列表 / 对话 / 设置），右侧主区。
 - 顶部：面包屑 + 搜索框 + 上传按钮。
 - 列表：复选框、图标、名称、大小、修改时间、行内操作。
 - 传输抽屉：进度条、速度、剩余时间、暂停/继续/重试/取消。

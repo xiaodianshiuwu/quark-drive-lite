@@ -135,7 +135,7 @@ CI 使用 `scripts/ci-linux-gui.sh` 提供一次性的图形与密钥环环境�
 早期版本使用系统加密保存登录资料。如果需要继续使用旧资料，可显式执行迁移：
 
 ```bash
-npm run migrate-session
+node scripts/migrate-session.js
 ```
 
 迁移会把原密文保留为 `session.bin.legacy-QCK1`，再写入新格式。在 macOS 上迁移旧格式可能需要一次系统授权；未迁移时也可以在应用内重新登录。

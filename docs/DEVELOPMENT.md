@@ -22,6 +22,7 @@ macOS 默认构建 .app；其他平台按 Tauri 的平台打包目标构建，�
 
 - crates/quark-core：独立账号会话、API、文件操作、设置与加密存储。
 - crates/quark-transfer：独立持久化任务、上传下载及协议校验。
+- crates/quark-agent：Agent 工具层（20 个工具，含 delete_entries）、本机 MCP 网关、内置对话与脱敏审计日志。
 - src-tauri：原生窗口、登录、系统对话框、受限命令与生命周期。
 - src/renderer：原有界面、Tauri bridge、虚拟列表。
 
