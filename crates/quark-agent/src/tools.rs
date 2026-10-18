@@ -291,11 +291,16 @@ impl ToolEnv {
                     last_err = Some(AgentToolError::new(AgentError::Upstream, "info 响应形状异常"));
                 }
                 Err(e) => {
-                    let transient = matches!(e.code, AgentError::InvalidArg | AgentError::NotFound | AgentError::Upstream)
+                    // NOT_FOUND（含上游 21001 资源不存在）是终态：立即返回，
+                    // 不能重试或被 recent 兜底成"仍存在"（删除核对依赖它）。
+                    if is_not_found(&e) {
+                        return Err(e);
+                    }
+                    let transient = matches!(e.code, AgentError::InvalidArg | AgentError::Upstream)
                         || e.upstream_code
                             .as_ref()
                             .and_then(|v| v.as_str())
-                            .map(|c| c == "INVALID_ARG" || c == "NOT_FOUND" || c == "SERVER")
+                            .map(|c| c == "INVALID_ARG" || c == "SERVER")
                             .unwrap_or(false);
                     if !transient {
                         return Err(e);
@@ -2150,17 +2155,32 @@ impl QuarkTools {
                 &json!({ "taskIds": [tid], "timeout": 60_000, "interval": 1000 }),
             ).await;
         }
-        // 逐项核对是否真的已不可见（NOT_FOUND=已删除；仍可见=不确定）。
-        // 删除是写操作：核对必须新鲜读取，清掉本次调用内的旧 info/list 缓存。
+        // 逐项核对是否真的已不可见（NOT_FOUND=已删除；超时仍可见=不确定）。
+        // 删除是写操作：核对必须新鲜读取（清掉本次调用内的旧缓存），
+        // 且服务端删除是异步任务，条目从列表消失有最终一致延迟——轮询等待而非单次判定。
         env.info_cache.lock().unwrap().clear();
         env.list_cache.lock().unwrap().clear();
         let mut results: Vec<Value> = Vec::new();
         for (fid, name, _dir) in &current {
-            let status = match env.safe_info(fid).await {
-                Err(e) if is_not_found(&e) => "deleted",
-                Err(_) => "uncertain",
-                Ok(_) => "uncertain",
-            };
+            let mut status = "uncertain";
+            // 最多等 30s（15 次 × 2s）：service task 完成后条目才从 info/list 消失
+            for _ in 0..15 {
+                // 每次查询都绕过 info 缓存与 recent 兜底（删除后的 NOT_FOUND 不能被重试吞掉）
+                match env
+                    .deps
+                    .core_call(env.generation, "fs.info", &json!({ "fid": fid }))
+                    .await
+                {
+                    Err(e) if is_not_found(&e) => {
+                        status = "deleted";
+                        break;
+                    }
+                    Err(_) => break, // 网络等其他错误：如实 uncertain
+                    Ok(_) => {
+                        tokio::time::sleep(Duration::from_millis(2000)).await;
+                    }
+                }
+            }
             results.push(json!({"fid": fid, "name": name, "status": status}));
         }
         Ok(json!({

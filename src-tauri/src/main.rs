@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use quark_agent::host::ToolHost;
 use quark_agent::runtime::AgentRuntime;
 use quark_core::{Core, Error, Result};
 use quark_transfer::TransferManager;
@@ -26,7 +27,6 @@ struct State {
     _profile_lock: Arc<std::fs::File>,
 }
 
-mod agent_host;
 
 fn shell_error(e: impl std::fmt::Display) -> Error {
     Error::new("SYSTEM", e.to_string())
@@ -357,7 +357,7 @@ fn main() {
             let core = Core::open(profile.clone())?;
             let transfers = TransferManager::open(core.clone())?;
             // Agent 子系统：工具宿主 = 真实 Core/TransferManager；generation 供会话绑定。
-            let host = agent_host::ToolHost::new(core.clone(), transfers.clone());
+            let host = ToolHost::new(core.clone(), transfers.clone());
             let generation_core = core.clone();
             let agent = AgentRuntime::new(
                 profile.clone(),

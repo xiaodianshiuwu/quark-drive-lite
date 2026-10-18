@@ -514,31 +514,36 @@ test('系统确认框缺失：回落应用内确认框（danger 红色），取�
   assert.equal(app.calls.filter((c) => c.ns === 'agent' && c.name === 'disable').length, 1);
 });
 
-test('复制 MCP 配置：桥复制成功直接提示；NO_BRIDGE 回落渲染层剪贴板；剪贴板失败给出提示', async () => {
+test('复制 MCP 配置：后端回配置时由渲染层写剪贴板；NO_BRIDGE 回落面板文本；失败/空态各有提示', async () => {
+  // Tauri 形态：copyMcpConfig 只返回配置对象，渲染层写剪贴板
   const app = await bootApp();
   await app.openSettings();
   const mcpBefore = app.agentCalls().filter((n) => n === 'mcpConfig').length;
   await app.click('agent-btn-copy-mcp');
   assert.equal(app.calls.filter((c) => c.ns === 'agent' && c.name === 'copyMcpConfig').length, 1);
+  const clip = app.calls.find((c) => c.ns === 'clipboard');
+  assert.ok(clip, 'Tauri 后端不写剪贴板，应由渲染层写入');
+  assert.equal(clip.args[0], JSON.stringify(BASE_MCP, null, 2));
   assert.ok(app.text('toasts').includes('MCP 配置已复制到剪贴板'));
-  assert.equal(app.calls.filter((c) => c.ns === 'clipboard').length, 0, '桥已写剪贴板时不应重复写入');
   assert.ok(app.agentCalls().filter((n) => n === 'mcpConfig').length > mcpBefore, '复制后应重读 MCP 配置');
 
+  // 后端命令不可用（NO_BRIDGE）：回落到面板已读到的配置文本
   const fallback = await bootApp({ copyFails: true });
   await fallback.openSettings();
   await fallback.click('agent-btn-copy-mcp');
-  const clip = fallback.calls.find((c) => c.ns === 'clipboard');
-  assert.ok(clip, 'NO_BRIDGE 时应回落到渲染层剪贴板');
-  assert.equal(clip.args[0], JSON.stringify(BASE_MCP, null, 2));
+  const fallbackClip = fallback.calls.find((c) => c.ns === 'clipboard');
+  assert.ok(fallbackClip, 'NO_BRIDGE 时应回落到渲染层剪贴板');
+  assert.equal(fallbackClip.args[0], JSON.stringify(BASE_MCP, null, 2));
   assert.ok(fallback.text('toasts').includes('MCP 配置已复制到剪贴板'));
 
-  const broken = await bootApp({ copyFails: true, clipboardFails: true });
+  // 渲染层剪贴板也失败：提示手动复制
+  const broken = await bootApp({ clipboardFails: true });
   await broken.openSettings();
   await broken.click('agent-btn-copy-mcp');
-  assert.ok(broken.text('toasts').includes('已复制失败：请手动选中 MCP 配置文本复制'));
+  assert.ok(broken.text('toasts').includes('复制失败：请手动选中 MCP 配置文本复制'));
 
-  // MCP 配置为空（后端返回 null）且桥复制不可用：给出「没有可复制」提示
-  const blank = await bootApp({ copyFails: true, mcp: null });
+  // 配置为空（后端返回 null）：给出「没有可复制」提示
+  const blank = await bootApp({ mcp: null });
   await blank.openSettings();
   await blank.click('agent-btn-copy-mcp');
   assert.ok(blank.text('toasts').includes('没有可复制的 MCP 配置'));

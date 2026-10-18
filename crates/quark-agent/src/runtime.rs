@@ -45,7 +45,10 @@ pub fn resolve_bridge_endpoint(profile_dir: &Path, token: &str) -> String {
 /// 配置源适配：网关每次都从这里实时读取开关/凭据/范围（不缓存）。
 pub struct ConfigSourceAdapter {
     pub config: Arc<Mutex<AgentConfigManager>>,
+    /// 真实会话 generation（由宿主注入；工具层的会话绑定调用需要）。
+    pub generation: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
+
 
 impl ConfigSource for ConfigSourceAdapter {
     fn access(&self) -> AccessSnapshot {
@@ -60,7 +63,7 @@ impl ConfigSource for ConfigSourceAdapter {
     }
 
     fn generation(&self) -> u64 {
-        0
+        (self.generation)()
     }
 }
 
@@ -78,6 +81,7 @@ pub struct AgentRuntime {
     /// 工具层宿主的会话 generation 提供者（真实 Core 的 generation）。
     pub generation: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
+
 
 impl AgentRuntime {
     pub fn new(
@@ -99,7 +103,10 @@ impl AgentRuntime {
             journal.clone(),
             plans.clone(),
         ));
-        let source = Arc::new(ConfigSourceAdapter { config: config.clone() });
+        let source = Arc::new(ConfigSourceAdapter {
+            config: config.clone(),
+            generation: generation.clone(),
+        });
         let gateway = Arc::new(AgentGateway::new(
             source.clone(),
             tools.clone() as Arc<dyn ToolRegistry>,

@@ -39,6 +39,7 @@
     (/Win/i.test(global.navigator.platform) ? 'win32' : 'linux');
   var api = {
     auth: {}, fs: {}, transfer: {}, dialog: {}, settings: {},
+    agent: {}, chat: {},
     platform: platform, runtime: 'tauri',
     app: { quit: function () { return call('app.quit'); } },
     onToast: function (cb) { return listen('qk:toast', cb); },
@@ -71,6 +72,30 @@
   };
   api.settings.get = method('settings.get');
   api.settings.set = method('settings.set');
+  // 外部 Agent 接入（crates/quark-agent 的 runtime.handle 分发；方法名与其 match 分支一致）。
+  ['status', 'enable', 'disable', 'rotate'].forEach(function (name) {
+    api.agent[name] = method('agent.' + name);
+  });
+  // 后端命令是 agent.updateScope（agent.scope 为别名），补丁为对象
+  api.agent.setScope = method('agent.updateScope');
+  // journal 的标量 limit 装进 { limit } 信封；后端返回 { records: [...] }，
+  // 这里解包成数组，渲染层保持 qck 的「journal() 返回记录数组」语义。
+  api.agent.journal = function (limit) {
+    return call('agent.journal', { limit: Number(limit) || 20 }).then(function (res) {
+      if (res && Array.isArray(res.records)) return res.records;
+      return Array.isArray(res) ? res : [];
+    });
+  };
+  api.agent.mcpConfig = function () { return call('agent.mcpConfig'); };
+  // 后端只返回配置本身（无主进程剪贴板能力），复制由渲染层兜底完成
+  api.agent.copyMcpConfig = function () { return call('agent.mcpConfig'); };
+  // 内置对话：进度事件走 Tauri 事件通道（与 qk:auth-changed 相同的订阅方式）。
+  ['status', 'saveConfig', 'clearConfig', 'test', 'models', 'clear'].forEach(function (name) {
+    api.chat[name] = method('chat.' + name);
+  });
+  api.chat.history = function (limit) { return call('chat.history', { limit: Number(limit) || 100 }); };
+  api.chat.send = function (text) { return call('chat.send', { text: String(text === undefined ? '' : text) }); };
+  api.chat.onEvent = function (cb) { return listen('qk:chat-event', cb); };
   Object.keys(api).forEach(function (key) {
     if (api[key] && typeof api[key] === 'object') Object.freeze(api[key]);
   });

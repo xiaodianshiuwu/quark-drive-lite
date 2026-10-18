@@ -2173,24 +2173,30 @@
   async function agentCopyMcp() {
     if (!agentBridgeReady()) { toast('warn', '未注入桥接层，无法复制 MCP 配置'); return; }
     var payload = '';
-    var copiedByBridge = false;
+    var wroteToSystemClipboard = false;
     try {
       var text = await API.agent.copyMcpConfig();
+      // 兼容两种后端语义：返回配置对象/JSON 文本（Tauri 无主进程剪贴板能力），
+      // 或返回 true 表示后端已直接写系统剪贴板（qck Electron 形态）。
       if (typeof text === 'string') payload = text;
       else if (text && typeof text === 'object') payload = JSON.stringify(text, null, 2);
-      copiedByBridge = !!payload;
+      else if (text === true) wroteToSystemClipboard = true;
     } catch (err) {
       // 后端未提供复制命令（NO_BRIDGE）时退回渲染层剪贴板；其它错误照常上报
       var e = API.normalizeError(err, '复制 MCP 配置失败');
       if (e.code !== 'NO_BRIDGE') { reportError(e, '复制 MCP 配置失败'); return; }
     }
-    if (!payload) payload = agentOf().mcpText;
-    if (!payload) { toast('warn', '没有可复制的 MCP 配置'); return; }
-    // 桥接层已写系统剪贴板时不必再写一次；只有回退路径才用渲染层剪贴板
-    var copied = copiedByBridge;
-    if (!copied) copied = await copyTextToClipboard(payload);
-    if (copied) toast('info', 'MCP 配置已复制到剪贴板');
-    else toast('warn', '已复制失败：请手动选中 MCP 配置文本复制', 6000);
+    if (!payload && !wroteToSystemClipboard) payload = agentOf().mcpText;
+    if (payload) {
+      // 后端只回配置不写剪贴板（Tauri 形态）：由渲染层写；失败则提示手动复制
+      var copied = await copyTextToClipboard(payload);
+      if (copied) toast('info', 'MCP 配置已复制到剪贴板');
+      else toast('warn', '复制失败：请手动选中 MCP 配置文本复制', 6000);
+    } else if (wroteToSystemClipboard) {
+      toast('info', 'MCP 配置已复制到剪贴板');
+    } else {
+      toast('warn', '没有可复制的 MCP 配置');
+    }
     await loadAgentMcp();
   }
 

@@ -39,6 +39,24 @@ test('Tauri bridge preserves the renderer contract and named scalar parameters',
   ]);
   assert.equal(qk.platform, 'darwin');
   assert.equal(qk.dialog.getPathForFile({ path: '/untrusted' }), '');
+  // agent/chat 扩展契约：方法名与 crates/quark-agent 的 runtime.handle 分发一致
+  await qk.agent.journal(20);
+  await qk.agent.mcpConfig();
+  await qk.agent.setScope({ writeMode: 'read-only' });
+  await qk.chat.history(100);
+  await qk.chat.send('你好');
+  assert.deepEqual(calls.slice(-5), [
+    ['qk_call', { method: 'agent.journal', params: { limit: 20 } }],
+    ['qk_call', { method: 'agent.mcpConfig', params: {} }],
+    ['qk_call', { method: 'agent.updateScope', params: { writeMode: 'read-only' } }],
+    ['qk_call', { method: 'chat.history', params: { limit: 100 } }],
+    ['qk_call', { method: 'chat.send', params: { text: '你好' } }]
+  ]);
+  // chat.onEvent：Tauri 事件通道 qk:chat-event
+  let chatHandler = null;
+  const offChat = qk.chat.onEvent(() => {});
+  assert.equal(typeof offChat, 'function', 'chat.onEvent 必须返回取消订阅函数');
+  offChat();
 });
 
 test('Tauri rejects with NEED_LOGIN intact rather than losing its code', async () => {

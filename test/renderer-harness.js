@@ -565,6 +565,8 @@ async function bootApp(opts = {}) {
     qk.agent.copyMcpConfig = (...args) => {
       calls.push({ ns: 'agent', name: 'copyMcpConfig', args });
       if (opts.copyFails) return Promise.reject({ code: 'NO_BRIDGE', message: '复制命令不可用' });
+      // 与真实后端一致：mcpConfig 为空时返回 null（而不是字符串 "null"）
+      if (mcp === null) return Promise.resolve(null);
       return Promise.resolve(JSON.stringify(mcp, null, 2));
     };
 

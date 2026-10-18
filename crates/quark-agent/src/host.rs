@@ -1,8 +1,8 @@
 //! Agent 工具层的宿主适配：把 quark-core / quark-transfer 的业务分发包成
 //! `quark_agent::tools::HostDeps`，并统一上游错误语义。
 
-use quark_agent::policy::AgentToolError;
-use quark_agent::tools::HostDeps;
+use crate::policy::AgentToolError;
+use crate::tools::HostDeps;
 use quark_core::Core;
 use quark_transfer::TransferManager;
 use serde_json::Value;
@@ -23,9 +23,11 @@ impl ToolHost {
 
     /// quark-core 错误 → AgentToolError：保留上游 code（NEED_LOGIN 等须原样透传）。
     fn map_core_error(e: quark_core::Error) -> AgentToolError {
+        // upstream_code 必须是字符串 code（如 "NOT_FOUND"）：工具层据此判断终态错误；
+        // 数字 biz_code 只进提示文本，不参与判断（探针实测：删除后 fs.info 返回
+        // code=NOT_FOUND / biz=21001 / http=404，判定依据是 code 而非 biz）。
         let mut out = AgentToolError::from_upstream(&e.code, e.message.clone(), None);
         if let Some(biz) = e.biz_code {
-            out.upstream_code = Some(serde_json::json!(biz));
             out.upstream_message = out
                 .upstream_message
                 .or_else(|| Some(format!("biz_code={biz}")));

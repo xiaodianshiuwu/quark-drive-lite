@@ -20,6 +20,7 @@ pub mod chat;
 pub mod chat_config;
 pub mod tools;
 pub mod runtime;
+pub mod host;
 
 pub use plans::PlanStore;
 pub use policy::{AgentError, AgentToolError};
