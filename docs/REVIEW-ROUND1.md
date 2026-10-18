@@ -103,3 +103,47 @@
 
 ### 第一轮审查结论
 候选树 `b2002f4` 通过第一轮全量审查；所有 P0/P1 与关键 P2 已修复并复测。
+
+---
+
+# 第二轮全量审查记录（复核 + 独立交叉验证）
+
+**审查对象树**：`e90aaa1`（第一轮验收树 + 审查记录）→ 修复至 `78a59aa`。
+**审查方式**：独立复核子智能体（6508cc71）+ 全量审查子智能体（e1d46306，含 10 项语义对照表与缺失测试清单）+ Lead 自查修复 diff。
+
+## 1. 修复复核（第一轮 5 项修复逐一验证）
+1. policy raw_code 透传：**通过**（白名单双向单测；非上游错误不误透传）
+2. gateway worker abort：**通过**（合成 key 冲突不可达有注释；stop 幂等无泄漏）
+3. chat tool_message：**通过**（执行侧残留 P1 已在 78a59aa 补齐：执行/overflow 循环与回填同一 filter）
+4. host ensure_session：**通过**（生产闭包真实 generation；0=不绑定哨兵不冲突）
+5. main.rs NEED_LOGIN 链路：**通过**（raw_code → Error::new → 字符串比较命中 → qk:auth-changed）
+
+## 2. 第二轮新发现与处置
+| 级别 | 问题 | 处置 | 提交 |
+|---|---|---|---|
+| P1 | 执行/overflow 循环不过滤无 name 调用 → 孤儿 tool 消息 400 | 同一 filter + 回归测试 | 78a59aa |
+| P1 | safe_info 把 NOT_FOUND 当终态（偏离 qck transient，recent 兜底失效） | 恢复 transient 语义；删除核对保持直查终态 | 37b7828 |
+| P1 | staged 副本只在全 done 清理（失败/取消堆积用户数据副本） | 任意终态即清理；超时保留 | 37b7828 |
+| P1 | execute 层 result 全量落盘审计（read_text 正文片段进 journal + 双重记账） | 审计归入口层，execute 只记 ms | 37b7828 |
+| P2 | journal 脱敏缺 st/__puus/__pus/ctoken 与协议相对形态 | 补齐（夸克直链实际形态） | 37b7828 |
+| P2 | gateway/chat/plan_execute 三处错误出口未吃 raw_code | 统一 raw_code 优先 | 37b7828 |
+| P2 | list_transfers 无 limit 截断 | 补 limit 1..200 默认 100 + truncated | 37b7828 |
+| P2 | delete 核对逐 fid 串行最坏 25 分钟超 MCP 超时 | 批量轮询 15×2s 最坏 30s | 37b7828 |
+| P2 | 运行时允许把根 "0" 设为授权根 | normalize 拒绝（对齐 qck UI） | 37b7828 |
+| 测试 | read_text_at 零测试、只读拦截只测 4/10 工具 | 补全套 + 全 10 写工具拦截 → 77 测试 | 37b7828 |
+
+## 3. 未修复（记录理由）
+- P2 ToolDef 无 title/annotations（MCP 危险标注与 UI 中文工具名）：功能增强而非缺陷，涉及 20 工具逐一填表，记入后续；gateway list_tools 的 title 空串为契约兼容字段。
+- P2 传输轮询 250ms snapshot：基线既有行为，非本次引入。
+- P2 chat.clear 不查 busy：与 qck 同构。
+- P2 group_of 死代码 skip 分支/modified_month UTC：行为无害（都进"其他"），时区偏差已注释。
+
+## 4. 第二轮最终回归（全部实跑）
+- cargo test -p quark-agent：**78/78**
+- agent_loop_verify 离线闭环：**16/16**
+- cargo check --workspace：0 error 0 warning
+- npm test（Chrome）：**53/53**
+- 真实账号验收：**exit=0**（file/dir 均 deleted，deleted_to_recycle=true）
+
+## 5. 第二轮结论
+树 `78a59aa` 通过第二轮全量审查。两轮共修复 3×P0、9×P1、12×P2（其余 4 项记录理由未修），测试从 75 增至 78。
