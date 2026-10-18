@@ -3016,6 +3016,159 @@
    * 视图切换
    * ================================================================== */
 
+  /* ================================================================== *
+   * 重装前备份（Phase-2）：分批发现 + 水位背压 + 可恢复上传
+   * ================================================================== */
+
+  var backup = {
+    pollTimer: null,
+    planned: null,
+  };
+
+  function ensureBackup() {
+    if (backup.inited) return;
+    backup.inited = true;
+    var pick = $('backup-pick-dir');
+    var plan = $('backup-plan');
+    var start = $('backup-start');
+    var retry = $('backup-retry');
+    var cancel = $('backup-cancel');
+    var verify = $('backup-verify');
+    if (pick) pick.addEventListener('click', function () {
+      API.dialog.pickDirs().then(function (picked) {
+        var dir = Array.isArray(picked) ? picked[0] : picked;
+        if (!dir) return;
+        $('backup-root').value = dir;
+        $('backup-plan-result').hidden = true;
+        $('backup-verify-result').hidden = true;
+      }).catch(function (e) { toast('选择目录失败：' + errText(e), 'error'); });
+    });
+    if (plan) plan.addEventListener('click', function () {
+      var root = String($('backup-root').value || '').trim();
+      if (!root) { toast('请先选择本地目录', 'error'); return; }
+      var fid = String($('backup-target').value || '0').trim() || '0';
+      plan.disabled = true;
+      API.backup.plan({ rootDir: root, targetFid: fid }).then(function (r) {
+        backup.planned = r;
+        start.disabled = false;
+        var box = $('backup-plan-result');
+        box.hidden = false;
+        box.textContent = '发现 ' + fmtInt(r.files) + ' 个文件、' + fmtInt(r.dirs) + ' 个目录，共 '
+          + fmtBytes(r.totalBytes) + (r.warnings ? '；' + fmtInt(r.warnings) + ' 个不可读项（将跳过并记录）' : '');
+      }).catch(function (e) {
+        toast('预览失败：' + errText(e), 'error');
+      }).finally(function () { plan.disabled = false; });
+    });
+    if (start) start.addEventListener('click', function () {
+      var root = String($('backup-root').value || '').trim();
+      var fid = String($('backup-target').value || '0').trim() || '0';
+      if (!root) { toast('请先选择本地目录', 'error'); return; }
+      start.disabled = true;
+      API.backup.start({ account: 'local', rootDir: root, targetFid: fid }).then(function () {
+        $('backup-plan-result').hidden = true;
+        $('backup-run').hidden = false;
+        startBackupPolling();
+      }).catch(function (e) {
+        toast('启动失败：' + errText(e), 'error');
+      }).finally(function () { start.disabled = false; });
+    });
+    if (retry) retry.addEventListener('click', function () {
+      API.backup.retry().then(function (r) {
+        toast('已重新入队 ' + fmtInt(r.requeued) + ' 个失败任务', 'ok');
+      }).catch(function (e) { toast('重试失败：' + errText(e), 'error'); });
+    });
+    if (cancel) cancel.addEventListener('click', function () {
+      API.backup.cancel().then(function () {
+        stopBackupPolling();
+        $('backup-run').hidden = true;
+        toast('备份已取消（任务现场保留，同目录再次开始=续扫）', 'ok');
+      }).catch(function (e) { toast('取消失败：' + errText(e), 'error'); });
+    });
+    if (verify) verify.addEventListener('click', function () {
+      verify.disabled = true;
+      API.backup.verify({ sampleRatePpm: 10000 }).then(function (r) {
+        var box = $('backup-verify-result');
+        box.hidden = false;
+        var cls = r.status === 'verified' ? 'ok' : (r.status === 'partial' ? 'warn' : 'error');
+        var lines = ['验证结果：' + r.status + '（清单 ' + fmtInt(r.listedOk) + '/' + fmtInt(r.totalSuccess)
+          + ' 一致，缺失 ' + fmtInt(r.listedMissing) + '，大小不符 ' + fmtInt(r.sizeMismatch)
+          + '；抽样哈希 ' + fmtInt(r.sampleOk) + '/' + fmtInt(r.sampleChecked) + ' 一致）'];
+        (r.issues || []).slice(0, 5).forEach(function (it) {
+          lines.push('· ' + (it.kind || '') + ' ' + (it.rel_path || it.dir || '') + (it.detail ? '：' + it.detail : ''));
+        });
+        box.textContent = lines.join('\n');
+        box.dataset.level = cls;
+      }).catch(function (e) { toast('验证失败：' + errText(e), 'error'); })
+        .finally(function () { verify.disabled = false; });
+    });
+    // 进入视图时若已有会话在跑则恢复轮询
+    API.backup.status().then(function (st) {
+      if (st && st.running) {
+        $('backup-run').hidden = false;
+        startBackupPolling();
+      }
+    }).catch(function () {});
+  }
+
+  function startBackupPolling() {
+    stopBackupPolling();
+    backupPollOnce();
+    backup.pollTimer = setInterval(backupPollOnce, 2000);
+  }
+
+  function stopBackupPolling() {
+    if (backup.pollTimer) { clearInterval(backup.pollTimer); backup.pollTimer = null; }
+  }
+
+  function backupPollOnce() {
+    // 视图隐藏时不查询（恢复可见时 ensureBackup 重启轮询）
+    if (state.view !== 'backup') { stopBackupPolling(); return; }
+    API.backup.status().then(function (st) {
+      if (!st || !st.running) { return; }
+      var grid = $('backup-stats');
+      if (!grid) return;
+      var cells = [
+        ['已发现', fmtInt(st.discovered)],
+        ['排队', fmtInt(st.pending)],
+        ['上传中', fmtInt(st.uploading)],
+        ['核对中', fmtInt(st.verifying)],
+        ['成功', fmtInt(st.success)],
+        ['失败', fmtInt(st.failed)],
+        ['跳过', fmtInt(st.skipped)],
+        ['队列深度', fmtInt(st.queueDepth)],
+        ['已上传', fmtBytes(st.uploadedBytes)],
+      ];
+      grid.textContent = '';
+      cells.forEach(function (c) {
+        var cell = document.createElement('div');
+        cell.className = 'backup-cell';
+        var k = document.createElement('div');
+        k.className = 'backup-k';
+        k.textContent = c[0];
+        var v = document.createElement('div');
+        v.className = 'backup-v';
+        v.textContent = c[1];
+        cell.appendChild(k); cell.appendChild(v);
+        grid.appendChild(cell);
+      });
+    }).catch(function () { stopBackupPolling(); });
+  }
+
+  function fmtInt(n) {
+    var v = Number(n);
+    if (!isFinite(v)) return '0';
+    return v.toLocaleString('zh-CN');
+  }
+
+  function fmtBytes(n) {
+    var v = Number(n);
+    if (!isFinite(v) || v <= 0) return '0 B';
+    var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+    return (i === 0 ? v : v.toFixed(1)) + ' ' + units[i];
+  }
+
   function setView(view) {
     state.view = view;
     Array.prototype.forEach.call(el.nav.querySelectorAll('.nav-item'), function (b) {
@@ -3025,10 +3178,12 @@
     el.viewTransfers.hidden = view !== 'transfers';
     el.viewSettings.hidden = view !== 'settings';
     if (el.viewChat) el.viewChat.hidden = view !== 'chat';
+    if (el.viewBackup) el.viewBackup.hidden = view !== 'backup';
     setTopbarForView();
     if (view === 'files') scheduleRows();
     if (view === 'transfers') refreshTransfers();
     if (view === 'chat') ensureChat();
+    if (view === 'backup') ensureBackup();
     if (view === 'settings') {
       renderSettings();
       ensureAgent();
@@ -3498,6 +3653,7 @@
     el.agentBtnCopyMcp = $('agent-btn-copy-mcp');
     // 对话视图
     el.viewChat = $('view-chat');
+    el.viewBackup = $('view-backup');
     el.chatCard = $('chat-card');
     el.chatCardHint = $('chat-card-hint');
     el.chatCardDot = $('chat-card-dot');

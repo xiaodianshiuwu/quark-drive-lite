@@ -522,6 +522,34 @@ async function bootApp(opts = {}) {
       qk.chat.status = () => Promise.reject({ code: 'SERVER', message: opts.chatStatusError });
     }
     if (opts.sendImpl && bridgeMode === 'full') qk.chat.send = opts.sendImpl;
+    // 备份（Phase-2）：backupImpl = { plan, start, status, verify } 可覆盖；默认空响应
+    if (bridgeMode === 'full') {
+      const bkImpl = opts.backupImpl || {};
+      const bkDefault = {
+        plan: { files: 8, dirs: 2, warnings: 0, totalBytes: 4096, samples: [] },
+        start: { running: true },
+        status: null, // 动态（跑/不跑两态由 opts.backupRunning 决定）
+        retry: { requeued: 0 },
+        cancel: { canceled: true },
+        verify: { status: 'verified', totalSuccess: 8, listedOk: 8, listedMissing: 0,
+          sizeMismatch: 0, sampleRequested: 8, sampleChecked: 8, sampleOk: 8, sampleMismatch: 0, issues: [] },
+      };
+      ['plan', 'start', 'retry', 'cancel', 'verify'].forEach((name) => {
+        qk.backup[name] = (...args) => {
+          calls.push({ ns: 'backup', name, args });
+          return Promise.resolve(bkImpl[name] !== undefined ? clone(bkImpl[name]) : clone(bkDefault[name]));
+        };
+      });
+      qk.backup.status = (...args) => {
+        calls.push({ ns: 'backup', name: 'status', args });
+        if (bkImpl.status) return Promise.resolve(clone(bkImpl.status));
+        const running = !!opts.backupRunning;
+        return Promise.resolve(running ? {
+          running: true, account: 'local', discovered: 0, pending: 1, uploading: 1,
+          verifying: 0, success: 6, failed: 0, skipped: 0, canceled: 0, queueDepth: 2, uploadedBytes: 4096,
+        } : { running: false });
+      };
+    }
   }
 
   // Agent 接入：状态机在假桥里保持，模拟主进程真实行为

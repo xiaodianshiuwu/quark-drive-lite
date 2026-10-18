@@ -39,6 +39,10 @@
         <span>传输列表</span>
         <span class="nav-badge" id="transfer-badge" hidden></span>
       </button>
+      <button type="button" class="nav-item" data-view="backup">
+        <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-backup"></use></svg>
+        <span>备份</span>
+      </button>
       <button type="button" class="nav-item" data-view="chat">
         <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-chat"></use></svg>
         <span>对话</span>
@@ -340,6 +344,35 @@
     </section>
 
     <!-- ======================= 视图：对话 ======================= -->
+    <section class="view" id="view-backup" hidden>
+      <div class="card" id="backup-wizard">
+        <h2>重装前备份</h2>
+        <p class="muted">把整个本地目录分批、限速、可恢复地备份到网盘指定目录。只读取本地文件；绝不删除或移动本地内容。</p>
+        <div class="row">
+          <button type="button" class="btn" id="backup-pick-dir">选择本地目录</button>
+          <input type="text" id="backup-root" readonly placeholder="未选择目录" />
+        </div>
+        <div class="row">
+          <label for="backup-target">云端目标目录 fid（可在「文件」视图复制）</label>
+          <input type="text" id="backup-target" placeholder="0（根目录）" />
+        </div>
+        <div class="row">
+          <button type="button" class="btn" id="backup-plan">预览</button>
+          <button type="button" class="btn btn-primary" id="backup-start" disabled>开始备份</button>
+        </div>
+        <div id="backup-plan-result" class="muted" hidden></div>
+      </div>
+      <div class="card" id="backup-run" hidden>
+        <h2>备份进行中</h2>
+        <div class="backup-grid" id="backup-stats"></div>
+        <div class="row">
+          <button type="button" class="btn" id="backup-retry">重试失败</button>
+          <button type="button" class="btn btn-danger" id="backup-cancel">取消</button>
+          <button type="button" class="btn" id="backup-verify">验证</button>
+        </div>
+        <div id="backup-verify-result" class="muted" hidden></div>
+      </div>
+    </section>
     <section class="view" id="view-chat" hidden>
       <div class="section-head">
         <h2 class="section-title">对话</h2>
@@ -466,6 +499,7 @@
   <symbol id="i-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.2"/><path d="M12 8v5M12 15.8v.02"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 5.5 16 12l-6.5 6.5"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/></symbol>
+  <symbol id="i-backup" viewBox="0 0 24 24"><path d="M12 3v10m0 0 4-4m-4 4-4-4M5 17h14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></symbol>
   <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5c4.7 0 8.5 3.1 8.5 7s-3.8 7-8.5 7c-.9 0-1.8-.11-2.6-.32a10.2 10.2 0 0 1-4.06 1.28.6.6 0 0 1-.6-.86c.4-.86.66-1.7.72-2.45C3.9 15.24 3.5 13.44 3.5 11.5c0-3.9 3.8-7 8.5-7z"/><path d="M8.5 10.5h7M8.5 13.5h4.5"/></symbol>
   <symbol id="i-link-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 14.5 6.8 17.2a3.6 3.6 0 1 1-5-5l2.7-2.7"/><path d="M14.5 9.5l2.7-2.7a3.6 3.6 0 1 1 5 5l-2.7 2.7"/><path d="M4 4l16 16"/></symbol>
 </svg>

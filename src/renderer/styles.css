@@ -796,3 +796,14 @@ select.input { padding-right: 6px; }
 
 .btn-quit { width: calc(100% - 20px); margin: 8px 10px 12px; justify-content: flex-start; color: var(--text-2); }
 .btn-quit:hover { color: var(--text); background: var(--surface-2); }
+
+/* ---- 备份视图（Phase-2） ---- */
+.backup-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 16px; margin: 12px 0; }
+.backup-cell { display: flex; flex-direction: column; gap: 2px; }
+.backup-k { font-size: 12px; color: var(--text-dim, #888); }
+.backup-v { font-size: 16px; font-weight: 600; }
+#backup-wizard .row, #backup-run .row { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+#backup-wizard input[type="text"] { flex: 1; min-width: 200px; }
+#backup-verify-result[data-level="error"] { color: #d9534f; }
+#backup-verify-result[data-level="warn"] { color: #b8860b; }
+#backup-verify-result[data-level="ok"] { color: #2e8b57; }

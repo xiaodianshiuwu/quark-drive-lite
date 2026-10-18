@@ -30,7 +30,10 @@
     'agent.rotate': 1, 'agent.journal': 1, 'agent.mcpConfig': 1, 'agent.copyMcpConfig': 1,
     // 内置对话（模型由用户自配，工具与 Agent 接入同源；进度事件通道 qk:chat-event）
     'chat.status': 1, 'chat.saveConfig': 1, 'chat.clearConfig': 1, 'chat.test': 1,
-    'chat.models': 1, 'chat.history': 1, 'chat.clear': 1, 'chat.send': 1, 'chat.onEvent': 1
+    'chat.models': 1, 'chat.history': 1, 'chat.clear': 1, 'chat.send': 1, 'chat.onEvent': 1,
+    // 重装前备份（Phase-2）
+    'backup.plan': 1, 'backup.start': 1, 'backup.status': 1,
+    'backup.retry': 1, 'backup.cancel': 1, 'backup.verify': 1
   };
 
   /**
@@ -40,7 +43,7 @@
    * 后端接线后 tauri-bridge.js 补上对应方法，missingExtension 自然清空。
    */
   function isExtensionContract(path) {
-    return path.indexOf('agent.') === 0 || path.indexOf('chat.') === 0;
+    return path.indexOf('agent.') === 0 || path.indexOf('chat.') === 0 || path.indexOf('backup.') === 0;
   }
 
   /* ------------------------------------------------------------------ *
@@ -337,6 +340,16 @@
       onEvent: function (cb) {
         return subscribe([['chat', 'onEvent'], ['onChatEvent'], ['on', 'qk:chat-event']], cb);
       }
+    },
+
+    /** 重装前备份（Phase-2）：方法由 tauri-bridge.js 按同名命令映射。 */
+    backup: {
+      plan: expose('backup', 'plan'),
+      start: expose('backup', 'start'),
+      status: expose('backup', 'status'),
+      retry: expose('backup', 'retry'),
+      cancel: expose('backup', 'cancel'),
+      verify: expose('backup', 'verify')
     },
 
     /** 主进程 qk:toast 推送订阅。 */
