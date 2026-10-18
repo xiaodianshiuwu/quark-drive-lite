@@ -212,7 +212,7 @@ async fn process_one(
         Some((p, _)) => p.to_string(),
         None => String::new(),
     };
-    let parent_fid = ensure_dir_chain(store, remote, &task.target_fid, &parent_rel).await?;
+    let parent_fid = ensure_dir_chain(store, remote, &task.account, &task.target_fid, &parent_rel).await?;
 
     // 3) 冲突预检：远端同名可见且核对策略为 skip → skipped:conflict（默认不覆盖）
     let name = base_name(&task.local_path);
@@ -264,14 +264,15 @@ async fn process_one(
 async fn ensure_dir_chain(
     store: &Store,
     remote: &dyn RemoteOps,
+    account: &str,
     target_fid: &str,
     rel: &str,
 ) -> std::result::Result<String, Fail> {
     if rel.is_empty() {
         return Ok(target_fid.to_string());
     }
-    // 缓存命中
-    if let Ok(Some(fid)) = store.get_dir(&String::new(), target_fid, rel) {
+    // 缓存命中（按任务真实 account 记账，verify 同键可查）
+    if let Ok(Some(fid)) = store.get_dir(account, target_fid, rel) {
         return Ok(fid);
     }
     // 逐级
@@ -280,7 +281,7 @@ async fn ensure_dir_chain(
     let mut acc = String::new();
     for part in parts {
         acc = if acc.is_empty() { part.to_string() } else { format!("{acc}/{part}") };
-        if let Ok(Some(fid)) = store.get_dir("", target_fid, &acc) {
+        if let Ok(Some(fid)) = store.get_dir(account, target_fid, &acc) {
             cur = fid;
             continue;
         }
@@ -288,7 +289,7 @@ async fn ensure_dir_chain(
             .ensure_dir(target_fid, &acc)
             .await
             .map_err(|e| Fail::Retryable(format!("建立目录 {acc} 失败：{e}")))?;
-        let _ = store.put_dir("", target_fid, &acc, &fid);
+        let _ = store.put_dir(account, target_fid, &acc, &fid);
         cur = fid;
     }
     Ok(cur)
@@ -416,7 +417,7 @@ mod tests {
             mk_task("中文/图 片.png", b"img", &root),
         ];
         store.upsert_discovered(&tasks).unwrap();
-        store.put_dir("", "root1", "sub", "dir-sub").unwrap();
+        store.put_dir("acc1", "root1", "sub", "dir-sub").unwrap();
 
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         let cfg = BackupConfig { retry_base_ms: 1, max_attempts: 1, ..Default::default() };
@@ -438,7 +439,7 @@ mod tests {
         assert_eq!(st.failed, 0);
         assert!(bytes.load(Ordering::Relaxed) >= 8);
         // 目录映射已建：sub 命中缓存；中文 由 ensure_dir 建立
-        assert_eq!(store.get_dir("", "root1", "中文").unwrap().as_deref(), Some("dir-中文"));
+        assert_eq!(store.get_dir("acc1", "root1", "中文").unwrap().as_deref(), Some("dir-中文"));
     }
 
     #[tokio::test]

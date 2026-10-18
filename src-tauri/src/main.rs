@@ -119,7 +119,8 @@ async fn qk_call(
         let core = state.core.clone();
         let profile = app.path().app_data_dir().unwrap_or_default();
         let m = method.as_str();
-        match m {
+        let mapped: std::result::Result<Value, quark_backup::BackupError> = async {
+            match m {
             "backup.plan" => {
                 let root = params["rootDir"].as_str().unwrap_or("").to_string();
                 let fid = params["targetFid"].as_str().unwrap_or("0").to_string();
@@ -140,8 +141,11 @@ async fn qk_call(
                 let rate = params["sampleRatePpm"].as_u64().unwrap_or(10_000) as u32;
                 state.backup.verify(rate).await
             }
-            _ => Err(Error::new("INVALID_ARG", format!("未知备份方法：{m}"))),
+                _ => Err(quark_backup::BackupError::new("INVALID_ARG", format!("未知备份方法：{m}"))),
+            }
         }
+        .await;
+        mapped.map_err(|e| Error::new(e.code, e.message))
     } else if method.starts_with("agent.") || method.starts_with("chat.") {
         // 事件回调：对话过程中的工具进度实时推送到界面（事件不含凭据）。
         let event_handle = app.clone();
