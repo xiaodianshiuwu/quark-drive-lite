@@ -190,7 +190,11 @@ fn hostname_of(host: &str) -> &str {
 fn is_loopback_host(host: &str) -> bool {
     // 与 qck 完全一致的允许列表：只认这四个，不扩大到整个 127.0.0.0/8，
     // 也不接受 DNS 解析（解析结果不可控，等于开放任意远程明文）。
-    matches!(hostname_of(host), "localhost" | "127.0.0.1" | "[::1]" | "::1")
+    // hostname 大小写不敏感（Node 的 URL.hostname 会小写化）。
+    matches!(
+        hostname_of(host).to_ascii_lowercase().as_str(),
+        "localhost" | "127.0.0.1" | "[::1]" | "::1"
+    )
 }
 
 /// 校验并规范化 Base URL（只允许 https，或本机回环的 http）。
@@ -212,7 +216,9 @@ pub fn normalize_base_url(input: Option<&Value>) -> Result<String, AgentToolErro
             Some("远程服务请使用 https，避免 API Key 明文传输"),
         ));
     }
-    Ok(format!("{scheme}://{host}{pathname}"))
+    // hostname 一律小写化（qck 的 `url.host` 小写化 hostname，保留端口）；
+    // pathname 保留原始大小写。
+    Ok(format!("{scheme}://{}{pathname}", host.to_ascii_lowercase()))
 }
 
 /// `maxRounds` 归一化：非有限或 <=0 → 默认 8；否则 clamp 1..=20 并向下取整。
@@ -548,6 +554,15 @@ mod tests {
             let url = format!("http://{host}:11434/v1");
             assert_eq!(normalize_base_url(Some(&json!(url))).unwrap(), url);
         }
+        // 大小写不敏感（qck 的 URL.hostname 会小写化）
+        assert_eq!(
+            normalize_base_url(Some(&json!("http://LOCALHOST:11434/v1"))).unwrap(),
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(
+            normalize_base_url(Some(&json!("https://API.Example.COM/v1"))).unwrap(),
+            "https://api.example.com/v1"
+        );
         // 远程明文 http 拒绝并给出可操作提示
         for bad in ["http://api.deepseek.com/v1", "http://10.0.0.5:8080", "http://localhost.evil.com/v1"] {
             let err = normalize_base_url(Some(&json!(bad))).unwrap_err();

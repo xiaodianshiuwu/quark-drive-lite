@@ -2474,18 +2474,23 @@ mod fake_tests {
 
     struct Harness {
         deps: std::sync::Arc<FakeDrive>,
-        tools: QuarkTools,
+        tools: std::sync::Arc<QuarkTools>,
         #[allow(dead_code)]
         dir: std::path::PathBuf,
     }
 
     fn harness(_scope: ScopeSnapshot) -> Harness {
-        let dir = std::env::temp_dir().join(format!("qk-agent-tools-{}-{}", std::process::id(), uuid::Uuid::new_v4()));
+        // 短路径：Unix socket 路径受 SUN_LEN 限制（macOS temp_dir 本身就很长）。
+        let dir = std::path::PathBuf::from(format!(
+            "/tmp/qk-tools-{}-{}",
+            std::process::id(),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let deps = std::sync::Arc::new(FakeDrive::with_root());
         let journal = std::sync::Arc::new(crate::journal::Journal::open(&dir).unwrap());
         let plans = std::sync::Arc::new(crate::plans::PlanStore::new());
-        let tools = QuarkTools::new(deps.clone(), journal, plans);
+        let tools = std::sync::Arc::new(QuarkTools::new(deps.clone(), journal, plans));
         Harness { deps, tools, dir }
     }
 
@@ -2677,6 +2682,99 @@ mod fake_tests {
         let uploaded_path = uploads[0]["localPaths"][0].as_str().unwrap();
         assert!(uploaded_path.ends_with("renamed.txt"));
         let _ = std::fs::remove_file(&src);
+    }
+
+    #[tokio::test]
+    async fn gateway_end_to_end_with_node_cli_adapter() {
+        // 真实网关 + 真实工具层 + 假网盘 + 真实 Node CLI 适配器子进程（离线闭环）。
+        use crate::gateway::{AccessSnapshot, AgentGateway, ConfigSource};
+        let h = harness(scope(&["root"], true, &[]));
+        h.deps.add("file-1", "a.txt", false, "root", 10);
+
+        struct Source {
+            token: String,
+            scope: ScopeSnapshot,
+        }
+        impl ConfigSource for Source {
+            fn access(&self) -> AccessSnapshot {
+                AccessSnapshot { enabled: true, token: self.token.clone() }
+            }
+            fn scope(&self) -> ScopeSnapshot {
+                self.scope.clone()
+            }
+        }
+        let token = "a".repeat(64);
+        let source = std::sync::Arc::new(Source {
+            token: token.clone(),
+            scope: scope(&["root"], true, &[]),
+        });
+        let registry: std::sync::Arc<dyn crate::registry::ToolRegistry> = h.tools.clone();
+        let journal = std::sync::Arc::new(crate::journal::Journal::open(&h.dir).unwrap());
+        let gateway = std::sync::Arc::new(AgentGateway::new(source, registry, journal));
+        let sock = h.dir.join("bridge.sock");
+        gateway.clone().start(&sock.to_string_lossy()).await.unwrap();
+
+        let script = format!("{}/../../tools/agent-cli.js", env!("CARGO_MANIFEST_DIR"));
+        let run_cli = |args: Vec<String>| {
+            let sock = sock.to_string_lossy().to_string();
+            let token = token.clone();
+            let script = script.clone();
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    std::process::Command::new("node")
+                        .arg(&script)
+                        .args(&args)
+                        .env("QCK_AGENT_ENDPOINT", &sock)
+                        .env("QCK_AGENT_TOKEN", &token)
+                        .output()
+                })
+                .await
+                .unwrap()
+            }
+        };
+
+        // 1) status：真实 CLI 能认证并读到网关状态
+        let out = run_cli(vec!["status".into()]).await.unwrap();
+        assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("\"toolCount\": 20"), "output={stdout}");
+
+        // 2) tools：20 个工具定义（含新增 delete_entries）
+        let out2 = run_cli(vec!["tools".into()]).await.unwrap();
+        assert!(out2.status.success());
+        let stdout2 = String::from_utf8_lossy(&out2.stdout);
+        assert!(stdout2.contains("delete_entries"));
+
+        // 3) call list_dir：真实工具执行走假网盘
+        let out3 = run_cli(vec![
+            "call".into(),
+            "list_dir".into(),
+            r#"{"pdir_fid":"root","size":5}"#.into(),
+        ])
+        .await
+        .unwrap();
+        assert!(out3.status.success(), "stderr={}", String::from_utf8_lossy(&out3.stderr));
+        let stdout3 = String::from_utf8_lossy(&out3.stdout);
+        assert!(stdout3.contains("a.txt"), "output={stdout3}");
+
+        // 4) 错误 token 必须被拒
+        let bad = tokio::task::spawn_blocking({
+            let sock = sock.to_string_lossy().to_string();
+            let script = script.clone();
+            move || {
+                std::process::Command::new("node")
+                    .arg(&script)
+                    .arg("status")
+                    .env("QCK_AGENT_ENDPOINT", &sock)
+                    .env("QCK_AGENT_TOKEN", "b".repeat(64))
+                    .output()
+            }
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!bad.status.success());
+        gateway.stop().await;
     }
 
     #[tokio::test]

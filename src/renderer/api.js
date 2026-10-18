@@ -24,8 +24,24 @@
     'transfer.resume': 1, 'transfer.retry': 1, 'transfer.cancel': 1, 'transfer.clear': 1, 'transfer.onUpdate': 1,
     'dialog.pickDirs': 1, 'dialog.pickFiles': 1, 'dialog.saveDir': 1, 'dialog.confirm': 1,
     'dialog.openPath': 1, 'dialog.showInFolder': 1,
-    'settings.get': 1, 'settings.set': 1
+    'settings.get': 1, 'settings.set': 1,
+    // 外部 Agent 接入（UI 按契约先行；Rust 侧接线后由 tauri-bridge.js 补上同名方法）
+    'agent.status': 1, 'agent.enable': 1, 'agent.disable': 1, 'agent.setScope': 1,
+    'agent.rotate': 1, 'agent.journal': 1, 'agent.mcpConfig': 1, 'agent.copyMcpConfig': 1,
+    // 内置对话（模型由用户自配，工具与 Agent 接入同源；进度事件通道 qk:chat-event）
+    'chat.status': 1, 'chat.saveConfig': 1, 'chat.clearConfig': 1, 'chat.test': 1,
+    'chat.models': 1, 'chat.history': 1, 'chat.clear': 1, 'chat.send': 1, 'chat.onEvent': 1
   };
+
+  /**
+   * 扩展契约：已登记但后端命令尚未接线的方法（agent.* / chat.*）。
+   * bridgeInfo() 把它们单独统计（missingExtension），不计入 missing —— 否则每次启动都会弹
+   * 「桥接层缺少方法」横幅，而这里缺失是预期的过渡状态：面板按未注入桥接层降级、不发调用。
+   * 后端接线后 tauri-bridge.js 补上对应方法，missingExtension 自然清空。
+   */
+  function isExtensionContract(path) {
+    return path.indexOf('agent.') === 0 || path.indexOf('chat.') === 0;
+  }
 
   /* ------------------------------------------------------------------ *
    * 错误
@@ -50,7 +66,13 @@
       if (err.raw === undefined) err.raw = err.raw;
       return err;
     }
-    return mkError(code, message, err.raw !== undefined ? err.raw : err);
+    var e = mkError(code, message, err.raw !== undefined ? err.raw : err);
+    // Tauri 侧错误是普通对象（非 Error）：把 UI 依赖的附加字段一并保留，
+    // 尤其是 chat.send 失败时的 hint、登录失效判断用的 bizCode。
+    if (err.hint !== undefined) e.hint = err.hint;
+    if (err.bizCode !== undefined) e.bizCode = err.bizCode;
+    if (err.httpStatus !== undefined) e.httpStatus = err.httpStatus;
+    return e;
   }
 
   function isNeedLogin(err) {
@@ -107,17 +129,29 @@
       return { injected: false, mock: false, text: '未注入桥接层（window.qk 不存在）' };
     }
     var missing = [];
+    var missingExtension = [];
     Object.keys(CONTRACT).forEach(function (path) {
       var parts = path.split('.');
-      if (!hasMethod(parts[0], parts[1])) missing.push(path);
+      if (hasMethod(parts[0], parts[1])) return;
+      // agent.* / chat.* 是后端尚未接线的扩展契约：单独统计，不触发「缺少方法」横幅
+      if (isExtensionContract(path)) missingExtension.push(path);
+      else missing.push(path);
     });
+    var text;
+    if (missing.length) {
+      text = '桥接层已注入，但缺少 ' + missing.length + ' 个方法（' + missing.join('、') + '）';
+    } else if (missingExtension.length) {
+      text = '桥接层已注入；Agent 接入与对话的后端命令尚未接线（' +
+        missingExtension.length + ' 个扩展方法待提供），相关面板按未注入桥接层降级。';
+    } else {
+      text = '桥接层已注入，全部 ' + Object.keys(CONTRACT).length + ' 个契约方法可用';
+    }
     return {
       injected: true,
       mock: false,
       missing: missing,
-      text: missing.length
-        ? '桥接层已注入，但缺少 ' + missing.length + ' 个方法（' + missing.join('、') + '）'
-        : '桥接层已注入，全部 ' + Object.keys(CONTRACT).length + ' 个契约方法可用'
+      missingExtension: missingExtension,
+      text: text
     };
   }
 
@@ -267,6 +301,44 @@
       set: expose('settings', 'set')
     },
 
+    /**
+     * 外部 Agent 接入。仅作用于本机客户端：启停监听、配置授权范围、查看操作记录、取 MCP 配置。
+     * 这里不暴露任何凭据：status 只含路径与状态，mcpConfig 只含启动命令与环境变量。
+     * 桥接层未提供 agent 命名空间时，全部方法返回 NO_BRIDGE 拒绝（UI 整卡降级）。
+     */
+    agent: {
+      status: expose('agent', 'status'),
+      enable: expose('agent', 'enable'),
+      disable: expose('agent', 'disable'),
+      setScope: expose('agent', 'setScope'),
+      rotate: expose('agent', 'rotate'),
+      journal: expose('agent', 'journal'),
+      mcpConfig: expose('agent', 'mcpConfig'),
+      copyMcpConfig: expose('agent', 'copyMcpConfig')
+    },
+
+    /**
+     * 内置对话。模型服务由用户自己填写（OpenAI 兼容接口），API Key 只写不读：
+     * `status()` 只回 hasKey，渲染层没有任何入口能把 Key 读回来。
+     * 进度事件由桥接层以 `chat.onEvent` 暴露 Tauri 事件监听（通道名 qk:chat-event），
+     * 与 qk:auth-changed 的订阅方式一致；缺失时返回空操作（面板降级）。
+     */
+    chat: {
+      status: expose('chat', 'status'),
+      saveConfig: expose('chat', 'saveConfig'),
+      clearConfig: expose('chat', 'clearConfig'),
+      test: expose('chat', 'test'),
+      /** 拉取模型列表（需已保存 Base URL 与 API Key） */
+      models: expose('chat', 'models'),
+      history: expose('chat', 'history'),
+      clear: expose('chat', 'clear'),
+      send: expose('chat', 'send'),
+      /** 订阅对话进度事件（round / assistant_note / tool_start / tool_end / done / error）。 */
+      onEvent: function (cb) {
+        return subscribe([['chat', 'onEvent'], ['onChatEvent'], ['on', 'qk:chat-event']], cb);
+      }
+    },
+
     /** 主进程 qk:toast 推送订阅。 */
     onToast: function (cb) {
       return subscribe([['onToast'], ['on', 'qk:toast']], cb);
@@ -350,6 +422,27 @@
       }
     };
     api.settings = { get: expose('settings', 'get'), set: expose('settings', 'set') };
+    api.agent = {
+      status: expose('agent', 'status'),
+      enable: expose('agent', 'enable'),
+      disable: expose('agent', 'disable'),
+      setScope: expose('agent', 'setScope'),
+      rotate: expose('agent', 'rotate'),
+      journal: expose('agent', 'journal'),
+      mcpConfig: expose('agent', 'mcpConfig'),
+      copyMcpConfig: expose('agent', 'copyMcpConfig')
+    };
+    api.chat = {
+      status: expose('chat', 'status'),
+      saveConfig: expose('chat', 'saveConfig'),
+      clearConfig: expose('chat', 'clearConfig'),
+      test: expose('chat', 'test'),
+      models: expose('chat', 'models'),
+      history: expose('chat', 'history'),
+      clear: expose('chat', 'clear'),
+      send: expose('chat', 'send'),
+      onEvent: function (cb) { return subscribe([['chat', 'onEvent']], cb); }
+    };
     api.onToast = function (cb) { return subscribe([['onToast']], cb); };
     api.onTransferUpdate = function (cb) { return subscribe([['onTransferUpdate']], cb); };
   }

@@ -131,6 +131,8 @@ pub struct ConnControl {
     conn_id: u64,
     shared: StdArc<Shared>,
     authenticated: StdArc<AtomicBool>,
+    /// 连接已结束（reader 退出）。用于阻止"死连接在工具执行完后又被认证插入池"。
+    closed: StdArc<AtomicBool>,
 }
 
 impl ConnControl {
@@ -142,6 +144,11 @@ impl ConnControl {
     fn transition_to_authenticated(&self, already_authenticated: bool) -> bool {
         if already_authenticated {
             return true;
+        }
+        // 连接已经断开（超时/超限/对端关闭）时不再占用总连接位：
+        // 否则 worker 里正在处理的 auth 会把一个死连接插进池，永久占用一个名额。
+        if self.closed.load(Ordering::SeqCst) {
+            return false;
         }
         self.shared.transition_authenticated(self.conn_id)
     }
@@ -258,6 +265,7 @@ impl AgentGateway {
             conn_id: 0,
             shared: self.shared.clone(),
             authenticated: StdArc::new(AtomicBool::new(false)),
+            closed: StdArc::new(AtomicBool::new(false)),
         }
     }
 
@@ -289,17 +297,24 @@ impl AgentGateway {
             let path = Path::new(endpoint);
             if let Some(parent) = path.parent() {
                 if !parent.as_os_str().is_empty() {
+                    // 与 qck `mkdirSync(..., {recursive:true, mode:0o700})` 对齐：
+                    // 只有目录**由本次创建**时才收紧到 0700；已存在的 profile 目录属于用户，
+                    // 不得被网关顺手改权限（那会影响同目录下其他文件的可访问性）。
+                    let existed = parent.exists();
                     if let Err(e) = std::fs::create_dir_all(parent) {
                         let msg = format!("无法创建桥接端点目录：{e}");
                         *self.shared.last_error.lock().unwrap() = msg.clone();
                         return Err(AgentToolError::new(AgentError::Internal, msg));
                     }
-                    // 目录仅本人可访问（socket 权限之外的第二道；失败不阻断，socket 本身还有 0600）。
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ =
-                            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+                    if !existed {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(
+                                parent,
+                                std::fs::Permissions::from_mode(0o700),
+                            );
+                        }
                     }
                 }
             }
@@ -741,6 +756,7 @@ impl AgentGateway {
         let inflight = StdArc::new(AtomicUsize::new(0));
         let (line_tx, line_rx) = tokio::sync::mpsc::channel::<String>(MAX_QUEUED_REQUESTS);
         let (close_tx, close_rx) = tokio::sync::watch::channel(false);
+        let closed = StdArc::new(AtomicBool::new(false));
         let worker = {
             let this = self.clone();
             let wr = wr.clone();
@@ -748,6 +764,7 @@ impl AgentGateway {
                 conn_id,
                 shared: self.shared.clone(),
                 authenticated: authenticated.clone(),
+                closed: closed.clone(),
             };
             let close_rx = close_rx.clone();
             let close_tx = close_tx.clone();
@@ -758,8 +775,13 @@ impl AgentGateway {
         };
         self.reader_loop(rd, wr, line_tx, close_tx, close_rx, authenticated, inflight)
             .await;
-        let _ = worker.await;
+        // 连接一断开就从池中移除（qck 的 close 事件同样立即 cleanup）：
+        // 正在执行的工具不能继续占着连接位，否则 8 条慢工具会把适配器全部挡在门外。
+        closed.store(true, Ordering::SeqCst);
         self.shared.release(conn_id);
+        // worker 可能仍在执行已进入工具内部的调用；它无法被中断（与 qck 一致），
+        // 这里只是等它收尾，避免测试结束时留下悬挂任务。
+        let _ = worker.await;
     }
 
     /// 读侧：按行切帧、消息上限、认证超时、排队上限。

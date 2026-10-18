@@ -8,6 +8,8 @@
 //! - 启用/停用由用户在 GUI 中显式操作；停用立即删除桥接凭据文件。
 //! - 修改授权范围不需要重启网关：网关每次调用都从配置读取最新范围。
 
+use crate::chat::{AgentChat, EventCallback};
+use crate::chat_config::ChatConfigManager;
 use crate::config::{
     read_bridge_credentials, AgentConfigManager, ScopeSnapshot,
 };
@@ -70,6 +72,9 @@ pub struct AgentRuntime {
     pub plans: Arc<PlanStore>,
     pub tools: Arc<QuarkTools>,
     pub gateway: Arc<AgentGateway>,
+    /// 内置对话引擎（与外部 Agent 共用同一份工具集与授权范围）。
+    pub chat: Arc<AgentChat>,
+    pub chat_config: Arc<ChatConfigManager>,
     /// 工具层宿主的会话 generation 提供者（真实 Core 的 generation）。
     pub generation: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
@@ -96,9 +101,19 @@ impl AgentRuntime {
         ));
         let source = Arc::new(ConfigSourceAdapter { config: config.clone() });
         let gateway = Arc::new(AgentGateway::new(
-            source,
+            source.clone(),
             tools.clone() as Arc<dyn ToolRegistry>,
             journal.clone(),
+        ));
+        let chat_config = Arc::new(
+            ChatConfigManager::open(&profile_dir)
+                .map_err(|e| AgentToolError::new(AgentError::Internal, format!("无法初始化对话配置：{e}")))?,
+        );
+        let chat = Arc::new(AgentChat::new(
+            source,
+            tools.clone() as Arc<dyn ToolRegistry>,
+            chat_config.clone(),
+            Some(journal.clone()),
         ));
         Ok(Arc::new(Self {
             profile_dir,
@@ -107,6 +122,8 @@ impl AgentRuntime {
             plans,
             tools,
             gateway,
+            chat,
+            chat_config,
             generation,
         }))
     }
@@ -282,6 +299,54 @@ impl AgentRuntime {
     /// 供外部（CLI/脚本）读取凭据。
     pub fn bridge_credentials(&self) -> Result<(String, String), AgentToolError> {
         read_bridge_credentials(&self.profile_dir)
+    }
+
+    /// 统一分发 `agent.*` / `chat.*` 方法（qk_call 的 Agent 分支）。
+    ///
+    /// `event` 仅用于 chat.send 的事件推送（宿主注入 emit_to）。
+    pub async fn handle(
+        &self,
+        method: &str,
+        params: Value,
+        event: Option<EventCallback>,
+    ) -> Result<Value, AgentToolError> {
+        match method {
+            "agent.status" => Ok(self.status()),
+            "agent.enable" => self.enable(&params).await,
+            "agent.disable" => self.disable().await,
+            "agent.updateScope" | "agent.scope" => self.update_scope(&params),
+            "agent.rotate" => self.rotate().await,
+            "agent.recentJournal" | "agent.journal" => {
+                let limit = params
+                    .get("limit")
+                    .or_else(|| params.as_u64().map(|_| &Value::Null))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(30) as usize;
+                let rows = self.recent_journal(limit);
+                Ok(rows)
+            }
+            "agent.mcpConfig" | "agent.mcp-config" | "agent.copyMcpConfig" => Ok(self.mcp_config()),
+            "agent.tools" => Ok(json!(self.list_tools())),
+            "chat.status" => Ok(self.chat.status()),
+            "chat.saveConfig" => self.chat_config.update(&params),
+            "chat.clearConfig" => Ok(self.chat_config.clear()),
+            "chat.test" => self.chat.test_connection().await,
+            "chat.models" => self.chat.list_models().await,
+            "chat.history" => {
+                let limit = params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+                Ok(json!(self.chat.history(limit)))
+            }
+            "chat.clear" => Ok(self.chat.clear()),
+            "chat.send" => {
+                let text = params
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AgentToolError::new(AgentError::InvalidArg, "消息不能为空"))?;
+                let outcome = self.chat.send(text, event).await?;
+                Ok(outcome.to_json())
+            }
+            _ => Err(AgentToolError::new(AgentError::InvalidArg, format!("未知 Agent 方法：{method}"))),
+        }
     }
 }
 

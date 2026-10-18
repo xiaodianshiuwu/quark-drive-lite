@@ -246,7 +246,25 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 .quota-bar > i { display: block; height: 100%; background: var(--primary); }
 
 /* ------------------------------- 视图容器 ------------------------------- */
-.view { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 14px 18px 0; }
+/* 视图容器必须可滚动：
+   早期是 `overflow: visible` 且整个视图没有滚动容器，设置页的卡片（含 Agent 接入与对话配置）
+   超出窗口高度时会被**硬截断**——既看不到也滚不到（用户实测反馈"设置叠在一起、无法翻动"）。
+   min-height: 0 让 flex 子项允许收缩；overflow-y: auto 让内容超高时出现滚动条。
+   注意：文件视图（#view-files）自己管理列表滚动（.listwrap 已是 overflow:auto），
+   这里开启滚动对它无副作用；对话视图的输入区需要钉在底部，单独用 #view-chat 覆盖回去。 */
+.view { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 14px 18px 0; overflow-y: auto; }
+
+/* ------------------------------- 对话视图 ------------------------------- */
+/* 模型选择行：输入框 + 「获取列表」按钮并排 */
+.chat-model-row { display: flex; gap: 6px; align-items: stretch; }
+.chat-model-row .chat-input-url { flex: 1; min-width: 0; }
+.chat-model-row .btn { flex: none; }
+
+/* 对话视图是"聊天布局"：配置卡片与消息区滚动、输入区钉底。
+   与其它视图不同——它整体不滚动（.view 的 overflow 会被这里覆盖回去），
+   滚动发生在消息区内部，输入框才不会被滚出视野。 */
+#view-chat { overflow: hidden; }
+#view-chat .chat-messages { flex: 1 1 auto; }
 
 /* ------------------------------- 批量操作条 ------------------------------- */
 .bulkbar {
@@ -437,9 +455,15 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 .tops .op:hover { background: var(--hover); }
 
 /* ------------------------------- 设置 ------------------------------- */
+/* ⚠️ flex-shrink:0 是关键修复：
+   .view 是 flex column 容器，卡片作为 flex 子项默认 flex-shrink:1 —— 窗口不够高时
+   每张卡都被**按比例压扁**、内容被 overflow:hidden 裁掉，看起来就是"设置叠在一起、
+   无法翻动"（实测 Agent 卡自然高度超过 1000px 会被压到很矮）。
+   flex-shrink:0 让卡片保持自然高度，超出部分交给 .view 的 overflow-y:auto 滚动。 */
 .setcard {
   background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--radius-lg); margin-bottom: 14px; overflow: hidden;
+  flex-shrink: 0;
 }
 .setrow {
   display: flex; align-items: center; gap: 18px; padding: 16px 18px;
@@ -470,6 +494,156 @@ select.input { padding-right: 6px; }
 }
 .seg:hover { color: var(--text); }
 .seg.active { background: var(--panel); color: var(--primary); font-weight: 600; box-shadow: var(--shadow-sm); }
+.seg:disabled { opacity: .5; cursor: not-allowed; }
+
+/* --------------------------- Agent 接入面板 --------------------------- */
+/* 状态点：未启用/未运行/运行中/异常，与文字状态一一对应，不传递额外含义。 */
+.agent-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background: var(--text-3); box-shadow: 0 0 0 3px var(--hover);
+}
+.agent-dot-on { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.agent-dot-warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.agent-dot-error { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+
+.agent-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.agent-error { color: var(--danger); word-break: break-word; }
+/* 桥接层缺席时整卡降级（qck 里 JS 加了 class 但 CSS 未定义，这里补上） */
+.agent-off { opacity: .6; }
+/* 端点与凭据文件路径：等宽字体，过长省略 */
+.agent-ext {
+  font-family: var(--mono); font-size: 11.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.agent-group { margin-top: 10px; }
+.agent-group-title { font-size: 12px; font-weight: 600; color: var(--text-2); margin-bottom: 4px; }
+.setlist { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+/* 授权目录列表内部滚动：目录多时不把设置页整体撑高（用户实测反馈"设置叠在一起、无法翻动"）。 */
+#agent-remote-roots, #agent-local-read-roots, #agent-local-write-roots {
+  max-height: 150px; overflow-y: auto;
+  padding: 2px; /* 避免子项的边框贴着滚动容器边缘被裁 */
+}
+.agent-empty { padding: 2px 0; }
+.agent-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px 6px 10px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px;
+  font-size: 12.5px;
+}
+.agent-item-meta { flex: 1; min-width: 0; }
+.agent-item-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* fid / 本地路径属于不可信且可能很长：允许换行，避免撑破卡片 */
+.agent-item-sub {
+  font-family: var(--mono); font-size: 11.5px; color: var(--text-3);
+  word-break: break-all; white-space: normal;
+}
+
+.agent-journal {
+  max-height: 220px; overflow: auto; padding: 6px 8px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px;
+}
+.agent-journal-row {
+  display: grid; grid-template-columns: 62px minmax(0, 1.25fr) 62px minmax(0, 1fr);
+  gap: 8px; align-items: baseline;
+  padding: 5px 2px; border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.agent-journal-row:last-child { border-bottom: 0; }
+.agent-journal-time { font-family: var(--mono); color: var(--text-3); }
+.agent-journal-tool { font-family: var(--mono); word-break: break-all; }
+.agent-journal-result { color: var(--text-2); white-space: nowrap; }
+.agent-journal-detail { color: var(--text-3); word-break: break-all; }
+
+.agent-code {
+  margin: 8px 0 0; padding: 10px 12px; max-height: 210px; overflow: auto;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.55; color: var(--text-2);
+  white-space: pre-wrap; word-break: break-all;
+}
+
+/* ------------------------------- 对话 ------------------------------- */
+.chat-off { opacity: .6; }
+.chat-card-state { align-items: center; }
+.chat-field { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.chat-field-label { flex: 0 0 76px; font-size: 12.5px; color: var(--text-2); }
+.chat-input-url { flex: 1; min-width: 0; max-width: 460px; font-size: 12.5px; }
+.chat-note { margin-top: 2px; }
+.chat-config-actions { align-self: flex-end; flex-direction: column; align-items: stretch; }
+
+/* 消息区：历史与实时消息共用一套气泡 */
+.chat-messages {
+  flex: 1; min-height: 120px; overflow: auto;
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 4px 2px 12px;
+}
+.chat-empty { padding: 18px 0; text-align: center; }
+.chat-msg { max-width: 78%; display: flex; flex-direction: column; gap: 4px; }
+.chat-msg-user { align-self: flex-end; }
+.chat-msg-assistant { align-self: flex-start; }
+.chat-msg-meta { font-size: 11.5px; color: var(--text-3); }
+.chat-msg-user .chat-msg-meta { text-align: right; }
+.chat-msg-body {
+  padding: 9px 12px; border-radius: 12px;
+  font-size: 13.5px; line-height: 1.55; word-break: break-word;
+}
+.chat-msg-user .chat-msg-body {
+  background: var(--primary); color: #fff; border-bottom-right-radius: 4px;
+}
+.chat-msg-assistant .chat-msg-body {
+  background: var(--panel); border: 1px solid var(--border); border-bottom-left-radius: 4px;
+}
+.chat-msg-error .chat-msg-body { border-color: var(--danger); }
+.chat-msg-pending .chat-msg-body { opacity: .75; }
+.chat-msg-text { white-space: pre-wrap; }
+.chat-msg-sub { font-size: 11.5px; color: var(--text-3); margin-top: 6px; }
+.chat-note-line { font-size: 12.5px; color: var(--text-2); padding: 2px 0; }
+.chat-msg-note:empty, .chat-tools:empty { display: none; }
+
+/* 工具调用：默认收起，点击展开看参数与摘要 */
+.chat-tools { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.chat-tool {
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel-2); overflow: hidden;
+}
+.chat-tool-toggle {
+  display: block; width: 100%; text-align: left;
+  border: 0; background: transparent; padding: 5px 9px;
+  font-size: 12px; color: var(--text-2); cursor: pointer;
+}
+.chat-tool-toggle:hover { background: var(--hover); color: var(--text); }
+.chat-tool-toggle:disabled { cursor: default; opacity: .85; }
+.chat-tool-running { border-color: var(--primary); }
+.chat-tool-running .chat-tool-toggle { color: var(--primary); }
+/* 工具结束态（qck 里 JS 加了 class 但 CSS 未定义，这里补上语义色） */
+.chat-tool-ok .chat-tool-toggle { color: var(--ok); }
+.chat-tool-fail { border-color: var(--danger); }
+.chat-tool-fail .chat-tool-toggle { color: var(--danger); }
+.chat-tool-body { padding: 2px 9px 8px; }
+.chat-tool-args {
+  margin: 0 0 4px; padding: 6px 8px; max-height: 160px; overflow: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  color: var(--text-2); white-space: pre-wrap; word-break: break-all;
+}
+.chat-tool-summary { font-size: 12px; color: var(--text-3); word-break: break-all; }
+
+/* 输入区 */
+.chat-composer {
+  flex: 0 0 auto; display: flex; align-items: flex-end; gap: 10px;
+  padding: 10px 0 14px; border-top: 1px solid var(--border);
+}
+.chat-input {
+  flex: 1; min-height: 60px; max-height: 140px; resize: none;
+  padding: 8px 10px; border-radius: 10px;
+  border: 1px solid var(--border-strong); background: var(--panel);
+  font-family: inherit; font-size: 13.5px; line-height: 1.5; outline: 0;
+  transition: border-color .14s, box-shadow .14s;
+}
+.chat-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.chat-input:disabled { opacity: .55; background: var(--panel-2); }
+.chat-composer-side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.chat-status { max-width: 420px; margin-top: 0; text-align: right; }
 
 /* ------------------------------- toast ------------------------------- */
 .toasts {

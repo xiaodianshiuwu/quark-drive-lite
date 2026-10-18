@@ -12,6 +12,7 @@ tauri-build = { version = "=2.7.3", features = [] }
 tauri = { version = "=2.12.4", features = [] }
 quark-core = { path = "../crates/quark-core" }
 quark-transfer = { path = "../crates/quark-transfer" }
+quark-agent = { path = "../crates/quark-agent" }
 serde_json = "1"
 tokio = { version = "1", features = ["time", "sync"] }
 rfd = "=0.16.0"

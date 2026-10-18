@@ -1,7 +1,7 @@
 //! Agent 工具层的宿主适配：把 quark-core / quark-transfer 的业务分发包成
 //! `quark_agent::tools::HostDeps`，并统一上游错误语义。
 
-use quark_agent::policy::{AgentError, AgentToolError};
+use quark_agent::policy::AgentToolError;
 use quark_agent::tools::HostDeps;
 use quark_core::Core;
 use quark_transfer::TransferManager;

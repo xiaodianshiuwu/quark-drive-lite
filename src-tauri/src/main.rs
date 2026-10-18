@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use quark_agent::runtime::AgentRuntime;
 use quark_core::{Core, Error, Result};
 use quark_transfer::TransferManager;
 use serde_json::{json, Value};
@@ -17,11 +18,15 @@ use tauri::{Emitter, Manager};
 struct State {
     core: Core,
     transfers: TransferManager,
+    /// Agent 子系统（工具层 + 网关 + 内置对话）。
+    agent: Arc<AgentRuntime>,
     login: Arc<AtomicBool>,
     login_generation: Arc<AtomicU64>,
     account_control: Arc<tokio::sync::Mutex<()>>,
     _profile_lock: Arc<std::fs::File>,
 }
+
+mod agent_host;
 
 fn shell_error(e: impl std::fmt::Display) -> Error {
     Error::new("SYSTEM", e.to_string())
@@ -106,7 +111,18 @@ async fn qk_call(
             let _ = login.close();
         }
     }
-    let result = if method.starts_with("transfer.") {
+    let result = if method.starts_with("agent.") || method.starts_with("chat.") {
+        // 事件回调：对话过程中的工具进度实时推送到界面（事件不含凭据）。
+        let event_handle = app.clone();
+        let event: quark_agent::chat::EventCallback = Arc::new(move |ev: Value| {
+            let _ = event_handle.emit_to("main", "qk:chat-event", ev);
+        });
+        state
+            .agent
+            .handle(&method, params, Some(event))
+            .await
+            .map_err(|e| Error::new(e.code.as_str(), e.message))
+    } else if method.starts_with("transfer.") {
         state.transfers.call(&method, params).await
     } else {
         state.core.call(&method, params).await
@@ -338,11 +354,21 @@ fn main() {
             let profile_lock = opts.open(profile.join("app.lock"))?;
             fs2::FileExt::try_lock_exclusive(&profile_lock)
                 .map_err(|_| Error::new("CONFLICT", "此资料目录已有客户端正在运行"))?;
-            let core = Core::open(profile)?;
+            let core = Core::open(profile.clone())?;
             let transfers = TransferManager::open(core.clone())?;
+            // Agent 子系统：工具宿主 = 真实 Core/TransferManager；generation 供会话绑定。
+            let host = agent_host::ToolHost::new(core.clone(), transfers.clone());
+            let generation_core = core.clone();
+            let agent = AgentRuntime::new(
+                profile.clone(),
+                host,
+                Arc::new(move || generation_core.session_generation()),
+            )
+            .map_err(|e| Error::new(e.code.as_str(), e.message))?;
             let state = State {
                 core,
                 transfers: transfers.clone(),
+                agent: agent.clone(),
                 login: Arc::new(AtomicBool::new(false)),
                 login_generation: Arc::new(AtomicU64::new(0)),
                 account_control: Arc::new(tokio::sync::Mutex::new(())),
@@ -359,6 +385,12 @@ fn main() {
                 }
             });
             app.manage(state.clone());
+            {
+                let agent_boot = state.agent.clone();
+                tauri::async_runtime::spawn(async move {
+                    agent_boot.boot().await;
+                });
+            }
             #[cfg(debug_assertions)]
             if std::env::var_os("QK_LOGIN_ON_START").is_some() {
                 let login_handle = app.handle().clone();
@@ -405,10 +437,13 @@ fn main() {
                         api.prevent_exit();
                         let handle = app.clone();
                         let manager = app.state::<State>().transfers.clone();
+                        let agent = app.state::<State>().agent.clone();
                         tauri::async_runtime::spawn(async move {
                             let _ =
                                 tokio::time::timeout(Duration::from_secs(8), manager.pause_all())
                                     .await;
+                            let _ = tokio::time::timeout(Duration::from_secs(2), agent.gateway.stop())
+                                .await;
                             handle.exit(0);
                         });
                     }

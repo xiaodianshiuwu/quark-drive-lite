@@ -310,7 +310,13 @@ impl AgentChat {
                 let mut st = self.state.lock().unwrap();
                 st.messages.push(json!({
                     "role": "assistant",
-                    "content": message.get("content").cloned().unwrap_or_else(|| json!("")),
+                    // qck：`content: message.content || ''` —— null/false/空串/0 都归一为空串，
+                    // 否则 OpenAI 兼容接口会因 content 为 null 而 400。
+                    "content": message
+                        .get("content")
+                        .cloned()
+                        .filter(|v| !is_falsy(v))
+                        .unwrap_or_else(|| json!("")),
                     "tool_calls": normalized_calls,
                 }));
             }

@@ -3004,6 +3004,7 @@ version = "0.3.0-alpha.1"
 dependencies = [
  "fs2",
  "open",
+ "quark-agent",
  "quark-core",
  "quark-transfer",
  "rfd",
