@@ -3041,11 +3041,11 @@
         $('backup-root').value = dir;
         $('backup-plan-result').hidden = true;
         $('backup-verify-result').hidden = true;
-      }).catch(function (e) { toast('选择目录失败：' + errText(e), 'error'); });
+      }).catch(function (e) { toast('error', '选择目录失败：' + agentErrText(e)); });
     });
     if (plan) plan.addEventListener('click', function () {
       var root = String($('backup-root').value || '').trim();
-      if (!root) { toast('请先选择本地目录', 'error'); return; }
+      if (!root) { toast('error', '请先选择本地目录'); return; }
       var fid = String($('backup-target').value || '0').trim() || '0';
       plan.disabled = true;
       API.backup.plan({ rootDir: root, targetFid: fid }).then(function (r) {
@@ -3056,33 +3056,33 @@
         box.textContent = '发现 ' + fmtInt(r.files) + ' 个文件、' + fmtInt(r.dirs) + ' 个目录，共 '
           + fmtBytes(r.totalBytes) + (r.warnings ? '；' + fmtInt(r.warnings) + ' 个不可读项（将跳过并记录）' : '');
       }).catch(function (e) {
-        toast('预览失败：' + errText(e), 'error');
+        toast('error', '预览失败：' + agentErrText(e));
       }).finally(function () { plan.disabled = false; });
     });
     if (start) start.addEventListener('click', function () {
       var root = String($('backup-root').value || '').trim();
       var fid = String($('backup-target').value || '0').trim() || '0';
-      if (!root) { toast('请先选择本地目录', 'error'); return; }
+      if (!root) { toast('error', '请先选择本地目录'); return; }
       start.disabled = true;
       API.backup.start({ account: 'local', rootDir: root, targetFid: fid }).then(function () {
         $('backup-plan-result').hidden = true;
         $('backup-run').hidden = false;
         startBackupPolling();
       }).catch(function (e) {
-        toast('启动失败：' + errText(e), 'error');
+        toast('error', '启动失败：' + agentErrText(e));
       }).finally(function () { start.disabled = false; });
     });
     if (retry) retry.addEventListener('click', function () {
       API.backup.retry().then(function (r) {
-        toast('已重新入队 ' + fmtInt(r.requeued) + ' 个失败任务', 'ok');
-      }).catch(function (e) { toast('重试失败：' + errText(e), 'error'); });
+        toast('ok', '已重新入队 ' + fmtInt(r.requeued) + ' 个失败任务');
+      }).catch(function (e) { toast('error', '重试失败：' + agentErrText(e)); });
     });
     if (cancel) cancel.addEventListener('click', function () {
       API.backup.cancel().then(function () {
         stopBackupPolling();
         $('backup-run').hidden = true;
-        toast('备份已取消（任务现场保留，同目录再次开始=续扫）', 'ok');
-      }).catch(function (e) { toast('取消失败：' + errText(e), 'error'); });
+        toast('ok', '备份已取消（任务现场保留，同目录再次开始=续扫）');
+      }).catch(function (e) { toast('error', '取消失败：' + agentErrText(e)); });
     });
     if (verify) verify.addEventListener('click', function () {
       verify.disabled = true;
@@ -3090,15 +3090,16 @@
         var box = $('backup-verify-result');
         box.hidden = false;
         var cls = r.status === 'verified' ? 'ok' : (r.status === 'partial' ? 'warn' : 'error');
-        var lines = ['验证结果：' + r.status + '（清单 ' + fmtInt(r.listedOk) + '/' + fmtInt(r.totalSuccess)
-          + ' 一致，缺失 ' + fmtInt(r.listedMissing) + '，大小不符 ' + fmtInt(r.sizeMismatch)
-          + '；抽样哈希 ' + fmtInt(r.sampleOk) + '/' + fmtInt(r.sampleChecked) + ' 一致）'];
+        // 后端 VerifyReport serde 无 rename_all → snake_case 字段（真实验收输出为证）
+        var lines = ['验证结果：' + r.status + '（清单 ' + fmtInt(r.listed_ok) + '/' + fmtInt(r.total_success)
+          + ' 一致，缺失 ' + fmtInt(r.listed_missing) + '，大小不符 ' + fmtInt(r.size_mismatch)
+          + '；抽样哈希 ' + fmtInt(r.sample_ok) + '/' + fmtInt(r.sample_checked) + ' 一致）'];
         (r.issues || []).slice(0, 5).forEach(function (it) {
           lines.push('· ' + (it.kind || '') + ' ' + (it.rel_path || it.dir || '') + (it.detail ? '：' + it.detail : ''));
         });
         box.textContent = lines.join('\n');
         box.dataset.level = cls;
-      }).catch(function (e) { toast('验证失败：' + errText(e), 'error'); })
+      }).catch(function (e) { toast('error', '验证失败：' + agentErrText(e)); })
         .finally(function () { verify.disabled = false; });
     });
     // 进入视图时若已有会话在跑则恢复轮询

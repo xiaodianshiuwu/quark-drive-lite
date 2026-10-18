@@ -531,8 +531,9 @@ async function bootApp(opts = {}) {
         status: null, // 动态（跑/不跑两态由 opts.backupRunning 决定）
         retry: { requeued: 0 },
         cancel: { canceled: true },
-        verify: { status: 'verified', totalSuccess: 8, listedOk: 8, listedMissing: 0,
-          sizeMismatch: 0, sampleRequested: 8, sampleChecked: 8, sampleOk: 8, sampleMismatch: 0, issues: [] },
+        // 字段形态对齐真实后端 VerifyReport（serde 无 rename_all → snake_case）
+        verify: { status: 'verified', total_success: 8, listed_ok: 8, listed_missing: 0,
+          size_mismatch: 0, sample_requested: 8, sample_checked: 8, sample_ok: 8, sample_mismatch: 0, issues: [] },
       };
       ['plan', 'start', 'retry', 'cancel', 'verify'].forEach((name) => {
         qk.backup[name] = (...args) => {

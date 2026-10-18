@@ -137,8 +137,8 @@ test('C5: 视图离开时停止轮询（status 调用数不再增长）', async 
 
 test('C6: 部分验证（partial）issues 以 textContent 列出，无 HTML 注入', async () => {
   const partial = {
-    status: 'partial', totalSuccess: 8, listedOk: 7, listedMissing: 1, sizeMismatch: 0,
-    sampleRequested: 8, sampleChecked: 8, sampleOk: 8, sampleMismatch: 0,
+    status: 'partial', total_success: 8, listed_ok: 7, listed_missing: 1, size_mismatch: 0,
+    sample_requested: 8, sample_checked: 8, sample_ok: 8, sample_mismatch: 0,
     issues: [{ kind: 'missing', rel_path: 'a<b>.txt', detail: '远端目录中未见同名文件' }],
   };
   const inst = await openBackup({ backupRunning: true, backupImpl: { verify: partial } });
