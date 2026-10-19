@@ -728,6 +728,11 @@
   function renderCrumbs() {
     var box = el.crumbs;
     box.textContent = '';
+    var searching = state.mode === 'search';
+    el.btnUp.disabled = !searching && state.fid === ROOT_FID;
+    el.btnUpLabel.textContent = searching ? '返回目录' : '上一级';
+    el.btnUp.title = searching ? '返回搜索前的目录（Alt+↑）' : '返回上一级目录（Alt+↑）';
+    el.btnUp.setAttribute('aria-label', searching ? '返回搜索前的目录' : '返回上一级目录');
     if (state.mode === 'search') {
       box.appendChild(h('span', 'crumb-search-label', '搜索结果：'));
       box.appendChild(h('span', 'crumb-current', state.keyword));
@@ -740,9 +745,11 @@
       b.type = 'button';
       b.textContent = c.name;
       b.title = last ? c.name : ('返回 ' + c.name);
+      b.disabled = last;
       if (!last) b.addEventListener('click', function () { navigate(c.fid, c.name); });
       box.appendChild(b);
     });
+    box.scrollLeft = box.scrollWidth;
   }
 
   async function loadCrumbs(fid) {
@@ -756,9 +763,18 @@
       var cs = await API.fs.crumbs(fid);
       if (seq !== listSeq || state.mode !== "browse" || String(fid) !== state.fid) return;
       if (Array.isArray(cs) && cs.length) {
-        state.crumbs = cs.map(function (c, i) {
+        var path = cs.filter(function (c) { return c && c.fid !== undefined && c.fid !== null && String(c.fid) !== ''; }).map(function (c, i) {
           return { fid: String(c.fid), name: c.name || (i === 0 ? '全部文件' : '未命名') };
         });
+        if (path.length && path[0].fid !== ROOT_FID) path.unshift({ fid: ROOT_FID, name: '全部文件' });
+        var currentIndex = path.findIndex(function (c) { return c.fid === String(fid); });
+        if (currentIndex >= 0) {
+          state.crumbs = path.slice(0, currentIndex + 1);
+        } else if (path.length > 1) {
+          // Some path endpoints return only ancestors. A root-only response can
+          // also mean unavailable metadata; never erase a locally known parent.
+          state.crumbs = path.concat([state.crumbs[state.crumbs.length - 1]]);
+        }
       }
     } catch (err) {
       if (seq !== listSeq) return;
@@ -769,7 +785,7 @@
 
   function setTopbarForView() {
     var filesView = state.view === 'files';
-    [el.crumbs, el.searchBox, el.btnMkdir, el.btnUpload, el.btnRefresh].forEach(function (n) {
+    [el.directoryNav, el.searchBox, el.btnMkdir, el.btnUpload, el.btnRefresh].forEach(function (n) {
       if (n) n.hidden = !filesView;
     });
   }
@@ -778,22 +794,40 @@
    * 文件列表
    * ================================================================== */
 
-  async function navigate(fid, name) {
+  async function navigate(fid, name, parentFid) {
+    var id = String(fid);
+    var knownIndex = state.crumbs.findIndex(function (c) { return c.fid === id; });
+    if (id === ROOT_FID) {
+      state.crumbs = [{ fid: ROOT_FID, name: '全部文件' }];
+    } else if (knownIndex >= 0) {
+      state.crumbs = state.crumbs.slice(0, knownIndex + 1);
+    } else {
+      var parent = parentFid == null || String(parentFid).trim() === ''
+        ? (state.mode === 'browse' ? state.fid : ROOT_FID) : String(parentFid);
+      var parentIndex = state.crumbs.findIndex(function (c) { return c.fid === parent; });
+      state.crumbs = parentIndex >= 0 ? state.crumbs.slice(0, parentIndex + 1) : [{ fid: ROOT_FID, name: '全部文件' }];
+      if (parent !== ROOT_FID && parentIndex < 0) state.crumbs.push({ fid: parent, name: '上级目录' });
+      state.crumbs.push({ fid: id, name: name || '未命名' });
+    }
     state.mode = 'browse';
-    state.fid = String(fid);
+    state.keyword = '';
+    state.fid = id;
     state.selected.clear();
     state.lastIndex = -1;
     el.searchInput.value = '';
     el.searchClear.hidden = true;
     resetList();
     renderCrumbs();
-    if (name) {
-      // 先给出即时反馈，随后用后端 crumbs 校正
-      state.crumbs = state.crumbs.slice(0, Math.max(1, state.crumbs.length));
-    }
     loadCrumbs(state.fid);
     await loadPage({ reset: true });
     el.listwrap.scrollTop = 0;
+  }
+
+  function goUp() {
+    if (state.mode === 'search') { leaveSearch(); return; }
+    if (state.fid === ROOT_FID) return;
+    var parent = state.crumbs[state.crumbs.length - 2] || { fid: ROOT_FID, name: '全部文件' };
+    navigate(parent.fid, parent.name);
   }
 
   function reloadCurrent() {
@@ -1154,7 +1188,7 @@
 
   async function openItem(item) {
     if (!item) return;
-    if (item.dir) { navigate(item.fid, item.name); return; }
+    if (item.dir) { navigate(item.fid, item.name, item.pdirFid); return; }
     downloadItems([item]);
   }
 
@@ -3441,6 +3475,7 @@
     });
 
     // 搜索
+    el.btnUp.addEventListener('click', goUp);
     el.searchInput.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.isComposing) {
         e.preventDefault();
@@ -3684,6 +3719,11 @@
       }
       if (typing) return;
       if (state.view !== 'files') return;
+      if (e.altKey && e.key === 'ArrowUp' && !document.querySelector('.overlay:not(.overlay-out)')) {
+        e.preventDefault();
+        goUp();
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
         e.preventDefault();
         el.checkAll.checked = true;
@@ -3752,6 +3792,9 @@
     el.sidebarFoot = $('sidebar-foot');
     el.btnQuit = $('btn-quit');
     el.crumbs = $('crumbs');
+    el.directoryNav = $('directory-nav');
+    el.btnUp = $('btn-up');
+    el.btnUpLabel = $('btn-up-label');
     el.searchBox = $('search-box');
     el.searchInput = $('search-input');
     el.searchClear = $('search-clear');

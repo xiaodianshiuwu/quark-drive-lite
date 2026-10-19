@@ -1,0 +1,34 @@
+{
+  "date": "2026-10-19",
+  "baseline": "77c40f73229688e956b7756e97d697a3fb00c9ff",
+  "ui": {
+    "passed": 76,
+    "failed": 0,
+    "skipped": 0,
+    "command": "npm test",
+    "environment": "independent headless Chrome + Fixture IPC"
+  },
+  "native": {
+    "passed": 20,
+    "total": 20,
+    "command": "CARGO_TARGET_DIR=\"$PWD/target\" npm run verify:native",
+    "environment": "isolated real Tauri WebView + Rust IPC"
+  },
+  "build": {
+    "passed": true,
+    "command": "CARGO_TARGET_DIR=\"$PWD/target\" npm run build",
+    "architecture": "arm64",
+    "signature": "local ad-hoc",
+    "bundle_and_extracted_signature_verified": true,
+    "extracted_executable_matches": true
+  },
+  "zip": "/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/.work/folder-navigation-20261019/QuarkDrive-Tauri-0.3.0-alpha.1-macOS-arm64-folder-navigation-fix.zip",
+  "zip_sha256": "8da356b3ccf07526e1f1a52c030f6ed97357e276fb2665b3ff351edf04b8f288",
+  "source_sha256": {
+    "src/renderer/app.js": "f1662cb9635bc79c0624b1db561ae2673543667c14bbea2331db205f8ed088fc",
+    "src/renderer/index.html": "be63353ff4937004253492f7745e8d783a608ca74cd8e606d5f16780232441bb",
+    "src/renderer/styles.css": "2dbb870bd6b8df9f20250ca5b0d06188d6df0fc7049330d5c1041ff210879875",
+    "test/tauri-renderer.test.js": "511b4eb24a48a92bbfda2ae9cee40c67042671ecdb9f8f3e22e5174c9e0685dc"
+  },
+  "scope": "Folder navigation and responsive topbar only. No Rust business changes or real-cloud writes; not a replacement for the historical full audit. No Windows real-device acceptance or notarization."
+}

@@ -207,15 +207,24 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
           case 'backup.verify': fixture.backup.verification={status:'partial',total_success:78,listed_ok:78,listed_missing:0,size_mismatch:0,sample_requested:78,sample_checked:77,sample_ok:77,sample_mismatch:0,issues:[{kind:'sample_download_error',rel_path:'文档/未完成核验.txt',detail:'下载失败，不能视为完整备份'}]};return snapshot(fixture.backup.verification);
           case 'settings.get': return snapshot(fixture.settings);
           case 'settings.set': Object.assign(fixture.settings,p);return snapshot(fixture.settings);
-          case 'fs.crumbs': return [{fid:'0',name:'全部文件'}];
+          case 'fs.crumbs': {
+            if (fixture.holdCrumbs && p.fid==='folder-A') return new Promise(resolve=>fixture.releaseCrumbs=resolve);
+            if (fixture.crumbFailure) throw {code:'NETWORK',message:'路径服务暂不可用'};
+            if (fixture.ancestorCrumbs && p.fid==='folder-deep') return [{fid:'0',name:'全部文件'},{fid:'folder-A',name:'一级目录'}];
+            return [{fid:'0',name:'全部文件'}];
+          }
           case 'fs.list': {
             if (fixture.holdPage) return new Promise(resolve => fixture.releasePage=resolve);
             if (!fixture.account.loggedIn) throw {code:'NEED_LOGIN',message:'请先登录'};
+            if (fixture.navigationMode) {
+              const list=p.pdirFid==='0'?[{fid:'folder-A',name:'一级目录',dir:true,pdirFid:''}]:p.pdirFid==='folder-A'?[{fid:'folder-deep',name:'二级目录',dir:true,pdirFid:'folder-A'}]:[{fid:'inside-file',name:'子目录内容.txt',dir:false,pdirFid:'folder-deep'}];
+              return {list,total:list.length,page:1,size:p.size,hasMore:false};
+            }
             if (fixture.directoryMode) return {list:[{fid:'folder-A',name:'Target A',dir:true},{fid:'folder-B',name:'Target B',dir:true}],total:2,page:1,size:p.size,hasMore:false};
             const start=(p.page-1)*p.size;
             return {list:Array.from({length:Math.min(p.size,5100-start)},(_,i)=>item(start+i+1)),total:5100,page:p.page,size:p.size,hasMore:start+p.size<5100};
           }
-          case 'fs.search': return {list:[item(7000)],total:1,page:1,size:p.size,hasMore:false};
+          case 'fs.search': return {list:fixture.searchFolder?[{fid:'folder-deep',name:'二级目录',dir:true,pdirFid:'folder-A'}]:[item(7000)],total:1,page:1,size:p.size,hasMore:false};
           case 'fs.mkdir': case 'fs.move': case 'fs.copy': case 'fs.remove': return {done:true};
           case 'fs.rename': fixture.names[p.fid]=p.name;return {done:true};
           case 'transfer.list': {
@@ -258,13 +267,13 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
   await evaluate('document.querySelector(".row input").click()');
   assert.ok(await evaluate('QKUI.state.selected.has("1")'));
   await evaluate('document.getElementById("listwrap").scrollTop=46*2500');
-  await new Promise(r => setTimeout(r, 70));
+  await until('Number(document.querySelector(".row").dataset.fid)>2400','virtual list middle rendered');
   assert.ok(await evaluate('Number(document.querySelector(".row").dataset.fid)>2400 && QKUI.getRowCount()<=40'));
   await evaluate('document.getElementById("listwrap").scrollTop=46*5100');
-  await new Promise(r => setTimeout(r, 70));
-  assert.ok(await evaluate('!!document.querySelector(".row[data-fid=\\"5100\\"]") && QKUI.getRowCount()<=40'));
+  await until('!!document.querySelector(".row[data-fid=\\"5100\\"]")','virtual list final row rendered');
+  assert.ok(await evaluate('QKUI.getRowCount()<=40'));
   await evaluate('document.getElementById("listwrap").scrollTop=0');
-  await new Promise(r => setTimeout(r, 70));
+  await until('!!document.querySelector(".row[data-fid=\\"1\\"]")','virtual list first row restored');
   assert.ok(await evaluate('document.querySelector(".row[data-fid=\\"1\\"] input").checked'));
   await evaluate('document.getElementById("check-all").click()');
   assert.equal(await evaluate('QKUI.state.selected.size'), 5100);
@@ -273,6 +282,58 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
   assert.equal(await evaluate('QKUI.state.items[0].fid'), '7000');
   assert.equal(await evaluate('QKUI.state.selected.size'), 0);
   assert.equal(await evaluate('QKUI.getRowCount()'), 1);
+
+  await t.test('folder navigation keeps a usable parent with root-only, failed, ancestor-only and stale path responses', async () => {
+    const root=async()=>{await evaluate('QKUI.navigate("0")');await until('QKUI.state.fid==="0" && !QKUI.state.loading','root directory');};
+    const enter=async(fid)=>{
+      await evaluate('document.querySelector('+JSON.stringify('.row[data-fid="'+fid+'"]')+').dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
+      await until('QKUI.state.fid==='+JSON.stringify(fid)+' && QKUI.state.loadedOnce && !QKUI.state.loading','enter '+fid);
+    };
+    const crumbIds=()=>evaluate('QKUI.state.crumbs.map(c=>c.fid)');
+    const up=async()=>{
+      const rect=await evaluate('(()=>{const r=document.getElementById("btn-up").getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()');
+      assert.ok(rect.width>50 && rect.height>20 && rect.x>=0,'up button has a usable visible size');
+      await cdp('Input.dispatchMouseEvent',{type:'mousePressed',x:rect.x+rect.width/2,y:rect.y+rect.height/2,button:'left',clickCount:1});
+      await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',x:rect.x+rect.width/2,y:rect.y+rect.height/2,button:'left',clickCount:1});
+    };
+    try {
+      await evaluate('__fixture.navigationMode=true');await root();
+      assert.equal(await evaluate('document.getElementById("btn-up").disabled'),true);
+      await enter('folder-A');assert.deepEqual(await crumbIds(),['0','folder-A']);
+      await evaluate('__fixture.crumbFailure=true');await enter('folder-deep');
+      assert.deepEqual(await crumbIds(),['0','folder-A','folder-deep']);
+      assert.equal(await evaluate('document.querySelector("#crumbs .crumb-item").disabled'),false);
+      await cdp('Emulation.setDeviceMetricsOverride',{width:760,height:520,deviceScaleFactor:1,mobile:false});
+      assert.equal(await evaluate('document.documentElement.scrollWidth<=760 && document.getElementById("btn-up").getBoundingClientRect().right<=760'),true);
+      if(process.env.QCK_NAV_SCREENSHOTS){fs.mkdirSync(process.env.QCK_NAV_SCREENSHOTS,{recursive:true});await evaluate('document.querySelectorAll(".toast-close").forEach(b=>b.click())');await new Promise(r=>setTimeout(r,180));const shot=await cdp('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(process.env.QCK_NAV_SCREENSHOTS,'nested-760.png'),Buffer.from(shot.data,'base64'));}
+      await up();await until('QKUI.state.fid==="folder-A" && QKUI.state.items[0]?.fid==="folder-deep"','parent contents restored');
+      await evaluate('document.body.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowUp",altKey:true,bubbles:true}))');
+      await until('QKUI.state.fid==="0" && QKUI.state.items[0]?.fid==="folder-A"','Alt+Up returns to root');
+      assert.equal(await evaluate('document.getElementById("btn-up").disabled'),true);
+      await evaluate('__fixture.crumbFailure=false;__fixture.ancestorCrumbs=true');
+      await enter('folder-A');await enter('folder-deep');assert.deepEqual(await crumbIds(),['0','folder-A','folder-deep']);
+      await click('#crumbs .crumb-item:nth-of-type(2)');await until('QKUI.state.fid==="folder-A" && !QKUI.state.loading','ancestor breadcrumb');
+      await evaluate('document.getElementById("search-input").value="fixture";document.getElementById("search-input").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))');
+      await until('QKUI.state.mode==="search" && !QKUI.state.loading','search within directory');
+      assert.equal(await evaluate('document.getElementById("btn-up-label").textContent'),'返回目录');
+      await up();await until('QKUI.state.mode==="browse" && QKUI.state.fid==="folder-A" && !QKUI.state.loading','return to pre-search directory');
+      await root();await evaluate('__fixture.ancestorCrumbs=false;__fixture.searchFolder=true');
+      await evaluate('document.getElementById("search-input").value="目录";document.getElementById("search-input").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))');
+      await until('QKUI.state.mode==="search" && !QKUI.state.loading','folder search result');
+      await enter('folder-deep');await up();await until('QKUI.state.fid==="folder-A" && !QKUI.state.loading','search result uses actual parent');
+      await root();await evaluate('__fixture.holdCrumbs=true');await enter('folder-A');
+      await until('typeof __fixture.releaseCrumbs==="function"','delayed path request');
+      await up();await until('QKUI.state.fid==="0" && !QKUI.state.loading','return before path response');
+      await evaluate('__fixture.holdCrumbs=false;__fixture.releaseCrumbs([{fid:"0",name:"全部文件"},{fid:"folder-A",name:"一级目录"}])');
+      await new Promise(r=>setTimeout(r,30));assert.deepEqual(await crumbIds(),['0']);
+    } finally {
+      await cdp('Emulation.clearDeviceMetricsOverride');
+      await evaluate('__fixture.navigationMode=false;__fixture.crumbFailure=false;__fixture.ancestorCrumbs=false;__fixture.searchFolder=false;__fixture.holdCrumbs=false;QKUI.navigate("0")');
+      await until('QKUI.state.mode==="browse" && !QKUI.state.loading','restore directory fixture');
+      await evaluate('document.getElementById("search-input").value="fixture";document.getElementById("search-input").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))');
+      await until('QKUI.state.items[0]?.fid==="7000" && !QKUI.state.loading','restore file search');
+    }
+  });
 
   await t.test('settings persist upload PUT concurrency, download strategy, connection limit and theme', async () => {
     await click('[data-view="settings"]');

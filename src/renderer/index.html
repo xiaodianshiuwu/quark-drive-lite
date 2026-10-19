@@ -62,7 +62,13 @@
 
     <!-- 顶栏：面包屑 + 搜索 + 操作 + 账号区 -->
     <header class="topbar">
-      <div class="crumbs" id="crumbs" aria-label="目录路径"></div>
+      <div class="directory-nav" id="directory-nav">
+        <button type="button" class="btn btn-up" id="btn-up" title="返回上一级目录（Alt+↑）" aria-label="返回上一级目录" disabled>
+          <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-chevron"></use></svg>
+          <span id="btn-up-label">上一级</span>
+        </button>
+        <div class="crumbs" id="crumbs" aria-label="目录路径"></div>
+      </div>
 
       <div class="topbar-tools">
         <div class="search" id="search-box">

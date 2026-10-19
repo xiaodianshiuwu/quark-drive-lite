@@ -164,8 +164,12 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
   padding: 12px 18px; background: var(--panel);
   border-bottom: 1px solid var(--border); min-height: 60px;
 }
-.crumbs { display: flex; align-items: center; gap: 2px; min-width: 0; flex: 1; overflow: hidden; }
+.directory-nav { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.btn-up { flex: none; }
+.btn-up .ic { transform: rotate(180deg); }
+.crumbs { display: flex; align-items: center; gap: 2px; min-width: 0; flex: 1; overflow-x: auto; }
 .crumb-item {
+  flex: none;
   border: 0; background: transparent; cursor: pointer; color: var(--text-2);
   padding: 5px 8px; border-radius: 7px; font-size: 13.5px;
   max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -780,6 +784,11 @@ select.input { padding-right: 6px; }
   .search { width: 190px; }
 }
 @media (max-width: 1020px) {
+  .topbar { flex-wrap: wrap; }
+  .directory-nav { flex-basis: 100%; }
+  .topbar-tools { width: 100%; }
+  .topbar-tools .search { flex: 1; min-width: 100px; }
+  .topbar-tools .account { margin-left: auto; }
   .listhead, .row { grid-template-columns: 44px minmax(0, 1fr) 190px; }
   .col-size { display: none; }
   .btn-label { display: none; }
