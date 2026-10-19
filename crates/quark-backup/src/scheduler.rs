@@ -19,33 +19,55 @@ use std::time::Duration;
 
 /// 可调配置（settings 新键，默认值对齐执行提示词）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BackupConfig {
     /// 每批发现条数
     #[serde(default = "d_batch")]
+    #[serde(alias = "discovery_batch_size")]
     pub discovery_batch_size: usize,
     /// 队列高水位（channel 容量，扫描端阻塞点）
     #[serde(default = "d_high")]
+    #[serde(alias = "high_watermark")]
     pub high_watermark: usize,
     /// 队列低水位（恢复点，仅用于展示/日志）
     #[serde(default = "d_low")]
+    #[serde(alias = "low_watermark")]
     pub low_watermark: usize,
     /// 上传并发
     #[serde(default = "d_conc")]
+    #[serde(alias = "upload_concurrency")]
     pub upload_concurrency: usize,
     /// 重试基础延迟 ms
     #[serde(default = "d_retry_base")]
+    #[serde(alias = "retry_base_ms")]
     pub retry_base_ms: u64,
+    /// Shared backup upload bandwidth budget, 0 means unlimited (bytes/second).
+    #[serde(default, alias = "bandwidth_limit_bps")]
+    pub bandwidth_limit_bps: u64,
     /// 最大重试次数
     #[serde(default = "d_retry_max")]
+    #[serde(alias = "max_attempts")]
     pub max_attempts: u32,
 }
 
-fn d_batch() -> usize { 500 }
-fn d_high() -> usize { 1000 }
-fn d_low() -> usize { 500 }
-fn d_conc() -> usize { 2 }
-fn d_retry_base() -> u64 { 30_000 }
-fn d_retry_max() -> u32 { 6 }
+fn d_batch() -> usize {
+    500
+}
+fn d_high() -> usize {
+    1000
+}
+fn d_low() -> usize {
+    500
+}
+fn d_conc() -> usize {
+    2
+}
+fn d_retry_base() -> u64 {
+    30_000
+}
+fn d_retry_max() -> u32 {
+    6
+}
 
 impl Default for BackupConfig {
     fn default() -> Self {
@@ -53,26 +75,77 @@ impl Default for BackupConfig {
     }
 }
 
+impl BackupConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1..=5000).contains(&self.discovery_batch_size)
+            || self.high_watermark < self.discovery_batch_size
+            || self.high_watermark > 100_000
+            || self.low_watermark >= self.high_watermark
+            || !(1..=8).contains(&self.upload_concurrency)
+            || (self.bandwidth_limit_bps != 0
+                && !(1024..=1_099_511_627_776).contains(&self.bandwidth_limit_bps))
+            || !(1..=3_600_000).contains(&self.retry_base_ms)
+            || !(1..=20).contains(&self.max_attempts)
+        {
+            return Err("备份配置越界：批次1..5000、高水位不小于批次且最多100000、低水位小于高水位、并发1..8、重试1..20".into());
+        }
+        Ok(())
+    }
+}
+
 /// 远端能力桥（由宿主注入；测试用假实现）。
 pub trait RemoteOps: Send + Sync {
+    fn recover_uploaded<'a>(
+        &'a self,
+        _task: &'a Task,
+        _parent: &'a str,
+        _fid: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send + 'a>>
+    {
+        Box::pin(async { Ok(false) })
+    }
+    fn acknowledge<'a>(
+        &'a self,
+        _path: &'a str,
+        _parent: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+    /// Stop only transfers owned by this backup; preserve their checkpoints.
+    fn pause_active(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// 幂等建立目录（rel_path 相对 target_fid），返回 fid。已存在直接返回。
     fn ensure_dir<'a>(
         &'a self,
         target_fid: &'a str,
         rel_path: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow_lite::Result<String, String>> + Send + 'a>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow_lite::Result<String, String>> + Send + 'a>,
+    >;
     /// 上传单文件到目录 fid（名字取 basename），返回远端 fid。
     fn upload_file<'a>(
         &'a self,
         local_path: &'a str,
         parent_fid: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow_lite::Result<String, String>> + Send + 'a>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow_lite::Result<String, String>> + Send + 'a>,
+    >;
     /// 远端目录中是否存在同名文件（可见性核对）。
     fn file_visible<'a>(
         &'a self,
         parent_fid: &'a str,
         name: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow_lite::Result<Option<String>, String>> + Send + 'a>>;
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = anyhow_lite::Result<Option<String>, String>>
+                + Send
+                + 'a,
+        >,
+    >;
 }
 
 /// 简化 Result 别名（不引入 anyhow，保持零额外依赖）。
@@ -89,6 +162,7 @@ pub struct SchedulerStats {
     pub skipped: i64,
     pub uploaded_bytes: u64,
     pub active_workers: i64,
+    pub error: Option<String>,
 }
 
 /// 运行一次"取任务→上传→核对"的单槽循环，直到 store 无 pending。
@@ -101,28 +175,69 @@ pub async fn worker_loop(
     stats_bytes: Arc<AtomicU64>,
     stop: tokio::sync::watch::Receiver<bool>,
 ) -> SchedulerStats {
+    worker_loop_controlled(
+        store,
+        remote,
+        cfg,
+        account,
+        stats_bytes,
+        stop,
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn worker_loop_controlled(
+    store: Arc<Store>,
+    remote: Arc<dyn RemoteOps>,
+    cfg: BackupConfig,
+    account: String,
+    stats_bytes: Arc<AtomicU64>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    scan_done: Arc<std::sync::atomic::AtomicBool>,
+    paused: Arc<std::sync::atomic::AtomicBool>,
+    keep_alive: bool,
+) -> SchedulerStats {
     let mut stats = SchedulerStats::default();
     loop {
         if *stop.borrow() {
             break;
         }
+        if paused.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
         let claimed = match store.claim_batch(&account, 1) {
             Ok(v) => v,
-            Err(_) => break,
+            Err(e) => {
+                stats.error = Some(e.to_string());
+                break;
+            }
         };
         let Some(task) = claimed.into_iter().next() else {
             // 无 pending：如果 discovered 也为 0 且扫描结束，退出；否则等一下再试
             tokio::time::sleep(Duration::from_millis(200)).await;
             let c = store.counts(&account).unwrap_or_default();
-            let remaining = c.get("pending").copied().unwrap_or(0)
-                + c.get("discovered").copied().unwrap_or(0);
-            if remaining == 0 {
+            let remaining =
+                c.get("pending").copied().unwrap_or(0) + c.get("discovered").copied().unwrap_or(0);
+            if remaining == 0 && scan_done.load(Ordering::Acquire) && !keep_alive {
                 break;
             }
             continue;
         };
         stats.active_workers += 1;
-        let result = process_one(&store, &*remote, &cfg, &task).await;
+        let result = tokio::select! {
+            result=process_one(&store,&*remote,&cfg,&task)=>result,
+            _=stop.changed()=>{
+                let current=store.get_task(&task).unwrap_or_else(|_|task.clone());
+                let _=store.transition(&current,TaskState::Pending,Some("备份已停止，可恢复"));
+                break;
+            }
+        };
+        // process_one may have persisted the remote fid before a verification failure.
+        let task = store.get_task(&task).unwrap_or(task);
         stats.active_workers -= 1;
         match result {
             Ok(()) => {
@@ -138,7 +253,9 @@ pub async fn worker_loop(
                 let attempts = task.attempts + 1;
                 let mut t2 = task.clone();
                 t2.attempts = attempts;
-                if let Some(delay_ms) = next_retry_delay_ms(attempts, cfg.retry_base_ms, cfg.max_attempts) {
+                if let Some(delay_ms) =
+                    next_retry_delay_ms(attempts, cfg.retry_base_ms, cfg.max_attempts)
+                {
                     // 回到 pending：退避窗写入库（next_retry_at_ms），其他 worker 的 claim
                     // 在窗口到期前不会认领——避免多 worker 全速重试耗尽 attempts（重试风暴）。
                     let retry_at = (std::time::SystemTime::now()
@@ -146,15 +263,31 @@ pub async fn worker_loop(
                         .unwrap_or_default()
                         .as_millis() as i64)
                         + delay_ms as i64;
-                    let _ = store.transition_with_retry_at(&t2, TaskState::Pending, Some(&err), retry_at);
+                    let _ = store.transition_with_retry_at(
+                        &t2,
+                        TaskState::Pending,
+                        Some(&err),
+                        retry_at,
+                    );
                 } else {
                     let _ = store.transition(&t2, TaskState::Failed, Some(&err));
                     stats.failed += 1;
+                    if keep_alive {
+                        paused.store(true, Ordering::Release);
+                        let _ = remote.pause_active().await;
+                    }
                 }
+            }
+            Err(Fail::Paused) => {
+                let _ = store.transition(&task, TaskState::Pending, None);
             }
             Err(Fail::Fatal(err)) => {
                 stats.failed += 1;
                 let _ = store.transition(&task, TaskState::Failed, Some(&err));
+                if keep_alive {
+                    paused.store(true, Ordering::Release);
+                    let _ = remote.pause_active().await;
+                }
             }
         }
     }
@@ -167,10 +300,11 @@ pub async fn worker_loop(
 }
 
 /// 单任务处理结果。
-enum Fail {
+pub(crate) enum Fail {
     Skipped(String),
     Retryable(String),
     Fatal(String),
+    Paused,
 }
 
 /// 文件名（本地路径 → basename）。
@@ -188,13 +322,24 @@ async fn process_one(
     task: &Task,
 ) -> std::result::Result<(), Fail> {
     // 1) 源变更检测：上传前重 stat，与发现时不一致 → 重新发现（mtime/size 变了）
-    let meta = match tokio::fs::metadata(&task.local_path).await {
+    let meta = match tokio::fs::symlink_metadata(&task.local_path).await {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(Fail::Skipped(format!("源文件已消失：{}", task.local_path)));
         }
         Err(e) => return Err(Fail::Retryable(format!("源文件不可读：{e}"))),
     };
+    let resolved = tokio::fs::canonicalize(&task.local_path)
+        .await
+        .map_err(|e| Fail::Fatal(e.to_string()))?;
+    let root = tokio::fs::canonicalize(&task.root_dir)
+        .await
+        .map_err(|e| Fail::Fatal(e.to_string()))?;
+    if !meta.is_file() || crate::scanner::is_reparse(&meta) || !resolved.starts_with(&root) {
+        return Err(Fail::Fatal(
+            "源路径已变为链接、重解析点或越出所选目录".into(),
+        ));
+    }
     let now_mtime = meta
         .modified()
         .ok()
@@ -202,9 +347,15 @@ async fn process_one(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     if meta.len() != task.size || now_mtime != task.mtime_ms {
+        store
+            .refresh_source(task, meta.len(), now_mtime)
+            .map_err(|e| Fail::Fatal(e.to_string()))?;
         return Err(Fail::Retryable(format!(
             "源文件自发现后已变化（size {}/{}，mtime {}/{}），重新入队",
-            task.size, meta.len(), task.mtime_ms, now_mtime
+            task.size,
+            meta.len(),
+            task.mtime_ms,
+            now_mtime
         )));
     }
 
@@ -213,17 +364,44 @@ async fn process_one(
         Some((p, _)) => p.to_string(),
         None => String::new(),
     };
-    let parent_fid = ensure_dir_chain(store, remote, &task.account, &task.target_fid, &parent_rel).await?;
+    let parent_fid =
+        ensure_dir_chain(store, remote, &task.account, &task.target_fid, &parent_rel).await?;
 
     // 3) 冲突预检：远端同名可见且核对策略为 skip → skipped:conflict（默认不覆盖）
     let name = base_name(&task.local_path);
     if name.is_empty() {
         return Err(Fail::Fatal("本地路径无文件名".into()));
     }
-    if let Ok(Some(existing)) = remote.file_visible(&parent_fid, &name).await {
-        if existing != task.remote_fid.as_deref().unwrap_or("") {
-            return Err(Fail::Skipped(format!("远端已存在同名文件（fid {existing}），按默认策略不覆盖")));
+    if let Some(existing) = remote
+        .file_visible(&parent_fid, &name)
+        .await
+        .map_err(Fail::Retryable)?
+    {
+        if Some(existing.as_str()) != task.remote_fid.as_deref()
+            && !remote
+                .recover_uploaded(task, &parent_fid, &existing)
+                .await
+                .map_err(Fail::Retryable)?
+        {
+            return Err(Fail::Skipped(format!(
+                "远端已存在同名文件（fid {existing}），按默认策略不覆盖；未证明其内容与本地一致"
+            )));
         }
+        // An acknowledged upload was persisted before verification/restart. Reconcile it;
+        // never upload the same path again just because the last visibility check failed.
+        let mut recovered = task.clone();
+        recovered.remote_fid = Some(existing);
+        store
+            .transition(&recovered, TaskState::Uploading, None)
+            .map_err(|e| Fail::Fatal(e.to_string()))?;
+        store
+            .transition(&recovered, TaskState::Verifying, None)
+            .map_err(|e| Fail::Fatal(e.to_string()))?;
+        store
+            .transition(&recovered, TaskState::Success, None)
+            .map_err(|e| Fail::Fatal(e.to_string()))?;
+        let _ = remote.acknowledge(&task.local_path, &parent_fid).await;
+        return Ok(());
     }
 
     // 4) pending → uploading
@@ -237,8 +415,11 @@ async fn process_one(
         .upload_file(&task.local_path, &parent_fid)
         .await
         .map_err(|e| {
-            let _ = store.transition(&t2, TaskState::Pending, Some(&e));
-            Fail::Retryable(e)
+            if e == "BACKUP_PAUSED" {
+                Fail::Paused
+            } else {
+                Fail::Retryable(e)
+            }
         })?;
 
     // 6) verifying：远端可见性核对
@@ -246,12 +427,25 @@ async fn process_one(
     store
         .transition(&t2, TaskState::Verifying, None)
         .map_err(|e| Fail::Fatal(e.to_string()))?;
+    let after = tokio::fs::symlink_metadata(&task.local_path)
+        .await
+        .map_err(|e| Fail::Fatal(format!("上传后源不可读：{e}")))?;
+    if crate::scanner::is_reparse(&after)
+        || !after.is_file()
+        || after.len() != task.size
+        || crate::scanner::mtime_ms(&after) != task.mtime_ms
+    {
+        return Err(Fail::Fatal(
+            "上传期间源文件发生变化：保留云端成果并停止此项，请重新核对".into(),
+        ));
+    }
     match remote.file_visible(&parent_fid, &name).await {
         Ok(Some(fid)) if fid == remote_fid => {
             t2.remote_fid = Some(fid);
             store
                 .transition(&t2, TaskState::Success, None)
                 .map_err(|e| Fail::Fatal(e.to_string()))?;
+            let _ = remote.acknowledge(&task.local_path, &parent_fid).await;
             Ok(())
         }
         Ok(_) => Err(Fail::Retryable(format!(
@@ -262,7 +456,7 @@ async fn process_one(
 }
 
 /// 确保父目录链存在（空 rel = target 本身）。逐级 ensure_dir 并缓存。
-async fn ensure_dir_chain(
+pub(crate) async fn ensure_dir_chain(
     store: &Store,
     remote: &dyn RemoteOps,
     account: &str,
@@ -272,8 +466,12 @@ async fn ensure_dir_chain(
     if rel.is_empty() {
         return Ok(target_fid.to_string());
     }
+    let _directory_guard = store.directory_lock.lock().await;
     // 缓存命中（按任务真实 account 记账，verify 同键可查）
-    if let Ok(Some(fid)) = store.get_dir(account, target_fid, rel) {
+    if let Some(fid) = store
+        .get_dir(account, target_fid, rel)
+        .map_err(|e| Fail::Fatal(e.to_string()))?
+    {
         return Ok(fid);
     }
     // 逐级
@@ -281,16 +479,25 @@ async fn ensure_dir_chain(
     let mut cur = target_fid.to_string();
     let mut acc = String::new();
     for part in parts {
-        acc = if acc.is_empty() { part.to_string() } else { format!("{acc}/{part}") };
-        if let Ok(Some(fid)) = store.get_dir(account, target_fid, &acc) {
+        acc = if acc.is_empty() {
+            part.to_string()
+        } else {
+            format!("{acc}/{part}")
+        };
+        if let Some(fid) = store
+            .get_dir(account, target_fid, &acc)
+            .map_err(|e| Fail::Fatal(e.to_string()))?
+        {
             cur = fid;
             continue;
         }
         let fid = remote
-            .ensure_dir(target_fid, &acc)
+            .ensure_dir(&cur, part)
             .await
             .map_err(|e| Fail::Retryable(format!("建立目录 {acc} 失败：{e}")))?;
-        let _ = store.put_dir(account, target_fid, &acc, &fid);
+        store
+            .put_dir(account, target_fid, &acc, &fid)
+            .map_err(|e| Fail::Fatal(e.to_string()))?;
         cur = fid;
     }
     Ok(cur)
@@ -305,9 +512,9 @@ mod tests {
 
     /// 假远端：内存目录树 + 上传成功/失败注入。
     struct FakeRemote {
-        dirs: Mutex<HashMap<String, String>>,   // (target|rel) -> fid
-        files: Mutex<HashMap<String, String>>,  // (parent|name) -> fid
-        fail_uploads: AtomicU64, // 前 N 次上传失败（测退避）
+        dirs: Mutex<HashMap<String, String>>,  // (target|rel) -> fid
+        files: Mutex<HashMap<String, String>>, // (parent|name) -> fid
+        fail_uploads: AtomicU64,               // 前 N 次上传失败（测退避）
         uploads: AtomicU64,
     }
 
@@ -327,11 +534,15 @@ mod tests {
             &'a self,
             target_fid: &'a str,
             rel_path: &'a str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow_lite::Result<String, String>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow_lite::Result<String, String>> + Send + 'a>,
+        > {
             Box::pin(async move {
                 let key = format!("{target_fid}|{rel_path}");
                 let mut d = self.dirs.lock().unwrap();
-                Ok(d.entry(key).or_insert_with(|| format!("dir-{}", rel_path.replace('/', "_"))).clone())
+                Ok(d.entry(key)
+                    .or_insert_with(|| format!("dir-{}", rel_path.replace('/', "_")))
+                    .clone())
             })
         }
 
@@ -339,7 +550,9 @@ mod tests {
             &'a self,
             local_path: &'a str,
             parent_fid: &'a str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow_lite::Result<String, String>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow_lite::Result<String, String>> + Send + 'a>,
+        > {
             Box::pin(async move {
                 // 计数在入口：失败尝试也算"上传尝试"（退避验证依赖）
                 let n = self.uploads.fetch_add(1, Ordering::SeqCst);
@@ -352,10 +565,7 @@ mod tests {
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default();
                 let key = format!("{parent_fid}|{name}");
-                self.files
-                    .lock()
-                    .unwrap()
-                    .insert(key, format!("fid-{n}"));
+                self.files.lock().unwrap().insert(key, format!("fid-{n}"));
                 Ok(format!("fid-{n}"))
             })
         }
@@ -364,7 +574,13 @@ mod tests {
             &'a self,
             parent_fid: &'a str,
             name: &'a str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow_lite::Result<Option<String>, String>> + Send + 'a>> {
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = anyhow_lite::Result<Option<String>, String>>
+                    + Send
+                    + 'a,
+            >,
+        > {
             Box::pin(async move {
                 let key = format!("{parent_fid}|{name}");
                 Ok(self.files.lock().unwrap().get(&key).cloned())
@@ -409,7 +625,8 @@ mod tests {
         // 预置远端同名（sub 目录已由 store 缓存映射到 dir-sub，上传前用 dir-sub 查可见性）
         remote
             .files
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .insert("dir-sub|b.txt".into(), "fid-existing".into());
 
         let tasks = vec![
@@ -421,7 +638,11 @@ mod tests {
         store.put_dir("acc1", "root1", "sub", "dir-sub").unwrap();
 
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-        let cfg = BackupConfig { retry_base_ms: 1, max_attempts: 1, ..Default::default() };
+        let cfg = BackupConfig {
+            retry_base_ms: 1,
+            max_attempts: 1,
+            ..Default::default()
+        };
         let bytes = Arc::new(AtomicU64::new(0));
         let st = worker_loop(
             store.clone(),
@@ -440,7 +661,10 @@ mod tests {
         assert_eq!(st.failed, 0);
         assert!(bytes.load(Ordering::Relaxed) >= 8);
         // 目录映射已建：sub 命中缓存；中文 由 ensure_dir 建立
-        assert_eq!(store.get_dir("acc1", "root1", "中文").unwrap().as_deref(), Some("dir-中文"));
+        assert_eq!(
+            store.get_dir("acc1", "root1", "中文").unwrap().as_deref(),
+            Some("dir-中文")
+        );
     }
 
     #[tokio::test]
@@ -454,10 +678,22 @@ mod tests {
 
         // 注入 1 次失败（退避 1ms 重试后成功）
         remote.fail_uploads.store(1, Ordering::SeqCst);
-        let cfg = BackupConfig { retry_base_ms: 1, max_attempts: 3, ..Default::default() };
+        let cfg = BackupConfig {
+            retry_base_ms: 1,
+            max_attempts: 3,
+            ..Default::default()
+        };
         let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         let bytes = Arc::new(AtomicU64::new(0));
-        let st = worker_loop(store.clone(), remote.clone(), cfg, "acc1".into(), bytes, stop_rx).await;
+        let st = worker_loop(
+            store.clone(),
+            remote.clone(),
+            cfg,
+            "acc1".into(),
+            bytes,
+            stop_rx,
+        )
+        .await;
         assert_eq!(st.success, 1, "失败后退避重试成功");
         assert_eq!(st.failed, 0);
         let ups = remote.uploads.load(Ordering::SeqCst);
@@ -467,13 +703,32 @@ mod tests {
         let t2 = mk_task("changed.txt", b"v1", &root);
         store.upsert_discovered(&[t2.clone()]).unwrap();
         std::fs::write(&t2.local_path, b"v2-longer").unwrap();
-        let cfg2 = BackupConfig { retry_base_ms: 1, max_attempts: 1, ..Default::default() };
+        let cfg2 = BackupConfig {
+            retry_base_ms: 1,
+            max_attempts: 1,
+            ..Default::default()
+        };
         let (_s2, rx2) = tokio::sync::watch::channel(false);
-        let st2 = worker_loop(store.clone(), remote.clone(), cfg2, "acc1".into(), Arc::new(AtomicU64::new(0)), rx2).await;
-        assert_eq!(st2.failed, 1, "源变更重试耗尽后如实 failed（内容以最后一次发现为准）");
+        let st2 = worker_loop(
+            store.clone(),
+            remote.clone(),
+            cfg2,
+            "acc1".into(),
+            Arc::new(AtomicU64::new(0)),
+            rx2,
+        )
+        .await;
+        assert_eq!(
+            st2.failed, 1,
+            "源变更重试耗尽后如实 failed（内容以最后一次发现为准）"
+        );
         let c = store.counts("acc1").unwrap();
         // 源变更走 Retryable → attempts=1 >= max=1 → failed 终态（错误信息里可读出"已变化"）
-        assert_eq!(c.get("failed").copied().unwrap_or(0), 1, "源变更重试耗尽后 failed");
+        assert_eq!(
+            c.get("failed").copied().unwrap_or(0),
+            1,
+            "源变更重试耗尽后 failed"
+        );
     }
 
     #[tokio::test]
@@ -487,7 +742,15 @@ mod tests {
         store.upsert_discovered(&[t]).unwrap();
         let cfg = BackupConfig::default();
         let (_s, rx) = tokio::sync::watch::channel(false);
-        let st = worker_loop(store.clone(), remote, cfg, "acc1".into(), Arc::new(AtomicU64::new(0)), rx).await;
+        let st = worker_loop(
+            store.clone(),
+            remote,
+            cfg,
+            "acc1".into(),
+            Arc::new(AtomicU64::new(0)),
+            rx,
+        )
+        .await;
         assert_eq!(st.skipped, 1, "源消失是 skipped 而非 failed");
         assert_eq!(st.failed, 0);
     }

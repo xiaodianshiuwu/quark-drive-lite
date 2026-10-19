@@ -1,32 +1,16 @@
 # 夸克网盘极简客户端 — 内部接口契约 (IPC Contract v1)
 
+> 当前运行框架为 Tauri 2 / Rust；下文 Electron 专用实现说明为历史参考，以 `tauri-bridge.js` 和 Rust `qk_call` 为当前分发依据。
 > 本文件是渲染进程（UI）与主进程（核心）之间的**唯一约定**。
 > 主进程负责全部网络访问、Cookie 管理、文件系统写入；渲染进程**不得**直接发起跨域请求或触碰 Node/Electron API。
 
-## 0. 安全基线
+## 0. 当前 Tauri 调用与安全边界
 
-- `contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`（渲染进程无 Node）。
-- 渲染进程仅能通过 `window.qk` 调用下列方法，全部经 `ipcRenderer.invoke` / `ipcRenderer.on` 白名单转发。
-- IPC 仅接受主窗口的主框架调用。UI 对删除、移动、复制显示二次确认；创建和重命名通过输入对话框提交；下载不覆盖已有文件。
+渲染器通过 `window.qk` → `tauri-bridge.js` → `invoke('qk_call')` 白名单分发。Rust `trusted()` 核对窗口标签和页面来源；仅 `main` 能调用业务接口，登录窗口仅用于认证。CSP 禁止远程脚本、子 frame 和表单外发，渲染器无 Node，不能读取 Cookie。
 
-### 0.1 IPC 错误传递协议（实测确定，勿改）
+Rust 业务错误以 `{code,message,...}` reject，前端 `normalizeError()` 保留错误码并展示；登录过期的 `NEED_LOGIN` 触发登录提示。权限限制由 Rust Agent 工具层实施，不能依赖 UI 开关。GUI 删除确认和 Agent dry-run/name 确认分别适用。
 
-两个 Electron 陷阱，本项目已实测确认并规避：
-
-1. **主进程处理器不抛异常**。`ipcRenderer.invoke` 在处理器抛出时只会把错误序列化成一句
-   `Error invoking remote method 'x': ...`，`code`/`bizCode`/`raw` **全部丢失**。
-   因此主进程统一返回结果信封：
-   - 成功：`{ __qk: true, data: <结果> }`
-   - 失败：`{ __qk: false, error: { code, message, bizCode?, httpStatus?, raw? } }`
-
-2. **preload 中必须 `throw` 普通对象，不能 `throw new Error()`**。实测：
-   跨 `contextBridge` 抛 `Error` 时只有 `message` 存活（`Object.keys(err)` 为空），`code` 被剥离；
-   抛普通对象则字段完整。
-   渲染侧 `api.js` 的 `normalizeError()` 会把该对象归一化成带 `code` 的 `Error`。
-
-> 为什么必须如此严格：UI 依赖 `err.code === 'NEED_LOGIN'` 弹出「登录状态已失效，请重新登录」提示条。
-> 上述任一环节写错，该提示条就会静默失效——真机冒烟测试 `verify/smoke-electron.js`
-> 专门覆盖了这条链路。
+`src/preload.js` / Electron 的 `ipcRenderer` 信封协议只供历史参考；当前原生链路由 `npm run verify:native` 覆盖，不能用 Electron 冒烟结果替代。
 
 ## 1. 数据类型
 
@@ -154,7 +138,7 @@ interface Settings { downloadDir: string; uploadConcurrency: number; downloadCon
 - 上传/下载均在主进程异步执行，`upload()`/`download()` 立即返回，**不得阻塞 UI**。
 - 下载须支持 HTTP Range 断点续传：临时文件 `<name>.qkdownloading` + 同名 `.cfg` 记录进度。
 - 下载瞬时错误最多重试 3 次，链接失效重取；上传在分片级重试，整次预登记不自动重放。未登录、容量不足和无效参数不自动重试。
-- 上传分片并发仅用于预读；当前存储目标的 PUT 必须按编号顺序执行。任务队列不跨应用重启保存。
+- 上传支持绑定前缀哈希的受控并行 PUT，并在协议不支持时按顺序回退。任务队列持久保存，重启后暂停；须显式恢复。
 - 并发数由设置控制，默认下载 2、上传 2。
 
 ## 5. `window.qk.dialog` / `window.qk.settings`
@@ -180,13 +164,13 @@ interface Settings { downloadDir: string; uploadConcurrency: number; downloadCon
 
 ## 7. UI 功能范围（严格对齐需求，超出即删除）
 
-**保留**：文件浏览（面包屑 + 列表 + 目录分页加载）、搜索、新建文件夹、移动、复制、重命名、批量删除、上传、下载、传输任务管理、登录/退出、设置（下载目录/并发数）。
+**保留**：文件浏览（面包屑 + 列表 + 目录分页加载）、一次性增量备份、搜索、新建文件夹、移动、复制、重命名、批量删除、上传、下载、传输任务管理、登录/退出、设置（下载目录/并发数）。
 
-**禁止出现**：音视频播放器、推广/会员购买/活动入口、同步盘/备份、分享、回收站深度恢复、相册/时间线、文档预览转换、加速器。（0.3.0-alpha 起，Agent 接入与内置对话为已批准功能，见下方章节。）
+**禁止出现**：音视频播放器、推广/会员购买/活动入口、自动同步盘、分享、回收站深度恢复、相册/时间线、文档预览转换、加速器。（0.3.0-alpha 起，Agent 接入与内置对话为已批准功能，见下方章节。）
 
 ## 8. 视觉要求
 
-- 界面简洁：左侧极简导航（全部文件 / 传输列表 / 对话 / 设置），右侧主区。
+- 界面简洁：左侧极简导航（全部文件 / 传输列表 / 备份 / 对话 / 设置），右侧主区。
 - 顶部：面包屑 + 搜索框 + 上传按钮。
 - 列表：复选框、图标、名称、大小、修改时间、行内操作。
 - 传输抽屉：进度条、速度、剩余时间、暂停/继续/重试/取消。
@@ -214,3 +198,11 @@ interface Settings { downloadDir: string; uploadConcurrency: number; downloadCon
 事件 `qk:chat-event` 载荷类型：`round` / `assistant_note` / `tool_start` / `tool_end` / `done` / `error`（字段见 `crates/quark-agent/src/chat.rs`）。
 
 错误形状沿用 `qk_call` 统一错误（`code`/`message`，Agent 的操作提示合并进 `message`）。
+
+## 增量备份（当前已批准产品范围）
+
+`window.qk.backup` 提供 plan/start/status/retry/cancel/verify/pause/resume/tasks/export 十个命令。参数及核验强度以 [BACKUP.md](BACKUP.md) 为准。账号来自 Rust 会话，前端 account 字段不授予身份。扫描结束和核验结束是不同状态；不能用 `running=false` 隐藏报告或宣称备份完整。
+
+### Agent 写操作结果语义
+
+`accepted=true` 表示服务端成功受理，`completed` 表示同步完成，不能互换。重命名的 `verified` 来自清除调用内缓存后的元数据核对；仍未观察到新名称时应稍后复核。删除以逐项 `results[].status` 为准，只有全部 `deleted` 才返回 `deleted_to_recycle=true`；`uncertain` 不能视为完成。

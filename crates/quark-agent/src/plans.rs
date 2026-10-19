@@ -330,6 +330,7 @@ impl PlanStore {
             .map
             .get_mut(plan_id)
             .ok_or_else(|| AgentToolError::new(AgentError::NotFound, "未找到该计划"))?;
+        if plan.status!="pending" || plan.expires_at<=Self::now(){return Err(AgentToolError::new(AgentError::Conflict,"计划已被认领、已结束或过期，不能重复执行"));}
         plan.status = "executing".into();
         Ok(())
     }
@@ -447,4 +448,14 @@ mod tests {
         let e2 = store.assert_executable(id, Some(1), Some(s["content_hash"].as_str().unwrap())).unwrap_err();
         assert_eq!(e2.code, AgentError::PlanStale);
     }
+    #[test]
+    fn concurrent_execution_claim_has_exactly_one_winner() {
+        let store=std::sync::Arc::new(PlanStore::new());
+        let snap=store.create("organize","root",&json!({}),&[json!({"fid":"f","name":"file","action":"move","toFid":"d"})],"").unwrap();
+        let id=snap["plan_id"].as_str().unwrap().to_string();
+        let barrier=std::sync::Arc::new(std::sync::Barrier::new(16));
+        let workers:Vec<_>=(0..16).map(|_|{let store=store.clone();let id=id.clone();let barrier=barrier.clone();std::thread::spawn(move||{barrier.wait();store.mark_executing(&id).is_ok()})}).collect();
+        assert_eq!(workers.into_iter().map(|w|w.join().unwrap()).filter(|won|*won).count(),1);
+    }
+
 }

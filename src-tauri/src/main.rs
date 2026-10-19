@@ -66,7 +66,7 @@ async fn qk_call(
     if state.login.load(Ordering::SeqCst)
         && matches!(
             method.as_str(),
-            "transfer.upload" | "transfer.download" | "transfer.resume" | "transfer.retry"
+            "transfer.upload" | "transfer.download" | "transfer.resume" | "transfer.retry" | "backup.start" | "backup.resume"
         )
     {
         return Err(Error::new("CONFLICT", "请完成或关闭登录窗口后再启动传输"));
@@ -96,6 +96,7 @@ async fn qk_call(
         None
     };
     if method == "auth.logout" {
+        if state.backup.session.lock().await.is_some() {state.backup.cancel().await.map_err(|e|Error::new(e.code,e.message))?;}
         if let Some(login) = app.get_webview_window("login") {
             let _ = login.close();
         }
@@ -117,7 +118,7 @@ async fn qk_call(
     }
     let result = if method.starts_with("backup.") {
         let core = state.core.clone();
-        let profile = app.path().app_data_dir().unwrap_or_default();
+        let profile = state.core.profile_dir().to_path_buf();
         let m = method.as_str();
         let mapped: std::result::Result<Value, quark_backup::BackupError> = async {
             match m {
@@ -135,6 +136,14 @@ async fn qk_call(
                 state.backup.start(core, transfers, account, root, fid, profile, cfgp).await
             }
             "backup.status" => Ok(state.backup.status().await),
+            "backup.pause" => state.backup.pause().await,
+            "backup.resume" => state.backup.resume().await,
+            "backup.tasks" => state.backup.tasks(params["offset"].as_u64().unwrap_or(0) as usize,params["limit"].as_u64().unwrap_or(100) as usize).await,
+            "backup.export" => {
+                if let Some(file)=rfd::AsyncFileDialog::new().set_file_name("quark-backup-manifest.jsonl").save_file().await {
+                    state.backup.export(file.path().to_path_buf()).await
+                } else {Ok(json!({"canceled":true}))}
+            }
             "backup.retry" => state.backup.retry_failed().await,
             "backup.cancel" => state.backup.cancel().await,
             "backup.verify" => {
@@ -202,6 +211,7 @@ async fn login(app: tauri::AppHandle, state: State) -> Result<Value> {
         }
     }
     let _reset = Reset(state.login.clone());
+    if state.backup.session.lock().await.is_some() {state.backup.cancel().await.map_err(|e|Error::new(e.code,e.message))?;}
     state.transfers.pause_all().await?;
     let generation = state.login_generation.fetch_add(1, Ordering::SeqCst) + 1;
     let window = tauri::WebviewWindowBuilder::new(
@@ -245,6 +255,7 @@ async fn login(app: tauri::AppHandle, state: State) -> Result<Value> {
                 if let Ok(envelope)=response.json::<Value>().await {if envelope["code"]==0 {
                     let _account_guard=state.account_control.lock().await;
                     if app.get_webview_window("login").is_none() || state.login_generation.load(Ordering::SeqCst)!=generation {return Err(Error::new("ABORTED","登录已取消"));}
+                    state.transfers.pause_all().await?;
                     state.core.replace_cookies(Value::Array(items))?;
                     state.core.call("auth.verify",Value::Null).await?;
                     let _=state.core.call("auth.getUserInfo",Value::Null).await;
@@ -376,6 +387,9 @@ async fn smoke_report(
 }
 
 fn main() {
+    let context=tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    let context={let mut context=context;if std::env::var_os("QK_SMOKE_REPORT").is_some(){for window in &mut context.config_mut().app.windows{window.visible=false;window.focus=false;}}context};
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![qk_call, smoke_report])
         .setup(|app| {
@@ -474,12 +488,13 @@ fn main() {
                 let w = app.get_webview_window("main").unwrap();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(3)).await;
-                    let _ = w.eval(include_str!("smoke.js"));
+                    let source=std::env::var("QK_SMOKE_SOURCE").unwrap_or_default();
+                    let _ = w.eval(format!("window.__qkSmokeRoot={};\n{}",json!(source),include_str!("smoke.js")));
                 });
             }
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("Tauri 应用启动失败")
         .run({
             let shutting_down = Arc::new(AtomicBool::new(false));
@@ -490,7 +505,9 @@ fn main() {
                         let handle = app.clone();
                         let manager = app.state::<State>().transfers.clone();
                         let agent = app.state::<State>().agent.clone();
+                        let backup = app.state::<State>().backup.clone();
                         tauri::async_runtime::spawn(async move {
+                            if backup.session.lock().await.is_some() {let _=tokio::time::timeout(Duration::from_secs(8),backup.cancel()).await;}
                             let _ =
                                 tokio::time::timeout(Duration::from_secs(8), manager.pause_all())
                                     .await;

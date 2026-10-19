@@ -356,7 +356,7 @@
         <div class="setrow">
           <div class="setlabel">
             <div class="setname">备份向导</div>
-            <div class="sethint">先选择本地目录与云端目标，点「预览」确认规模后再开始；同一目录再次开始会续传，不会重复上传。</div>
+            <div class="sethint">选择源目录和云端目录即可开始，边扫描边上传，无需等待全盘预览。中断后选择相同账号、源目录和目标可恢复。</div>
           </div>
           <div class="setcontrol backup-row">
             <button type="button" class="btn" id="backup-pick-dir">选择本地目录</button>
@@ -366,16 +366,29 @@
 
         <div class="setrow">
           <div class="setlabel">
-            <div class="setname">云端目标目录 fid</div>
-            <div class="sethint">备份内容会放到这个目录下；填 0 表示网盘根目录。可在「全部文件」视图进入目标目录后从地址栏复制。</div>
+            <div class="setname">云端目标目录</div>
+            <div class="sethint">使用目录选择器或当前文件目录，备份保留相对目录结构。同名冲突不会覆盖，任何跳过或排除都会单独报告。</div>
           </div>
           <div class="setcontrol backup-row">
+            <button type="button" class="btn" id="backup-pick-target">选择云端目录</button>
+            <button type="button" class="btn" id="backup-use-current">使用当前文件目录</button>
             <input type="text" id="backup-target" class="input input-path" placeholder="0（根目录）" autocomplete="off" spellcheck="false" aria-label="云端目标目录 fid">
-            <button type="button" class="btn" id="backup-plan">预览</button>
+            <button type="button" class="btn" id="backup-plan">有限预览（可选）</button>
             <button type="button" class="btn btn-primary" id="backup-start" disabled>开始备份</button>
           </div>
         </div>
 
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">上传与发现</div>
+            <div class="sethint">批次控制发现量，并发控制同时上传的文件数；不会一次上传数百个文件。</div>
+          </div>
+          <div class="setcontrol backup-options">
+            <label>每批条目 <input class="input" id="backup-batch-size" type="number" min="1" max="5000" value="500"></label>
+            <label>限速（MiB/s，0为不限）<input class="input" id="backup-bandwidth" type="number" min="0" max="1048576" step="0.1" value="0"></label>
+            <label>上传并发 <input class="input" id="backup-concurrency" type="number" min="1" max="8" value="2"></label>
+          </div>
+        </div>
         <div class="setrow">
           <div class="setlabel">
             <div class="sethint" id="backup-plan-result" hidden></div>
@@ -386,7 +399,7 @@
       <div class="setcard" id="backup-run" hidden>
         <div class="setrow">
           <div class="setlabel">
-            <div class="setname">备份进行中</div>
+            <div class="setname" id="backup-status-title">备份状态</div>
             <div class="backup-progress">
               <div class="backup-bar" id="backup-bar" role="progressbar" aria-label="备份进度"><i></i></div>
               <div class="backup-pct" id="backup-pct" aria-live="polite"></div>
@@ -395,14 +408,22 @@
           </div>
           <div class="setcontrol backup-row">
             <button type="button" class="btn" id="backup-retry">重试失败</button>
+            <button type="button" class="btn" id="backup-pause">暂停</button>
+            <button type="button" class="btn" id="backup-export">导出清单</button>
             <button type="button" class="btn btn-danger" id="backup-cancel">取消</button>
-            <button type="button" class="btn" id="backup-verify">验证</button>
+            <label for="backup-sample-rate" class="sr-only">核验强度</label>
+            <select class="input" id="backup-sample-rate"><option value="10000">抽样哈希（1%，5–20项）</option><option value="1000000">全量哈希（逐文件读回）</option></select>
+            <button type="button" class="btn" id="backup-verify">核验备份</button>
           </div>
         </div>
 
         <div class="setrow">
           <div class="setlabel">
+            <p class="sethint" id="backup-runtime-hint" role="status" aria-live="polite"></p>
+            <ul class="backup-issues" id="backup-runtime-issues"></ul>
             <div class="sethint" id="backup-verify-result" hidden></div>
+            <div class="backup-task-head"><strong>任务清单</strong><button type="button" class="btn" id="backup-tasks-prev">上一页</button><span id="backup-tasks-page"></span><button type="button" class="btn" id="backup-tasks-next">下一页</button></div>
+            <ul class="backup-task-list" id="backup-task-list"></ul>
           </div>
         </div>
       </div>

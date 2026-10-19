@@ -45,19 +45,11 @@ impl HostDeps for ToolHost {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, AgentToolError>> + Send + 'a>> {
         // 会话绑定：调用前后各核对一次 generation。账号在长跑工具执行中途被切换时
         // 返回 ABORTED，而不是静默在新账号上继续（quark-core 的 ensure_session 语义）。
-        // generation==0 表示"不绑定"（MCP 源未提供真实 generation 的测试场景）。
+        // 初始 generation==0 同样是有效会话，必须参与前后校验。
         Box::pin(async move {
-            if generation != 0 {
-                self.core
-                    .ensure_session(generation)
-                    .map_err(Self::map_core_error)?;
-            }
+            self.core.ensure_session(generation).map_err(Self::map_core_error)?;
             let result = self.core.call(method, params.clone()).await;
-            if generation != 0 {
-                self.core
-                    .ensure_session(generation)
-                    .map_err(Self::map_core_error)?;
-            }
+            self.core.ensure_session(generation).map_err(Self::map_core_error)?;
             result.map_err(Self::map_core_error)
         })
     }
@@ -68,10 +60,11 @@ impl HostDeps for ToolHost {
         params: &'a Value,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, AgentToolError>> + Send + 'a>> {
         Box::pin(async move {
-            self.transfers
-                .call(method, params.clone())
-                .await
-                .map_err(Self::map_core_error)
+            let generation=params["_expectedSessionGeneration"].as_u64().unwrap_or_else(||self.core.session_generation());
+            self.core.ensure_session(generation).map_err(Self::map_core_error)?;
+            let result=self.transfers.call(method,params.clone()).await;
+            self.core.ensure_session(generation).map_err(Self::map_core_error)?;
+            result.map_err(Self::map_core_error)
         })
     }
 

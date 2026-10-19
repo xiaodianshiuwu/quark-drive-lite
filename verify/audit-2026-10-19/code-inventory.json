@@ -1,0 +1,5216 @@
+{
+  "baseline": "f512abfffcea75cfb8aeb775c800274ad4faa372",
+  "branch": "codex/independent-audit-20261019",
+  "code_sha256": "2a0ca191c4c88ac43061e9cf5b7b43f41887c6e3426d12ba3f10ef44063d9277",
+  "definition": "sorted UTF-8 paths + NUL + per-file SHA256 + LF; runtime sources, manifests, scripts, tests and CI; excludes docs/artifacts/legacy Electron",
+  "files": [
+    {
+      "path": ".github/release-prerelease.electron.yml.disabled",
+      "sha256": "c64fa0d6a06c7b35e0409a8307b79cc8e4be5e9dc1ceef451676a1194be1edc0",
+      "lines": 90,
+      "symbols": [
+        {
+          "name": "walk",
+          "line": 69
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/p0-compatibility.yml",
+      "sha256": "22efb5dc7639dc40c27914d9ab8408f8081bb5948fbeb6f3db8ab50f211f9688",
+      "lines": 33,
+      "symbols": []
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "8d62126e943ce24e4b055e236a53fb82b16065ea9aad42dd55298af635b53b68",
+      "lines": 5953,
+      "symbols": []
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "201c27e61d40e38faea0132264e4641c81dc0f39f8b57d6cff52c0c34a4de3c8",
+      "lines": 9,
+      "symbols": []
+    },
+    {
+      "path": "crates/quark-agent/Cargo.toml",
+      "sha256": "429370137bd81382cfdd34ce90f515076c132e2291c11844364fcd7dba04ab54",
+      "lines": 24,
+      "symbols": []
+    },
+    {
+      "path": "crates/quark-agent/examples/agent_acceptance.rs",
+      "sha256": "0737a16491c79c5cb87b0ea1c744b39953e7e6a473c2086a8fce921b9f99953d",
+      "lines": 267,
+      "symbols": [
+        {
+          "name": "fail",
+          "line": 28
+        },
+        {
+          "name": "call",
+          "line": 33
+        },
+        {
+          "name": "full_acceptance",
+          "line": 41
+        },
+        {
+          "name": "checked",
+          "line": 42
+        },
+        {
+          "name": "need",
+          "line": 46
+        },
+        {
+          "name": "main",
+          "line": 91
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-agent/src/chat.rs",
+      "sha256": "f70254020972fc93ea22410b268df5616151190a17a762e9d7bbe0da4fafa862",
+      "lines": 1995,
+      "symbols": [
+        {
+          "name": "to_json",
+          "line": 63
+        },
+        {
+          "name": "default",
+          "line": 86
+        },
+        {
+          "name": "drop",
+          "line": 95
+        },
+        {
+          "name": "new",
+          "line": 116
+        },
+        {
+          "name": "send",
+          "line": 141
+        },
+        {
+          "name": "run_loop",
+          "line": 211
+        },
+        {
+          "name": "call_model",
+          "line": 472
+        },
+        {
+          "name": "call_model_with",
+          "line": 482
+        },
+        {
+          "name": "run_tool",
+          "line": 580
+        },
+        {
+          "name": "audit",
+          "line": 652
+        },
+        {
+          "name": "openai_tools",
+          "line": 664
+        },
+        {
+          "name": "test_connection",
+          "line": 692
+        },
+        {
+          "name": "list_models",
+          "line": 724
+        },
+        {
+          "name": "status",
+          "line": 806
+        },
+        {
+          "name": "history",
+          "line": 826
+        },
+        {
+          "name": "ensure_generation",
+          "line": 837
+        },
+        {
+          "name": "with_idle",
+          "line": 841
+        },
+        {
+          "name": "clear",
+          "line": 845
+        },
+        {
+          "name": "redact_known_secret",
+          "line": 851
+        },
+        {
+          "name": "read_model_body",
+          "line": 855
+        },
+        {
+          "name": "endpoint_for",
+          "line": 870
+        },
+        {
+          "name": "system_message",
+          "line": 879
+        },
+        {
+          "name": "trim_history",
+          "line": 894
+        },
+        {
+          "name": "is_falsy",
+          "line": 928
+        },
+        {
+          "name": "tool_call_name",
+          "line": 938
+        },
+        {
+          "name": "preview_args",
+          "line": 947
+        },
+        {
+          "name": "tool_message",
+          "line": 964
+        },
+        {
+          "name": "pack_tool_result",
+          "line": 976
+        },
+        {
+          "name": "pack_tool_error",
+          "line": 990
+        },
+        {
+          "name": "summarize_payload",
+          "line": 1007
+        },
+        {
+          "name": "summarize_args_chat",
+          "line": 1018
+        },
+        {
+          "name": "sanitize_text",
+          "line": 1028
+        },
+        {
+          "name": "emit",
+          "line": 1035
+        },
+        {
+          "name": "read_http_request",
+          "line": 1090
+        },
+        {
+          "name": "write_http_response",
+          "line": 1140
+        },
+        {
+          "name": "start",
+          "line": 1158
+        },
+        {
+          "name": "push",
+          "line": 1213
+        },
+        {
+          "name": "requests",
+          "line": 1217
+        },
+        {
+          "name": "drop",
+          "line": 1223
+        },
+        {
+          "name": "access",
+          "line": 1243
+        },
+        {
+          "name": "scope",
+          "line": 1246
+        },
+        {
+          "name": "generation",
+          "line": 1249
+        },
+        {
+          "name": "tools",
+          "line": 1259
+        },
+        {
+          "name": "call_tool",
+          "line": 1279
+        },
+        {
+          "name": "event_cb",
+          "line": 1318
+        },
+        {
+          "name": "new_fixture",
+          "line": 1323
+        },
+        {
+          "name": "configure",
+          "line": 1347
+        },
+        {
+          "name": "types",
+          "line": 1358
+        },
+        {
+          "name": "events_of",
+          "line": 1367
+        },
+        {
+          "name": "tool_calls_round",
+          "line": 1378
+        },
+        {
+          "name": "final_round",
+          "line": 1384
+        },
+        {
+          "name": "one_call",
+          "line": 1390
+        },
+        {
+          "name": "tool_calls_without_name_are_dropped_everywhere",
+          "line": 1399
+        },
+        {
+          "name": "two_round_flow_asserts_openai_request_shape_and_events",
+          "line": 1433
+        },
+        {
+          "name": "tool_result_is_redacted_before_truncation",
+          "line": 1533
+        },
+        {
+          "name": "max_rounds_stops_the_loop_with_explicit_marker",
+          "line": 1603
+        },
+        {
+          "name": "overflow_tool_calls_still_get_tool_responses",
+          "line": 1631
+        },
+        {
+          "name": "http_401_maps_to_unauthorized_and_emits_error_event",
+          "line": 1676
+        },
+        {
+          "name": "network_error_maps_to_upstream",
+          "line": 1709
+        },
+        {
+          "name": "invalid_json_and_missing_choices_are_upstream_errors",
+          "line": 1729
+        },
+        {
+          "name": "tool_failure_is_reported_to_model_without_aborting",
+          "line": 1757
+        },
+        {
+          "name": "trim_history_cuts_at_user_boundary_and_keeps_tool_pairing",
+          "line": 1796
+        },
+        {
+          "name": "input_validation_busy_conflict_and_unconfigured_are_rejected",
+          "line": 1846
+        },
+        {
+          "name": "test_connection_uses_local_probe_without_polluting_history",
+          "line": 1880
+        },
+        {
+          "name": "list_models_parses_defensively_and_dedups",
+          "line": 1905
+        },
+        {
+          "name": "endpoint_for_tolerates_full_completion_url",
+          "line": 1921
+        },
+        {
+          "name": "pack_tool_result_redacts_then_truncates",
+          "line": 1935
+        },
+        {
+          "name": "pack_tool_error_keeps_code_and_hint",
+          "line": 1948
+        },
+        {
+          "name": "clear_and_config_changes_are_rejected_during_a_running_turn",
+          "line": 1959
+        },
+        {
+          "name": "provider_echoed_api_key_is_never_returned_in_error_or_reply",
+          "line": 1971
+        },
+        {
+          "name": "changing_login_during_model_wait_stops_the_turn_before_tools_execute",
+          "line": 1979
+        },
+        {
+          "name": "access",
+          "line": 1982
+        },
+        {
+          "name": "scope",
+          "line": 1983
+        },
+        {
+          "name": "generation",
+          "line": 1984
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-agent/src/chat_config.rs",
+      "sha256": "f1c6fee5b3af4593f173da331628276d7d13ea19689a2dbdc043651525b44db6",
+      "lines": 640,
+      "symbols": [
+        {
+          "name": "default",
+          "line": 64
+        },
+        {
+          "name": "configured",
+          "line": 79
+        },
+        {
+          "name": "to_str",
+          "line": 88
+        },
+        {
+          "name": "to_number",
+          "line": 108
+        },
+        {
+          "name": "invalid",
+          "line": 123
+        },
+        {
+          "name": "split_url",
+          "line": 135
+        },
+        {
+          "name": "hostname_of",
+          "line": 177
+        },
+        {
+          "name": "is_loopback_host",
+          "line": 190
+        },
+        {
+          "name": "normalize_base_url",
+          "line": 201
+        },
+        {
+          "name": "normalize_rounds",
+          "line": 225
+        },
+        {
+          "name": "normalize_timeout",
+          "line": 232
+        },
+        {
+          "name": "normalize_temperature",
+          "line": 239
+        },
+        {
+          "name": "open",
+          "line": 258
+        },
+        {
+          "name": "dir",
+          "line": 268
+        },
+        {
+          "name": "config_path",
+          "line": 272
+        },
+        {
+          "name": "read_raw",
+          "line": 277
+        },
+        {
+          "name": "internal",
+          "line": 296
+        },
+        {
+          "name": "snapshot",
+          "line": 317
+        },
+        {
+          "name": "update",
+          "line": 340
+        },
+        {
+          "name": "clear",
+          "line": 422
+        },
+        {
+          "name": "tmp_profile",
+          "line": 432
+        },
+        {
+          "name": "roundtrip_is_encrypted_and_key_never_leaks_into_snapshot",
+          "line": 440
+        },
+        {
+          "name": "api_key_update_semantics_keep_on_empty_and_clear_on_null",
+          "line": 478
+        },
+        {
+          "name": "invalid_update_does_not_write_partial_config",
+          "line": 514
+        },
+        {
+          "name": "base_url_allows_https_and_loopback_http_only",
+          "line": 546
+        },
+        {
+          "name": "rounds_timeout_temperature_are_clamped",
+          "line": 596
+        },
+        {
+          "name": "string_fields_are_trimmed_and_truncated_by_chars",
+          "line": 618
+        },
+        {
+          "name": "invalid_existing_chat_config_is_preserved_until_explicit_clear",
+          "line": 633
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-agent/src/config.rs",
+      "sha256": "b1adbd909cf593bc7a8a0dfe45cfb9062e17f661f25ee3672a4ea30b06b38aa4",
+      "lines": 578,
+      "symbols": [
+        {
+          "name": "default",
+          "line": 38
+        },
+        {
+          "name": "to_json",
+          "line": 63
+        },
+        {
+          "name": "from_json",
+          "line": 77
+        },
+        {
+          "name": "scope",
+          "line": 123
+        },
+        {
+          "name": "is_active",
+          "line": 143
+        },
+        {
+          "name": "encrypt_to_file",
+          "line": 152
+        },
+        {
+          "name": "decrypt_from_file",
+          "line": 185
+        },
+        {
+          "name": "read_key",
+          "line": 202
+        },
+        {
+          "name": "load_or_create_key",
+          "line": 208
+        },
+        {
+          "name": "open",
+          "line": 239
+        },
+        {
+          "name": "dir",
+          "line": 251
+        },
+        {
+          "name": "bridge_file_path",
+          "line": 255
+        },
+        {
+          "name": "load",
+          "line": 259
+        },
+        {
+          "name": "save",
+          "line": 273
+        },
+        {
+          "name": "get",
+          "line": 284
+        },
+        {
+          "name": "update",
+          "line": 289
+        },
+        {
+          "name": "rotate_token",
+          "line": 347
+        },
+        {
+          "name": "activate",
+          "line": 358
+        },
+        {
+          "name": "deactivate",
+          "line": 378
+        },
+        {
+          "name": "write_bridge_file",
+          "line": 387
+        },
+        {
+          "name": "remove_bridge_file",
+          "line": 420
+        },
+        {
+          "name": "normalize_remote_root_entries",
+          "line": 426
+        },
+        {
+          "name": "read_bridge_credentials",
+          "line": 453
+        },
+        {
+          "name": "tmp_profile",
+          "line": 480
+        },
+        {
+          "name": "config_roundtrips_through_encryption_and_survives_reload",
+          "line": 488
+        },
+        {
+          "name": "activate_deactivate_manage_bridge_file_and_rotate_invalidates",
+          "line": 518
+        },
+        {
+          "name": "scope_snapshot_prefers_write_roots_and_dedups",
+          "line": 549
+        },
+        {
+          "name": "key_creation_is_atomic_and_corruption_does_not_replace_existing_material",
+          "line": 562
+        },
+        {
+          "name": "corrupt_existing_access_config_is_never_overwritten_by_a_partial_patch",
+          "line": 570
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-agent/src/gateway.rs",
+      "sha256": "266d61a6fb6a22a8fe78b5d98746bda5c61620da1bf1bee64745f8f27ee8d5d8",
+      "lines": 2108,
+      "symbols": [
+        {
+          "name": "audit_endpoint",
+          "line": 89
+        },
+        {
+          "name": "access",
+          "line": 103
+        },
+        {
+          "name": "scope",
+          "line": 105
+        },
+        {
+          "name": "generation",
+          "line": 107
+        },
+        {
+          "name": "reply",
+          "line": 135
+        },
+        {
+          "name": "reply_close",
+          "line": 138
+        },
+        {
+          "name": "transition_to_authenticated",
+          "line": 161
+        },
+        {
+          "name": "new",
+          "line": 193
+        },
+        {
+          "name": "transition_authenticated",
+          "line": 210
+        },
+        {
+          "name": "release",
+          "line": 221
+        },
+        {
+          "name": "new",
+          "line": 245
+        },
+        {
+          "name": "with_auth_timeout_ms",
+          "line": 263
+        },
+        {
+          "name": "with_rate_limit",
+          "line": 269
+        },
+        {
+          "name": "with_now",
+          "line": 275
+        },
+        {
+          "name": "test_control",
+          "line": 282
+        },
+        {
+          "name": "audit",
+          "line": 291
+        },
+        {
+          "name": "start",
+          "line": 299
+        },
+        {
+          "name": "stop",
+          "line": 442
+        },
+        {
+          "name": "status",
+          "line": 479
+        },
+        {
+          "name": "list_tools",
+          "line": 505
+        },
+        {
+          "name": "call_tool",
+          "line": 524
+        },
+        {
+          "name": "handle_message",
+          "line": 588
+        },
+        {
+          "name": "handle_auth",
+          "line": 722
+        },
+        {
+          "name": "attach",
+          "line": 784
+        },
+        {
+          "name": "run_connection",
+          "line": 807
+        },
+        {
+          "name": "reader_loop",
+          "line": 860
+        },
+        {
+          "name": "worker_loop",
+          "line": 969
+        },
+        {
+          "name": "dispatch_line",
+          "line": 1007
+        },
+        {
+          "name": "write_payload",
+          "line": 1063
+        },
+        {
+          "name": "error_response",
+          "line": 1094
+        },
+        {
+          "name": "limit_payload",
+          "line": 1107
+        },
+        {
+          "name": "label_string",
+          "line": 1112
+        },
+        {
+          "name": "summarize_args",
+          "line": 1125
+        },
+        {
+          "name": "client_label",
+          "line": 1159
+        },
+        {
+          "name": "extract_request_id",
+          "line": 1197
+        },
+        {
+          "name": "extract_anchored_id",
+          "line": 1219
+        },
+        {
+          "name": "extract_id_from_buffer",
+          "line": 1330
+        },
+        {
+          "name": "new",
+          "line": 1367
+        },
+        {
+          "name": "access",
+          "line": 1382
+        },
+        {
+          "name": "scope",
+          "line": 1388
+        },
+        {
+          "name": "generation",
+          "line": 1391
+        },
+        {
+          "name": "tools",
+          "line": 1403
+        },
+        {
+          "name": "call_tool",
+          "line": 1426
+        },
+        {
+          "name": "harness_with",
+          "line": 1463
+        },
+        {
+          "name": "harness_with_clock",
+          "line": 1467
+        },
+        {
+          "name": "connect",
+          "line": 1489
+        },
+        {
+          "name": "send",
+          "line": 1500
+        },
+        {
+          "name": "send_raw",
+          "line": 1506
+        },
+        {
+          "name": "next",
+          "line": 1510
+        },
+        {
+          "name": "next_opt",
+          "line": 1514
+        },
+        {
+          "name": "expect_closed",
+          "line": 1532
+        },
+        {
+          "name": "authed",
+          "line": 1543
+        },
+        {
+          "name": "extract_request_id_anchors_at_object_and_only_takes_scalars",
+          "line": 1557
+        },
+        {
+          "name": "extract_id_from_buffer_takes_only_the_current_line",
+          "line": 1581
+        },
+        {
+          "name": "message_limit_exceeds_tool_text_limit",
+          "line": 1589
+        },
+        {
+          "name": "unauthenticated_connection_only_accepts_auth_ping_hello",
+          "line": 1603
+        },
+        {
+          "name": "wrong_token_is_rejected_closed_and_audited_without_leaking",
+          "line": 1624
+        },
+        {
+          "name": "auth_success_lists_tools_and_returns_protocol_metadata",
+          "line": 1644
+        },
+        {
+          "name": "repeated_auth_on_authenticated_connection_is_idempotent_even_when_pool_is_full",
+          "line": 1671
+        },
+        {
+          "name": "auth_timeout_closes_connection_and_is_audited",
+          "line": 1698
+        },
+        {
+          "name": "oversized_message_returns_limit_with_request_id",
+          "line": 1718
+        },
+        {
+          "name": "oversized_message_without_id_returns_null_id",
+          "line": 1734
+        },
+        {
+          "name": "queue_overflow_returns_the_dropped_line_id",
+          "line": 1748
+        },
+        {
+          "name": "invalid_json_returns_id_and_connection_survives",
+          "line": 1778
+        },
+        {
+          "name": "rate_limit_triggers_at_boundary_with_request_id",
+          "line": 1799
+        },
+        {
+          "name": "unauthenticated_pool_limit_rejects_new_connections_immediately",
+          "line": 1834
+        },
+        {
+          "name": "authenticated_pool_limit_rejects_new_connection",
+          "line": 1859
+        },
+        {
+          "name": "status_reports_connections_tools_and_calls",
+          "line": 1874
+        },
+        {
+          "name": "tool_error_carries_code_hint_and_is_audited",
+          "line": 1904
+        },
+        {
+          "name": "disabled_source_blocks_start_and_calls",
+          "line": 1933
+        },
+        {
+          "name": "handle_message_rejects_non_object_and_non_string_method",
+          "line": 1966
+        },
+        {
+          "name": "start_is_idempotent_stop_removes_socket_and_is_safe_to_repeat",
+          "line": 2023
+        },
+        {
+          "name": "stale_socket_file_is_replaced_but_regular_file_is_refused",
+          "line": 2045
+        },
+        {
+          "name": "summarize_args_keeps_whitelist_and_text_bytes_only",
+          "line": 2074
+        },
+        {
+          "name": "client_label_trims_sanitizes_and_falls_back_to_unknown",
+          "line": 2094
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-agent/src/host.rs",
+      "sha256": "78a208079dc623b26a8dba99fea01d4d0bafcd737fdc085aa7bef3b46832f9c3",
+      "lines": 83,
+      "symbols": [
+        {
+          "name": "new",
+          "line": 20
+        },
+        {
+          "name": "map_core_error",
+          "line": 25
+        },
+        {
+          "name": "core_call",
+          "line": 40
+        },
+        {
+          "name": "transfer_call",
+          "line": 57
+        },
+        {
+          "name": "download_dir",
+          "line": 71
+        },
+        {
+          "name": "session_generation",
+          "line": 80
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-agent/src/journal.rs",
+      "sha256": "4576fa521651ee8e5355f92abf2dffe970b6a2f0eba3dd6bf2c3956c0168fb31",
+      "lines": 260,
+      "symbols": [
+        {
+          "name": "is_secret_key",
+          "line": 26
+        },
+        {
+          "name": "looks_like_signed_url",
+          "line": 31
+        },
+        {
+          "name": "redact_value",
+          "line": 48
+        },
+        {
+          "name": "redact",
+          "line": 73
+        },
+        {
+          "name": "sanitize",
+          "line": 78
+        },
+        {
+          "name": "to_json",
+          "line": 99
+        },
+        {
+          "name": "open",
+          "line": 124
+        },
+        {
+          "name": "file",
+          "line": 141
+        },
+        {
+          "name": "rotate_if_needed",
+          "line": 145
+        },
+        {
+          "name": "append",
+          "line": 156
+        },
+        {
+          "name": "list",
+          "line": 178
+        },
+        {
+          "name": "now_ms",
+          "line": 202
+        },
+        {
+          "name": "tmp_dir",
+          "line": 213
+        },
+        {
+          "name": "append_list_roundtrip_and_secret_redaction",
+          "line": 221
+        },
+        {
+          "name": "seq_survives_reopen_and_filter_and_limit",
+          "line": 239
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-agent/src/lib.rs",
+      "sha256": "8b70bf1a7a91db7e4d8adf1f602542cee2c83a2131d6c744985191c410e217e3",
+      "lines": 26,
+      "symbols": []
+    },
+    {
+      "path": "crates/quark-agent/src/plans.rs",
+      "sha256": "82fdea2d488d6a206a4e0ec96b769a7b368d764e1eef41df0460ee5deb8af8c4",
+      "lines": 461,
+      "symbols": [
+        {
+          "name": "normalize",
+          "line": 40
+        },
+        {
+          "name": "to_json",
+          "line": 63
+        },
+        {
+          "name": "compute_hash",
+          "line": 93
+        },
+        {
+          "name": "summarize",
+          "line": 103
+        },
+        {
+          "name": "snapshot",
+          "line": 132
+        },
+        {
+          "name": "new",
+          "line": 165
+        },
+        {
+          "name": "with_ttl",
+          "line": 169
+        },
+        {
+          "name": "now",
+          "line": 173
+        },
+        {
+          "name": "create",
+          "line": 178
+        },
+        {
+          "name": "get",
+          "line": 259
+        },
+        {
+          "name": "assert_executable",
+          "line": 273
+        },
+        {
+          "name": "mark_executing",
+          "line": 327
+        },
+        {
+          "name": "mark_executed",
+          "line": 338
+        },
+        {
+          "name": "list",
+          "line": 351
+        },
+        {
+          "name": "default",
+          "line": 361
+        },
+        {
+          "name": "entry",
+          "line": 370
+        },
+        {
+          "name": "create_requires_entries_and_caps_at_limit",
+          "line": 375
+        },
+        {
+          "name": "same_content_same_hash_and_executable_binding",
+          "line": 386
+        },
+        {
+          "name": "prune_allows_new_plans_when_finished_exist_and_blocks_when_all_pending",
+          "line": 421
+        },
+        {
+          "name": "ttl_zero_expires_immediately",
+          "line": 442
+        },
+        {
+          "name": "concurrent_execution_claim_has_exactly_one_winner",
+          "line": 452
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-agent/src/policy.rs",
+      "sha256": "53ea3ec767179dec617f3e370529ee97c0957914bbf1de37f705840b1728d0d5",
+      "lines": 484,
+      "symbols": [
+        {
+          "name": "as_str",
+          "line": 33
+        },
+        {
+          "name": "fmt",
+          "line": 51
+        },
+        {
+          "name": "new",
+          "line": 71
+        },
+        {
+          "name": "with_hint",
+          "line": 75
+        },
+        {
+          "name": "from_upstream",
+          "line": 82
+        },
+        {
+          "name": "to_json",
+          "line": 106
+        },
+        {
+          "name": "fmt",
+          "line": 124
+        },
+        {
+          "name": "assert_plain_path",
+          "line": 136
+        },
+        {
+          "name": "resolve_real",
+          "line": 150
+        },
+        {
+          "name": "normalize_for_compare",
+          "line": 197
+        },
+        {
+          "name": "is_inside",
+          "line": 209
+        },
+        {
+          "name": "assert_local_path",
+          "line": 226
+        },
+        {
+          "name": "normalize_remote_roots",
+          "line": 276
+        },
+        {
+          "name": "matches_remote_scope",
+          "line": 302
+        },
+        {
+          "name": "generate_token",
+          "line": 311
+        },
+        {
+          "name": "safe_equal",
+          "line": 318
+        },
+        {
+          "name": "canonical_json",
+          "line": 334
+        },
+        {
+          "name": "sha256_hex",
+          "line": 357
+        },
+        {
+          "name": "sha256_hex_bytes",
+          "line": 364
+        },
+        {
+          "name": "token_is_64_hex_and_safe_equal_detects_difference",
+          "line": 375
+        },
+        {
+          "name": "plain_path_rejects_empty_and_nul",
+          "line": 386
+        },
+        {
+          "name": "local_path_requires_absolute_and_inside_root",
+          "line": 394
+        },
+        {
+          "name": "resolve_real_resolves_symlink_escape",
+          "line": 424
+        },
+        {
+          "name": "remote_scope_matches_self_and_ancestors_but_requires_explicit_root",
+          "line": 441
+        },
+        {
+          "name": "normalize_remote_roots_dedups_and_ignores_implicit_root",
+          "line": 451
+        },
+        {
+          "name": "canonical_json_sorts_keys_for_stable_hash",
+          "line": 457
+        },
+        {
+          "name": "upstream_error_preserves_code_and_raw_message",
+          "line": 465
+        },
+        {
+          "name": "canonical_scope_does_not_case_fold_distinct_siblings",
+          "line": 478
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-agent/src/registry.rs",
+      "sha256": "08e2f755ccf0341487b2b3c89ad7d57344b961d1764582a35f386a54d47a1c4f",
+      "lines": 57,
+      "symbols": [
+        {
+          "name": "tools",
+          "line": 44
+        },
+        {
+          "name": "call_tool",
+          "line": 46
+        },
+        {
+          "name": "error_payload",
+          "line": 55
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-agent/src/runtime.rs",
+      "sha256": "49d9d474eee71ba3ab1b07e43ed855e96dff587178913ebe741b833423d935ba",
+      "lines": 423,
+      "symbols": [
+        {
+          "name": "resolve_bridge_endpoint",
+          "line": 29
+        },
+        {
+          "name": "access",
+          "line": 54
+        },
+        {
+          "name": "scope",
+          "line": 60
+        },
+        {
+          "name": "generation",
+          "line": 65
+        },
+        {
+          "name": "new",
+          "line": 89
+        },
+        {
+          "name": "boot",
+          "line": 142
+        },
+        {
+          "name": "start_gateway",
+          "line": 157
+        },
+        {
+          "name": "enable",
+          "line": 172
+        },
+        {
+          "name": "disable",
+          "line": 199
+        },
+        {
+          "name": "update_scope",
+          "line": 211
+        },
+        {
+          "name": "rotate",
+          "line": 244
+        },
+        {
+          "name": "status",
+          "line": 278
+        },
+        {
+          "name": "recent_journal",
+          "line": 305
+        },
+        {
+          "name": "mcp_config",
+          "line": 312
+        },
+        {
+          "name": "list_tools",
+          "line": 332
+        },
+        {
+          "name": "bridge_credentials",
+          "line": 337
+        },
+        {
+          "name": "handle",
+          "line": 344
+        },
+        {
+          "name": "standalone_mcp_script_path",
+          "line": 392
+        },
+        {
+          "name": "packaged_mcp_adapter_is_self_contained_and_detects_replacement",
+          "line": 416
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-agent/src/tools.rs",
+      "sha256": "4f7a09ebbff740dc2dd94f9c9795d7076e77532642b5ff691206205f79d1e55b",
+      "lines": 2963,
+      "symbols": [
+        {
+          "name": "core_call",
+          "line": 45
+        },
+        {
+          "name": "transfer_call",
+          "line": 52
+        },
+        {
+          "name": "download_dir",
+          "line": 58
+        },
+        {
+          "name": "session_generation",
+          "line": 60
+        },
+        {
+          "name": "new",
+          "line": 80
+        },
+        {
+          "name": "remember",
+          "line": 87
+        },
+        {
+          "name": "recall",
+          "line": 117
+        },
+        {
+          "name": "forget_all",
+          "line": 130
+        },
+        {
+          "name": "default",
+          "line": 136
+        },
+        {
+          "name": "require_string",
+          "line": 145
+        },
+        {
+          "name": "optional_string",
+          "line": 156
+        },
+        {
+          "name": "clamp_int",
+          "line": 170
+        },
+        {
+          "name": "transfer_call",
+          "line": 199
+        },
+        {
+          "name": "local_roots",
+          "line": 204
+        },
+        {
+          "name": "assert_writable",
+          "line": 219
+        },
+        {
+          "name": "assert_remote_in_scope",
+          "line": 231
+        },
+        {
+          "name": "assert_many_remote_in_scope",
+          "line": 269
+        },
+        {
+          "name": "safe_info",
+          "line": 277
+        },
+        {
+          "name": "list_dir_page",
+          "line": 334
+        },
+        {
+          "name": "locate_child_dir",
+          "line": 353
+        },
+        {
+          "name": "find_name_conflict",
+          "line": 390
+        },
+        {
+          "name": "assert_not_moving_into_itself",
+          "line": 420
+        },
+        {
+          "name": "wait_for_transfers",
+          "line": 444
+        },
+        {
+          "name": "serialize_task",
+          "line": 478
+        },
+        {
+          "name": "remember_object",
+          "line": 499
+        },
+        {
+          "name": "remember_uploaded",
+          "line": 504
+        },
+        {
+          "name": "map_core_error",
+          "line": 517
+        },
+        {
+          "name": "upstream_passthrough",
+          "line": 522
+        },
+        {
+          "name": "scope_matches",
+          "line": 532
+        },
+        {
+          "name": "schema",
+          "line": 555
+        },
+        {
+          "name": "tool_defs",
+          "line": 567
+        },
+        {
+          "name": "new",
+          "line": 695
+        },
+        {
+          "name": "env",
+          "line": 703
+        },
+        {
+          "name": "execute",
+          "line": 715
+        },
+        {
+          "name": "dispatch",
+          "line": 739
+        },
+        {
+          "name": "tools",
+          "line": 768
+        },
+        {
+          "name": "call_tool",
+          "line": 772
+        },
+        {
+          "name": "tool_drive_status",
+          "line": 785
+        },
+        {
+          "name": "first_remote_root",
+          "line": 817
+        },
+        {
+          "name": "tool_list_dir",
+          "line": 826
+        },
+        {
+          "name": "tool_search_files",
+          "line": 855
+        },
+        {
+          "name": "tool_file_info",
+          "line": 901
+        },
+        {
+          "name": "tool_tree_dir",
+          "line": 908
+        },
+        {
+          "name": "tool_list_transfers",
+          "line": 1009
+        },
+        {
+          "name": "tool_read_text_file",
+          "line": 1054
+        },
+        {
+          "name": "tool_list_journal",
+          "line": 1126
+        },
+        {
+          "name": "tool_get_plan",
+          "line": 1136
+        },
+        {
+          "name": "tool_create_folder",
+          "line": 1144
+        },
+        {
+          "name": "tool_rename_entry",
+          "line": 1177
+        },
+        {
+          "name": "prepare_move_copy",
+          "line": 1220
+        },
+        {
+          "name": "tool_move_entries",
+          "line": 1258
+        },
+        {
+          "name": "tool_copy_entries",
+          "line": 1293
+        },
+        {
+          "name": "tool_download_files",
+          "line": 1321
+        },
+        {
+          "name": "resolve_work_dir",
+          "line": 1360
+        },
+        {
+          "name": "sanitize_upload_name",
+          "line": 1378
+        },
+        {
+          "name": "tool_upload_file",
+          "line": 1389
+        },
+        {
+          "name": "tool_save_text_file",
+          "line": 1494
+        },
+        {
+          "name": "verify_remote_visibility",
+          "line": 1579
+        },
+        {
+          "name": "tool_transfer_control",
+          "line": 1605
+        },
+        {
+          "name": "group_of",
+          "line": 1648
+        },
+        {
+          "name": "default_groups_owned",
+          "line": 1702
+        },
+        {
+          "name": "time_from_unix",
+          "line": 1722
+        },
+        {
+          "name": "parse_ext_groups",
+          "line": 1749
+        },
+        {
+          "name": "tool_plan_create",
+          "line": 1777
+        },
+        {
+          "name": "tool_plan_execute",
+          "line": 1960
+        },
+        {
+          "name": "tool_delete_entries",
+          "line": 2134
+        },
+        {
+          "name": "is_not_found",
+          "line": 2244
+        },
+        {
+          "name": "read_text_at",
+          "line": 2260
+        },
+        {
+          "name": "input_helpers_behave",
+          "line": 2330
+        },
+        {
+          "name": "recent_objects_ttl_and_capacity",
+          "line": 2345
+        },
+        {
+          "name": "read_text_at_handles_encoding_and_truncation",
+          "line": 2360
+        },
+        {
+          "name": "scope_matches_delegates",
+          "line": 2398
+        },
+        {
+          "name": "with_root",
+          "line": 2424
+        },
+        {
+          "name": "add",
+          "line": 2435
+        },
+        {
+          "name": "mkdir",
+          "line": 2441
+        },
+        {
+          "name": "rename",
+          "line": 2444
+        },
+        {
+          "name": "move_node",
+          "line": 2449
+        },
+        {
+          "name": "remove_nodes",
+          "line": 2454
+        },
+        {
+          "name": "core_call",
+          "line": 2486
+        },
+        {
+          "name": "transfer_call",
+          "line": 2551
+        },
+        {
+          "name": "download_dir",
+          "line": 2570
+        },
+        {
+          "name": "session_generation",
+          "line": 2573
+        },
+        {
+          "name": "harness",
+          "line": 2585
+        },
+        {
+          "name": "ctx_with",
+          "line": 2600
+        },
+        {
+          "name": "scope",
+          "line": 2604
+        },
+        {
+          "name": "run",
+          "line": 2613
+        },
+        {
+          "name": "list_dir_requires_scope_and_enforces_page_cap",
+          "line": 2618
+        },
+        {
+          "name": "write_tools_reject_in_read_only_mode",
+          "line": 2636
+        },
+        {
+          "name": "all_write_tools_rejected_in_read_only_mode",
+          "line": 2653
+        },
+        {
+          "name": "delete_requires_dry_run_and_matching_confirm_names",
+          "line": 2684
+        },
+        {
+          "name": "approximate_recent_metadata_cannot_authorize_a_remote_object",
+          "line": 2710
+        },
+        {
+          "name": "rename_reads_fresh_metadata_and_async_moves_are_accepted_before_completion",
+          "line": 2718
+        },
+        {
+          "name": "accepted_delete_with_unavailable_verification_is_not_confirmed_deleted",
+          "line": 2731
+        },
+        {
+          "name": "delete_out_of_scope_rejected_and_folder_deletes_children",
+          "line": 2743
+        },
+        {
+          "name": "move_into_itself_is_rejected",
+          "line": 2760
+        },
+        {
+          "name": "transfer_control_rejects_unknown_action_and_requires_write",
+          "line": 2774
+        },
+        {
+          "name": "tree_dir_respects_depth_and_entry_limits",
+          "line": 2789
+        },
+        {
+          "name": "plan_create_execute_binds_to_content_hash",
+          "line": 2813
+        },
+        {
+          "name": "upload_name_with_path_separator_rejected_and_staged_copy_used",
+          "line": 2837
+        },
+        {
+          "name": "gateway_end_to_end_with_node_cli_adapter",
+          "line": 2856
+        },
+        {
+          "name": "access",
+          "line": 2867
+        },
+        {
+          "name": "scope",
+          "line": 2870
+        },
+        {
+          "name": "drive_status_contains_no_credentials",
+          "line": 2950
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-agent/tests/agent_loop_verify.rs",
+      "sha256": "0763cc016cef70753e918c77b676687c520017f58ed10f6d14d84dd6f3b080c8",
+      "lines": 411,
+      "symbols": [
+        {
+          "name": "with_root",
+          "line": 33
+        },
+        {
+          "name": "add",
+          "line": 41
+        },
+        {
+          "name": "mkdir",
+          "line": 47
+        },
+        {
+          "name": "rename",
+          "line": 50
+        },
+        {
+          "name": "move_node",
+          "line": 55
+        },
+        {
+          "name": "remove_nodes",
+          "line": 60
+        },
+        {
+          "name": "core_call",
+          "line": 91
+        },
+        {
+          "name": "transfer_call",
+          "line": 152
+        },
+        {
+          "name": "download_dir",
+          "line": 170
+        },
+        {
+          "name": "session_generation",
+          "line": 173
+        },
+        {
+          "name": "new",
+          "line": 190
+        },
+        {
+          "name": "access",
+          "line": 211
+        },
+        {
+          "name": "scope",
+          "line": 214
+        },
+        {
+          "name": "dir_scope",
+          "line": 223
+        },
+        {
+          "name": "record",
+          "line": 236
+        },
+        {
+          "name": "call_tool",
+          "line": 240
+        },
+        {
+          "name": "drop",
+          "line": 259
+        },
+        {
+          "name": "agent_loop_verify",
+          "line": 265
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-backup/Cargo.toml",
+      "sha256": "b0c849960b3f9ce64e709bad79d0181feb9b476aeb37ace6010bae74d59ab241",
+      "lines": 19,
+      "symbols": []
+    },
+    {
+      "path": "crates/quark-backup/examples/backup_acceptance.rs",
+      "sha256": "f53f1ae61c9e0e4e482e0a70b87ccdc574096d797fc3ce5075c5e03504f42e55",
+      "lines": 135,
+      "symbols": [
+        {
+          "name": "fail",
+          "line": 11
+        },
+        {
+          "name": "main",
+          "line": 16
+        },
+        {
+          "name": "cleanup",
+          "line": 131
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-backup/src/lib.rs",
+      "sha256": "1963e49ef1aaeda1305f90df34ccedd2c6c178fe6846fd7bf370a09cbafa18ec",
+      "lines": 22,
+      "symbols": []
+    },
+    {
+      "path": "crates/quark-backup/src/manager.rs",
+      "sha256": "7e9c3f3120bd56ab12060453953a7945d499eeb58f7ac5f208fe5d26e33b5306",
+      "lines": 1266,
+      "symbols": [
+        {
+          "name": "new",
+          "line": 31
+        },
+        {
+          "name": "with_rate_limit",
+          "line": 41
+        },
+        {
+          "name": "check_session",
+          "line": 46
+        },
+        {
+          "name": "wait_task",
+          "line": 53
+        },
+        {
+          "name": "find_child",
+          "line": 88
+        },
+        {
+          "name": "recover_uploaded",
+          "line": 123
+        },
+        {
+          "name": "acknowledge",
+          "line": 145
+        },
+        {
+          "name": "pause_active",
+          "line": 166
+        },
+        {
+          "name": "ensure_dir",
+          "line": 180
+        },
+        {
+          "name": "upload_file",
+          "line": 220
+        },
+        {
+          "name": "file_visible",
+          "line": 267
+        },
+        {
+          "name": "plan",
+          "line": 309
+        },
+        {
+          "name": "start",
+          "line": 365
+        },
+        {
+          "name": "start_session",
+          "line": 420
+        },
+        {
+          "name": "snapshot",
+          "line": 585
+        },
+        {
+          "name": "status",
+          "line": 659
+        },
+        {
+          "name": "pause",
+          "line": 666
+        },
+        {
+          "name": "resume",
+          "line": 673
+        },
+        {
+          "name": "retry_failed",
+          "line": 683
+        },
+        {
+          "name": "cancel",
+          "line": 716
+        },
+        {
+          "name": "tasks",
+          "line": 729
+        },
+        {
+          "name": "export",
+          "line": 741
+        },
+        {
+          "name": "verify",
+          "line": 804
+        },
+        {
+          "name": "public_task",
+          "line": 846
+        },
+        {
+          "name": "system",
+          "line": 854
+        },
+        {
+          "name": "no_session",
+          "line": 857
+        },
+        {
+          "name": "validate_root",
+          "line": 860
+        },
+        {
+          "name": "drop",
+          "line": 889
+        },
+        {
+          "name": "download_file",
+          "line": 905
+        },
+        {
+          "name": "list_dir",
+          "line": 962
+        },
+        {
+          "name": "list_page",
+          "line": 977
+        },
+        {
+          "name": "download_bytes",
+          "line": 1007
+        },
+        {
+          "name": "download_hash",
+          "line": 1033
+        },
+        {
+          "name": "new",
+          "line": 1055
+        },
+        {
+          "name": "fmt",
+          "line": 1064
+        },
+        {
+          "name": "new",
+          "line": 1081
+        },
+        {
+          "name": "ensure_dir",
+          "line": 1091
+        },
+        {
+          "name": "upload_file",
+          "line": 1103
+        },
+        {
+          "name": "file_visible",
+          "line": 1125
+        },
+        {
+          "name": "until",
+          "line": 1142
+        },
+        {
+          "name": "start",
+          "line": 1153
+        },
+        {
+          "name": "full_session_backpressure_pause_cancel_join_resume_and_empty_dirs",
+          "line": 1162
+        },
+        {
+          "name": "linked_files_are_reported_and_do_not_escape_source",
+          "line": 1238
+        },
+        {
+          "name": "camel_case_config_is_applied_and_zero_or_unknown_config_is_rejected",
+          "line": 1257
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-backup/src/scanner.rs",
+      "sha256": "eb0050d01f309aa24ed1d3ba596084b84eabffe976aa449060417aef1154ce8a",
+      "lines": 439,
+      "symbols": [
+        {
+          "name": "default",
+          "line": 42
+        },
+        {
+          "name": "normalize_rel",
+          "line": 63
+        },
+        {
+          "name": "windows_name_risk",
+          "line": 85
+        },
+        {
+          "name": "scan",
+          "line": 109
+        },
+        {
+          "name": "scan_controlled",
+          "line": 115
+        },
+        {
+          "name": "mtime_ms",
+          "line": 265
+        },
+        {
+          "name": "send_batch",
+          "line": 273
+        },
+        {
+          "name": "is_reparse",
+          "line": 294
+        },
+        {
+          "name": "normalize_rel_rejects_escape_and_normalizes",
+          "line": 311
+        },
+        {
+          "name": "windows_name_risk_flags_reserved_and_trailing",
+          "line": 323
+        },
+        {
+          "name": "scan_batches_and_reports_warnings",
+          "line": 338
+        },
+        {
+          "name": "scan_missing_root_is_whole_error",
+          "line": 428
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-backup/src/scheduler.rs",
+      "sha256": "7bda0cdc46ba016da4e9edbaf6db6924ec166e1c0349df661c7c4706d5e2631a",
+      "lines": 757,
+      "symbols": [
+        {
+          "name": "d_batch",
+          "line": 53
+        },
+        {
+          "name": "d_high",
+          "line": 56
+        },
+        {
+          "name": "d_low",
+          "line": 59
+        },
+        {
+          "name": "d_conc",
+          "line": 62
+        },
+        {
+          "name": "d_retry_base",
+          "line": 65
+        },
+        {
+          "name": "d_retry_max",
+          "line": 68
+        },
+        {
+          "name": "default",
+          "line": 73
+        },
+        {
+          "name": "validate",
+          "line": 79
+        },
+        {
+          "name": "recover_uploaded",
+          "line": 98
+        },
+        {
+          "name": "acknowledge",
+          "line": 107
+        },
+        {
+          "name": "pause_active",
+          "line": 115
+        },
+        {
+          "name": "ensure_dir",
+          "line": 122
+        },
+        {
+          "name": "upload_file",
+          "line": 130
+        },
+        {
+          "name": "file_visible",
+          "line": 138
+        },
+        {
+          "name": "worker_loop",
+          "line": 170
+        },
+        {
+          "name": "worker_loop_controlled",
+          "line": 192
+        },
+        {
+          "name": "base_name",
+          "line": 311
+        },
+        {
+          "name": "process_one",
+          "line": 318
+        },
+        {
+          "name": "ensure_dir_chain",
+          "line": 459
+        },
+        {
+          "name": "new",
+          "line": 522
+        },
+        {
+          "name": "ensure_dir",
+          "line": 533
+        },
+        {
+          "name": "upload_file",
+          "line": 549
+        },
+        {
+          "name": "file_visible",
+          "line": 573
+        },
+        {
+          "name": "mk_task",
+          "line": 591
+        },
+        {
+          "name": "full_pipeline_success_with_dirs_and_conflict",
+          "line": 619
+        },
+        {
+          "name": "source_mutation_requeues_and_retry_backoff",
+          "line": 671
+        },
+        {
+          "name": "vanished_source_is_skipped_not_failed",
+          "line": 735
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-backup/src/state.rs",
+      "sha256": "23069afd3e78b0dd8d237ab834b19038ec54be4a34654e8202c83e1b55b40ed4",
+      "lines": 216,
+      "symbols": [
+        {
+          "name": "as_str",
+          "line": 35
+        },
+        {
+          "name": "parse",
+          "line": 48
+        },
+        {
+          "name": "is_terminal",
+          "line": 62
+        },
+        {
+          "name": "is_active",
+          "line": 69
+        },
+        {
+          "name": "can_transition_to",
+          "line": 74
+        },
+        {
+          "name": "next_retry_delay_ms",
+          "line": 111
+        },
+        {
+          "name": "forward_pipeline_is_legal",
+          "line": 126
+        },
+        {
+          "name": "illegal_jumps_are_rejected",
+          "line": 142
+        },
+        {
+          "name": "terminal_states_reenter_pending_only",
+          "line": 161
+        },
+        {
+          "name": "cancel_allowed_from_any_active_state",
+          "line": 169
+        },
+        {
+          "name": "crash_recovery_maps_to_pending",
+          "line": 181
+        },
+        {
+          "name": "backoff_is_exponential_with_cap_and_stop",
+          "line": 191
+        },
+        {
+          "name": "state_round_trip",
+          "line": 201
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-backup/src/store.rs",
+      "sha256": "9e6048a3c975da47239a89de1d96ced6e711c648ab2bf5e5555fcd94137bd18e",
+      "lines": 795,
+      "symbols": [
+        {
+          "name": "identity_key",
+          "line": 35
+        },
+        {
+          "name": "open",
+          "line": 50
+        },
+        {
+          "name": "recover_interrupted",
+          "line": 107
+        },
+        {
+          "name": "conn",
+          "line": 117
+        },
+        {
+          "name": "now",
+          "line": 121
+        },
+        {
+          "name": "upsert_discovered",
+          "line": 129
+        },
+        {
+          "name": "claim_batch",
+          "line": 214
+        },
+        {
+          "name": "transition",
+          "line": 257
+        },
+        {
+          "name": "transition_with_retry_at",
+          "line": 268
+        },
+        {
+          "name": "now_ms",
+          "line": 304
+        },
+        {
+          "name": "state_of",
+          "line": 309
+        },
+        {
+          "name": "counts",
+          "line": 321
+        },
+        {
+          "name": "queue_depth",
+          "line": 340
+        },
+        {
+          "name": "all_in_state",
+          "line": 349
+        },
+        {
+          "name": "success_bytes",
+          "line": 364
+        },
+        {
+          "name": "recent_errors",
+          "line": 371
+        },
+        {
+          "name": "clear_verification_issues",
+          "line": 381
+        },
+        {
+          "name": "add_verification_issue",
+          "line": 385
+        },
+        {
+          "name": "verification_issue_page",
+          "line": 392
+        },
+        {
+          "name": "import_legacy",
+          "line": 412
+        },
+        {
+          "name": "get_task",
+          "line": 449
+        },
+        {
+          "name": "task_page",
+          "line": 453
+        },
+        {
+          "name": "refresh_source",
+          "line": 474
+        },
+        {
+          "name": "add_issue",
+          "line": 479
+        },
+        {
+          "name": "issue_count",
+          "line": 486
+        },
+        {
+          "name": "clear_issues",
+          "line": 490
+        },
+        {
+          "name": "issue_page",
+          "line": 494
+        },
+        {
+          "name": "dir_page",
+          "line": 508
+        },
+        {
+          "name": "put_dir",
+          "line": 525
+        },
+        {
+          "name": "get_dir",
+          "line": 539
+        },
+        {
+          "name": "row_to_task",
+          "line": 559
+        },
+        {
+          "name": "task",
+          "line": 581
+        },
+        {
+          "name": "upsert_is_idempotent_and_requeues_changes",
+          "line": 600
+        },
+        {
+          "name": "claim_promotes_discovered_and_returns_batch",
+          "line": 618
+        },
+        {
+          "name": "transition_enforces_guard",
+          "line": 644
+        },
+        {
+          "name": "queue_depth_and_counts",
+          "line": 665
+        },
+        {
+          "name": "upsert_does_not_reset_active_tasks",
+          "line": 680
+        },
+        {
+          "name": "claim_respects_backoff_window",
+          "line": 703
+        },
+        {
+          "name": "recover_interrupted_maps_to_pending_and_keeps_attempts",
+          "line": 744
+        },
+        {
+          "name": "dir_mapping_round_trip",
+          "line": 766
+        },
+        {
+          "name": "identity_key_distinguishes_targets",
+          "line": 784
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-backup/src/verifier.rs",
+      "sha256": "ab3285d5dfd63e389b5dbab607979593ec83e30c3360420dbba49a33c8f30ed9",
+      "lines": 742,
+      "symbols": [
+        {
+          "name": "list_dir",
+          "line": 19
+        },
+        {
+          "name": "list_page",
+          "line": 29
+        },
+        {
+          "name": "download_hash",
+          "line": 44
+        },
+        {
+          "name": "download_bytes",
+          "line": 56
+        },
+        {
+          "name": "sample_plan",
+          "line": 97
+        },
+        {
+          "name": "issue",
+          "line": 104
+        },
+        {
+          "name": "verify_manifest",
+          "line": 119
+        },
+        {
+          "name": "verify_sample",
+          "line": 342
+        },
+        {
+          "name": "hash_file",
+          "line": 413
+        },
+        {
+          "name": "list_dir",
+          "line": 451
+        },
+        {
+          "name": "download_bytes",
+          "line": 471
+        },
+        {
+          "name": "entry",
+          "line": 489
+        },
+        {
+          "name": "manifest_verify_matches_and_flags_missing",
+          "line": 499
+        },
+        {
+          "name": "manifest_flags_size_mismatch_and_missing",
+          "line": 576
+        },
+        {
+          "name": "sample_plan_bounds",
+          "line": 625
+        },
+        {
+          "name": "full_hash_really_checks_more_than_twenty_and_missing_download_cannot_pass",
+          "line": 633
+        },
+        {
+          "name": "empty_success_set_with_unfinished_tasks_is_not_a_verified_backup",
+          "line": 715
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-backup/tests/backpressure.rs",
+      "sha256": "1450b9680174d1df0f295c009546a645e1285f6c71f3203cb19e1b0ed8dc5e05",
+      "lines": 42,
+      "symbols": [
+        {
+          "name": "slow_consumer_triggers_backpressure",
+          "line": 7
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-backup/tests/massive_scan.rs",
+      "sha256": "e2ac5299daef66c0b6922adfd4a13f9a8a67000ef96f3a92949fdc50cdb6d0a1",
+      "lines": 114,
+      "symbols": [
+        {
+          "name": "generate_tree",
+          "line": 13
+        },
+        {
+          "name": "scan_100k_entries_batches_and_queue",
+          "line": 36
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-core/Cargo.toml",
+      "sha256": "15352f4f586939592116165cf565a9397b01129d75700092f4df71e0b5783987",
+      "lines": 21,
+      "symbols": []
+    },
+    {
+      "path": "crates/quark-core/src/files.rs",
+      "sha256": "59062af80d9937efdd87c144dff900ff22c9323647561fb2dfcfffddac05858d",
+      "lines": 363,
+      "symbols": [
+        {
+          "name": "number",
+          "line": 4
+        },
+        {
+          "name": "text",
+          "line": 10
+        },
+        {
+          "name": "truth",
+          "line": 17
+        },
+        {
+          "name": "required",
+          "line": 28
+        },
+        {
+          "name": "ids",
+          "line": 35
+        },
+        {
+          "name": "list",
+          "line": 52
+        },
+        {
+          "name": "record",
+          "line": 59
+        },
+        {
+          "name": "task_id",
+          "line": 71
+        },
+        {
+          "name": "accepted",
+          "line": 79
+        },
+        {
+          "name": "task_entry",
+          "line": 90
+        },
+        {
+          "name": "file_item",
+          "line": 109
+        },
+        {
+          "name": "page_result",
+          "line": 150
+        },
+        {
+          "name": "file_page",
+          "line": 175
+        },
+        {
+          "name": "task_status",
+          "line": 228
+        },
+        {
+          "name": "files_call",
+          "line": 248
+        },
+        {
+          "name": "normalized_directory_primary_field_wins",
+          "line": 306
+        },
+        {
+          "name": "paging_uses_metadata_and_preserves_unknown",
+          "line": 318
+        },
+        {
+          "name": "unknown_numeric_task_status_never_means_success",
+          "line": 331
+        },
+        {
+          "name": "explicit_task_failure_wins_over_finish_and_success_flags",
+          "line": 346
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-core/src/lib.rs",
+      "sha256": "cee40bb99ef13f869bdda03fd5fbd4384e1d2054b8b8ec9e5036bf01cf084969",
+      "lines": 804,
+      "symbols": [
+        {
+          "name": "new",
+          "line": 31
+        },
+        {
+          "name": "fmt",
+          "line": 41
+        },
+        {
+          "name": "fresh_binding",
+          "line": 48
+        },
+        {
+          "name": "open",
+          "line": 71
+        },
+        {
+          "name": "http_client",
+          "line": 95
+        },
+        {
+          "name": "profile_dir",
+          "line": 98
+        },
+        {
+          "name": "cookie_header",
+          "line": 101
+        },
+        {
+          "name": "cookie_header_for_url",
+          "line": 106
+        },
+        {
+          "name": "session_generation",
+          "line": 111
+        },
+        {
+          "name": "ensure_session",
+          "line": 114
+        },
+        {
+          "name": "account_key",
+          "line": 123
+        },
+        {
+          "name": "cookies_for_api",
+          "line": 141
+        },
+        {
+          "name": "settings",
+          "line": 145
+        },
+        {
+          "name": "replace_cookies",
+          "line": 148
+        },
+        {
+          "name": "update",
+          "line": 163
+        },
+        {
+          "name": "update_in_session",
+          "line": 166
+        },
+        {
+          "name": "update_state",
+          "line": 169
+        },
+        {
+          "name": "get",
+          "line": 189
+        },
+        {
+          "name": "post",
+          "line": 193
+        },
+        {
+          "name": "get_in_session",
+          "line": 197
+        },
+        {
+          "name": "post_in_session",
+          "line": 206
+        },
+        {
+          "name": "browser_account_info",
+          "line": 210
+        },
+        {
+          "name": "request",
+          "line": 245
+        },
+        {
+          "name": "request_once",
+          "line": 273
+        },
+        {
+          "name": "call",
+          "line": 348
+        },
+        {
+          "name": "call_status",
+          "line": 458
+        },
+        {
+          "name": "api_url",
+          "line": 463
+        },
+        {
+          "name": "network_error",
+          "line": 492
+        },
+        {
+          "name": "envelope_error",
+          "line": 500
+        },
+        {
+          "name": "device_model",
+          "line": 547
+        },
+        {
+          "name": "login_binding_survives_restart_and_rotation_but_never_a_new_login",
+          "line": 595
+        },
+        {
+          "name": "api_url_rejects_credential_exfiltration_and_preserves_protocol",
+          "line": 620
+        },
+        {
+          "name": "capacity_is_not_rate_limit_and_unknown_code_is_not_success",
+          "line": 638
+        },
+        {
+          "name": "settings_are_durable_and_corruption_never_overwritten",
+          "line": 651
+        },
+        {
+          "name": "failed_persistence_does_not_publish_new_settings",
+          "line": 670
+        },
+        {
+          "name": "guest_file_operations_fail_without_network",
+          "line": 682
+        },
+        {
+          "name": "malformed_envelopes_and_reflected_credentials_never_become_success_or_error_text",
+          "line": 691
+        },
+        {
+          "name": "account_generation_is_durable_on_success_and_isolates_stale_updates",
+          "line": 708
+        },
+        {
+          "name": "delayed_old_account_response_cannot_rotate_or_expire_new_account",
+          "line": 739
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-core/src/session.rs",
+      "sha256": "e59beb6a3bebb413d2e3e0a9ee1fc85b31efab6476ede5f1dbdc7ef3e742e1d0",
+      "lines": 491,
+      "symbols": [
+        {
+          "name": "now_ms",
+          "line": 5
+        },
+        {
+          "name": "millis",
+          "line": 11
+        },
+        {
+          "name": "trusted_domain",
+          "line": 25
+        },
+        {
+          "name": "cookie_valid",
+          "line": 28
+        },
+        {
+          "name": "path_matches",
+          "line": 37
+        },
+        {
+          "name": "cookie_identity",
+          "line": 42
+        },
+        {
+          "name": "cookie_header",
+          "line": 45
+        },
+        {
+          "name": "cookie_header_for_path",
+          "line": 48
+        },
+        {
+          "name": "cookie_header_for_url",
+          "line": 51
+        },
+        {
+          "name": "cookie_header_matching",
+          "line": 64
+        },
+        {
+          "name": "account_state",
+          "line": 110
+        },
+        {
+          "name": "normalize_external",
+          "line": 113
+        },
+        {
+          "name": "merge_set_cookie",
+          "line": 154
+        },
+        {
+          "name": "settings",
+          "line": 205
+        },
+        {
+          "name": "merge_settings",
+          "line": 211
+        },
+        {
+          "name": "merge_cached_user_info",
+          "line": 251
+        },
+        {
+          "name": "merge_user_info",
+          "line": 261
+        },
+        {
+          "name": "external_seconds_and_api_scope",
+          "line": 343
+        },
+        {
+          "name": "rotation_and_max_age_precedence",
+          "line": 356
+        },
+        {
+          "name": "settings_bounds_and_unknown_field_rejection",
+          "line": 373
+        },
+        {
+          "name": "scoped_cookie_rotation_does_not_destroy_sibling_or_specific_path_cookie",
+          "line": 385
+        },
+        {
+          "name": "settings_strategies_and_stable_identity_have_no_credential_fallback",
+          "line": 428
+        },
+        {
+          "name": "download_url_cookie_scope_never_leaks_api_host_only_or_path_credentials",
+          "line": 452
+        },
+        {
+          "name": "partial_metadata_refresh_preserves_stable_identity_but_updates_present_values",
+          "line": 481
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-core/src/store.rs",
+      "sha256": "845646afd9672f8be7dee6ea7d765bd9b94c154d27b40ed8ad9e272b137a5c19",
+      "lines": 270,
+      "symbols": [
+        {
+          "name": "io_error",
+          "line": 18
+        },
+        {
+          "name": "open",
+          "line": 22
+        },
+        {
+          "name": "read_key",
+          "line": 89
+        },
+        {
+          "name": "key",
+          "line": 101
+        },
+        {
+          "name": "write",
+          "line": 122
+        },
+        {
+          "name": "private_dir",
+          "line": 157
+        },
+        {
+          "name": "write_new",
+          "line": 169
+        },
+        {
+          "name": "sync_dir",
+          "line": 182
+        },
+        {
+          "name": "encryption_is_randomized_and_no_credentials_are_in_plaintext",
+          "line": 199
+        },
+        {
+          "name": "legacy_unknown_and_oversized_sessions_are_preserved",
+          "line": 233
+        },
+        {
+          "name": "symlink_profile_session_and_key_are_rejected_without_touching_target",
+          "line": 249
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-core/tests/fixtures/qck2-node.json",
+      "sha256": "0b36cd0f022ef338a1e271cb6087083b0a2600c85724ca553df29b141bcedf50",
+      "lines": 23,
+      "symbols": []
+    },
+    {
+      "path": "crates/quark-transfer/Cargo.toml",
+      "sha256": "8e299d647d3e483b22ff5a1d54d9e7442a79e6c0d98d88f32627320070df25b8",
+      "lines": 27,
+      "symbols": []
+    },
+    {
+      "path": "crates/quark-transfer/examples/cloud_acceptance.rs",
+      "sha256": "2552a717d78fe2b1cf6505207b9a6b1b32614afd1b6a7bb447e8226dfb6766a9",
+      "lines": 328,
+      "symbols": [
+        {
+          "name": "fail",
+          "line": 12
+        },
+        {
+          "name": "io",
+          "line": 15
+        },
+        {
+          "name": "list",
+          "line": 18
+        },
+        {
+          "name": "find",
+          "line": 26
+        },
+        {
+          "name": "hash",
+          "line": 43
+        },
+        {
+          "name": "wait",
+          "line": 56
+        },
+        {
+          "name": "run",
+          "line": 97
+        },
+        {
+          "name": "main",
+          "line": 185
+        },
+        {
+          "name": "execute",
+          "line": 191
+        },
+        {
+          "name": "keys",
+          "line": 217
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-transfer/src/download.rs",
+      "sha256": "9b8096737bb385ec1ddd24bc4a65cf6bf3b8949d68e857cf82554d52edf8bd91",
+      "lines": 1262,
+      "symbols": [
+        {
+          "name": "parse_checkpoint",
+          "line": 52
+        },
+        {
+          "name": "store",
+          "line": 60
+        },
+        {
+          "name": "path_key",
+          "line": 66
+        },
+        {
+          "name": "run",
+          "line": 75
+        },
+        {
+          "name": "verify_parts",
+          "line": 257
+        },
+        {
+          "name": "reserve",
+          "line": 272
+        },
+        {
+          "name": "get_link",
+          "line": 315
+        },
+        {
+          "name": "permitted_cookie_host",
+          "line": 334
+        },
+        {
+          "name": "strong_etag",
+          "line": 340
+        },
+        {
+          "name": "validate_etag",
+          "line": 350
+        },
+        {
+          "name": "validate_encoding",
+          "line": 361
+        },
+        {
+          "name": "connections",
+          "line": 371
+        },
+        {
+          "name": "send",
+          "line": 384
+        },
+        {
+          "name": "http_error",
+          "line": 446
+        },
+        {
+          "name": "multipart",
+          "line": 458
+        },
+        {
+          "name": "fetch_part",
+          "line": 537
+        },
+        {
+          "name": "single",
+          "line": 666
+        },
+        {
+          "name": "hash_range",
+          "line": 757
+        },
+        {
+          "name": "hash_file",
+          "line": 784
+        },
+        {
+          "name": "validate_owned",
+          "line": 806
+        },
+        {
+          "name": "publish",
+          "line": 818
+        },
+        {
+          "name": "cleanup",
+          "line": 846
+        },
+        {
+          "name": "rename_no_replace",
+          "line": 864
+        },
+        {
+          "name": "MoveFileExW",
+          "line": 901
+        },
+        {
+          "name": "new",
+          "line": 938
+        },
+        {
+          "name": "drop",
+          "line": 989
+        },
+        {
+          "name": "response",
+          "line": 994
+        },
+        {
+          "name": "prepare",
+          "line": 1003
+        },
+        {
+          "name": "strategy_is_size_adaptive_and_respects_user_limit",
+          "line": 1026
+        },
+        {
+          "name": "real_range_stream_binds_etag_and_never_sends_cookies_to_cdn",
+          "line": 1045
+        },
+        {
+          "name": "changed_or_missing_etag_and_wrong_range_never_publish",
+          "line": 1087
+        },
+        {
+          "name": "ignored_range_falls_back_to_complete_response_and_exclusive_publication",
+          "line": 1102
+        },
+        {
+          "name": "durable_resume_skips_verified_parts_and_redownloads_corrupted_parts",
+          "line": 1140
+        },
+        {
+          "name": "cancelled_stream_stops_without_publishing_and_cleanup_is_owned",
+          "line": 1232
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-transfer/src/lib.rs",
+      "sha256": "81b69801b209e2e5ca2bf42adf61d2a67ad4c0cfdedf47432124973753a795dd",
+      "lines": 7,
+      "symbols": []
+    },
+    {
+      "path": "crates/quark-transfer/src/manager.rs",
+      "sha256": "4b6ed88cbc50e6ac8915c9bfe2076f68695022c1ce27313ff310f29ddadac7b1",
+      "lines": 746,
+      "symbols": [
+        {
+          "name": "now",
+          "line": 18
+        },
+        {
+          "name": "err",
+          "line": 24
+        },
+        {
+          "name": "io_err",
+          "line": 27
+        },
+        {
+          "name": "net_err",
+          "line": 30
+        },
+        {
+          "name": "check",
+          "line": 33
+        },
+        {
+          "name": "cancellable",
+          "line": 40
+        },
+        {
+          "name": "unknown_eta",
+          "line": 84
+        },
+        {
+          "name": "atomic_json",
+          "line": 110
+        },
+        {
+          "name": "open",
+          "line": 144
+        },
+        {
+          "name": "start_scheduler",
+          "line": 178
+        },
+        {
+          "name": "bound_generation",
+          "line": 197
+        },
+        {
+          "name": "check_session",
+          "line": 204
+        },
+        {
+          "name": "snapshot",
+          "line": 207
+        },
+        {
+          "name": "task_status",
+          "line": 224
+        },
+        {
+          "name": "resumable_upload",
+          "line": 234
+        },
+        {
+          "name": "attributable_upload",
+          "line": 250
+        },
+        {
+          "name": "active_uploads",
+          "line": 276
+        },
+        {
+          "name": "task",
+          "line": 279
+        },
+        {
+          "name": "update",
+          "line": 289
+        },
+        {
+          "name": "progress",
+          "line": 304
+        },
+        {
+          "name": "checkpoint",
+          "line": 328
+        },
+        {
+          "name": "persist",
+          "line": 331
+        },
+        {
+          "name": "pump",
+          "line": 336
+        },
+        {
+          "name": "call",
+          "line": 413
+        },
+        {
+          "name": "wait_stop",
+          "line": 610
+        },
+        {
+          "name": "pause_all",
+          "line": 631
+        },
+        {
+          "name": "param_id",
+          "line": 647
+        },
+        {
+          "name": "fixture",
+          "line": 656
+        },
+        {
+          "name": "interrupted_tasks_recover_paused_and_cannot_cross_accounts",
+          "line": 678
+        },
+        {
+          "name": "missing_verified_account_cannot_enqueue_tasks",
+          "line": 707
+        },
+        {
+          "name": "login_replaced_while_enqueue_waits_for_control_cannot_bind_to_the_new_account",
+          "line": 721
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-transfer/src/protocol.rs",
+      "sha256": "f1016e64439856547828affa3db318530599f96c03a2e7553625940b9ea1caac",
+      "lines": 184,
+      "symbols": [
+        {
+          "name": "put_meta",
+          "line": 5
+        },
+        {
+          "name": "put_meta_with_ctx",
+          "line": 15
+        },
+        {
+          "name": "complete_meta",
+          "line": 30
+        },
+        {
+          "name": "xml",
+          "line": 40
+        },
+        {
+          "name": "oss_url",
+          "line": 48
+        },
+        {
+          "name": "safe_name",
+          "line": 90
+        },
+        {
+          "name": "trim_utf8",
+          "line": 128
+        },
+        {
+          "name": "content_range",
+          "line": 135
+        },
+        {
+          "name": "signed_strings_match_existing_oss_wire_contract",
+          "line": 146
+        },
+        {
+          "name": "completion_xml_keeps_part_number_order",
+          "line": 153
+        },
+        {
+          "name": "signed_upload_origin_and_download_names_are_constrained",
+          "line": 157
+        },
+        {
+          "name": "prefix_context_is_signed_in_the_observed_header_position",
+          "line": 181
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-transfer/src/sha1_state.rs",
+      "sha256": "8ee2227fc50c481dd270182812e19d7a4e155ca216e18de17a36107977bacb11",
+      "lines": 181,
+      "symbols": [
+        {
+          "name": "new",
+          "line": 19
+        },
+        {
+          "name": "update",
+          "line": 27
+        },
+        {
+          "name": "compress",
+          "line": 51
+        },
+        {
+          "name": "export_base64",
+          "line": 85
+        },
+        {
+          "name": "digest",
+          "line": 130
+        },
+        {
+          "name": "real_compression_matches_standard_digest_across_buffer_boundaries",
+          "line": 145
+        },
+        {
+          "name": "exports_real_unpadded_prefix_and_bit_counter_high_word",
+          "line": 163
+        }
+      ]
+    },
+    {
+      "path": "crates/quark-transfer/src/upload.rs",
+      "sha256": "f7963fb44b0b6b23506dc010fe4a536083305e2273cd163f85f26cc8aaef8809",
+      "lines": 1293,
+      "symbols": [
+        {
+          "name": "store",
+          "line": 51
+        },
+        {
+          "name": "required",
+          "line": 57
+        },
+        {
+          "name": "from",
+          "line": 70
+        },
+        {
+          "name": "unchanged",
+          "line": 99
+        },
+        {
+          "name": "inspect",
+          "line": 105
+        },
+        {
+          "name": "signature",
+          "line": 173
+        },
+        {
+          "name": "run",
+          "line": 183
+        },
+        {
+          "name": "part_window",
+          "line": 617
+        },
+        {
+          "name": "read_part",
+          "line": 661
+        },
+        {
+          "name": "small_response",
+          "line": 696
+        },
+        {
+          "name": "validate_completion",
+          "line": 711
+        },
+        {
+          "name": "put_part",
+          "line": 738
+        },
+        {
+          "name": "new",
+          "line": 805
+        },
+        {
+          "name": "put_request",
+          "line": 813
+        },
+        {
+          "name": "put_request_limited",
+          "line": 825
+        },
+        {
+          "name": "matching",
+          "line": 926
+        },
+        {
+          "name": "confirm",
+          "line": 965
+        },
+        {
+          "name": "verified_result",
+          "line": 1030
+        },
+        {
+          "name": "prefix_inspection_and_saved_part_replay_bind_to_actual_source_bytes",
+          "line": 1052
+        },
+        {
+          "name": "fixture",
+          "line": 1107
+        },
+        {
+          "name": "actual_http_put_carries_prefix_without_cookies_and_rejects_bad_etag",
+          "line": 1154
+        },
+        {
+          "name": "completion_errors_and_cloud_digest_mismatches_cannot_finish_a_task",
+          "line": 1236
+        },
+        {
+          "name": "bandwidth_limit_applies_to_the_actual_http_request_body",
+          "line": 1267
+        }
+      ]
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "fb45743bc1bdb5d2b06dd713ec725c7aed1caf1579d2a929f5b8c2453e5e864b",
+      "lines": 250,
+      "symbols": []
+    },
+    {
+      "path": "package.json",
+      "sha256": "e742ee5a4a4b9fc7cf90100def0298aac503b04c0234c1c1c3a0a21398735871",
+      "lines": 21,
+      "symbols": []
+    },
+    {
+      "path": "scripts/after-pack.js",
+      "sha256": "b8b0662a2877c28ea56964d10f0c18fc5debe2d55d109a1a55b38e7bcade9aa1",
+      "lines": 10,
+      "symbols": []
+    },
+    {
+      "path": "scripts/build-env.js",
+      "sha256": "49ab82b7ddb17a3aa970c98721f09fb9f054ca40b8fde1b75064f266d97da8c8",
+      "lines": 8,
+      "symbols": []
+    },
+    {
+      "path": "scripts/check.js",
+      "sha256": "97892943be7393bde8c7de128f9f5d5c012fd903e474321bfe6ac5433e77dfc7",
+      "lines": 23,
+      "symbols": [
+        {
+          "name": "walk",
+          "line": 7
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci-linux-gui.sh",
+      "sha256": "746bb03b061e54a1da35dd1baf1afde68a1370a121c7f1fb419e899c19a82d02",
+      "lines": 18,
+      "symbols": []
+    },
+    {
+      "path": "scripts/ci-macos-keychain.sh",
+      "sha256": "d3ddf83896e5b99e3cb8caf3b952d649b727012301adde0ec064591bba2549b0",
+      "lines": 59,
+      "symbols": []
+    },
+    {
+      "path": "scripts/migrate-session.js",
+      "sha256": "6879907bc465a3e3a7b26c8d56ec9fbdcd901318dbf0f49702df8413c62098ad",
+      "lines": 15,
+      "symbols": []
+    },
+    {
+      "path": "scripts/native-smoke.js",
+      "sha256": "29a5b9b3bc5709eb43f2293b733046ed6dc318f5ae8b2c748551ab298d4de899",
+      "lines": 29,
+      "symbols": []
+    },
+    {
+      "path": "scripts/pack-mac.js",
+      "sha256": "2a0743e8a76fc1b386efaadc48311959be8ecb2c42eb94393d5200fbd04a343a",
+      "lines": 31,
+      "symbols": []
+    },
+    {
+      "path": "scripts/prepare-legacy-runtime.js",
+      "sha256": "46523486168ab1b4550d2df8c088a0152c43bdbbb0d601475257d100d9836983",
+      "lines": 31,
+      "symbols": []
+    },
+    {
+      "path": "scripts/release-archive.js",
+      "sha256": "ee6e11ca1e4a9817628f6b3229f8b5344392c83714674d395e19b3e61aefaa5f",
+      "lines": 36,
+      "symbols": []
+    },
+    {
+      "path": "scripts/rust.js",
+      "sha256": "4dc529e15452a972b36bc0511bd4d49a3faff1c90b57dda77b4c1586183e2479",
+      "lines": 8,
+      "symbols": []
+    },
+    {
+      "path": "scripts/start.js",
+      "sha256": "96a7ec1c417bbdd171dcc7da046c9c7c68d3fdcf76b62e7ce35cf4a7fab18b73",
+      "lines": 43,
+      "symbols": []
+    },
+    {
+      "path": "scripts/tauri.js",
+      "sha256": "d043c354a2c62e108f55a1c1772cd4fdfead9e37079c0893034523df671f7cba",
+      "lines": 27,
+      "symbols": []
+    },
+    {
+      "path": "src-tauri/Cargo.toml",
+      "sha256": "c283dae55356052a6b44c1045f7c5f82dcef9074cda5d2a95f2797a3df7965a7",
+      "lines": 21,
+      "symbols": []
+    },
+    {
+      "path": "src-tauri/build.rs",
+      "sha256": "487059eaf8a947b80f20a9aacac038a5047b2ad69d2401b827376c67d6fe847f",
+      "lines": 3,
+      "symbols": [
+        {
+          "name": "main",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "path": "src-tauri/capabilities/main.json",
+      "sha256": "a6c8add93b91f863d7e2325c5a46a76857bf7e3526a263fe2f2444fe0dad230f",
+      "lines": 7,
+      "symbols": []
+    },
+    {
+      "path": "src-tauri/src/backup_host.rs",
+      "sha256": "703427dfee885c01e63c32c3fb215010b2e3aa44cf84724d4f6d03ad5e534d15",
+      "lines": 3,
+      "symbols": []
+    },
+    {
+      "path": "src-tauri/src/main.rs",
+      "sha256": "7e32d3d20be44f2c50bd177bedd43bce7b44288e7d33e907bfd2476a3619f14d",
+      "lines": 522,
+      "symbols": [
+        {
+          "name": "shell_error",
+          "line": 35
+        },
+        {
+          "name": "trusted",
+          "line": 39
+        },
+        {
+          "name": "qk_call",
+          "line": 49
+        },
+        {
+          "name": "login",
+          "line": 203
+        },
+        {
+          "name": "drop",
+          "line": 209
+        },
+        {
+          "name": "open_local",
+          "line": 280
+        },
+        {
+          "name": "dialog",
+          "line": 315
+        },
+        {
+          "name": "smoke_report",
+          "line": 368
+        },
+        {
+          "name": "main",
+          "line": 389
+        }
+      ]
+    },
+    {
+      "path": "src-tauri/tauri.conf.json",
+      "sha256": "9f4c6c73b27b8d62ae7a7dc34dc1420e838e471ee9ff313aded65097a8a8aa44",
+      "lines": 44,
+      "symbols": []
+    },
+    {
+      "path": "src/renderer/api.js",
+      "sha256": "76ade2d125b9bdb6fb6d0faa829ef7c0de28e5682dc6a79fb84495a95220327e",
+      "lines": 934,
+      "symbols": [
+        {
+          "name": "isExtensionContract",
+          "line": 46
+        },
+        {
+          "name": "mkError",
+          "line": 54
+        },
+        {
+          "name": "normalizeError",
+          "line": 62
+        },
+        {
+          "name": "isNeedLogin",
+          "line": 82
+        },
+        {
+          "name": "fireNeedLogin",
+          "line": 92
+        },
+        {
+          "name": "onNeedLogin",
+          "line": 98
+        },
+        {
+          "name": "hasMethod",
+          "line": 122
+        },
+        {
+          "name": "bridgeInfo",
+          "line": 128
+        },
+        {
+          "name": "missingError",
+          "line": 166
+        },
+        {
+          "name": "expose",
+          "line": 173
+        },
+        {
+          "name": "subscribe",
+          "line": 203
+        },
+        {
+          "name": "rebind",
+          "line": 389
+        },
+        {
+          "name": "createMockBridge",
+          "line": 469
+        },
+        {
+          "name": "fid",
+          "line": 475
+        },
+        {
+          "name": "add",
+          "line": 477
+        },
+        {
+          "name": "pickExt",
+          "line": 501
+        },
+        {
+          "name": "pad",
+          "line": 530
+        },
+        {
+          "name": "emitAccount",
+          "line": 538
+        },
+        {
+          "name": "acceptAsync",
+          "line": 554
+        },
+        {
+          "name": "newTask",
+          "line": 569
+        },
+        {
+          "name": "emitTransfers",
+          "line": 590
+        },
+        {
+          "name": "tick",
+          "line": 596
+        },
+        {
+          "name": "ensureTimer",
+          "line": 615
+        },
+        {
+          "name": "pushToast",
+          "line": 623
+        },
+        {
+          "name": "visibleChildren",
+          "line": 628
+        },
+        {
+          "name": "pageOf",
+          "line": 637
+        },
+        {
+          "name": "findByFid",
+          "line": 650
+        },
+        {
+          "name": "removeRecursive",
+          "line": 651
+        },
+        {
+          "name": "cloneRecursive",
+          "line": 662
+        },
+        {
+          "name": "findTransfer",
+          "line": 890
+        },
+        {
+          "name": "setStatus",
+          "line": 894
+        }
+      ]
+    },
+    {
+      "path": "src/renderer/app.js",
+      "sha256": "8bfe64a88eaddea39af9d8e97bf31be41469e9ac834c7fefb53c4f2d9e3838f3",
+      "lines": 3950,
+      "symbols": [
+        {
+          "name": "h",
+          "line": 100
+        },
+        {
+          "name": "icon",
+          "line": 107
+        },
+        {
+          "name": "pad2",
+          "line": 118
+        },
+        {
+          "name": "fmtSize",
+          "line": 120
+        },
+        {
+          "name": "fmtTime",
+          "line": 130
+        },
+        {
+          "name": "fmtSpeed",
+          "line": 138
+        },
+        {
+          "name": "fmtEta",
+          "line": 144
+        },
+        {
+          "name": "iconFor",
+          "line": 153
+        },
+        {
+          "name": "catClass",
+          "line": 170
+        },
+        {
+          "name": "toast",
+          "line": 180
+        },
+        {
+          "name": "remove",
+          "line": 200
+        },
+        {
+          "name": "reportError",
+          "line": 209
+        },
+        {
+          "name": "banner",
+          "line": 223
+        },
+        {
+          "name": "clearBanner",
+          "line": 246
+        },
+        {
+          "name": "showNoBridgeBanner",
+          "line": 251
+        },
+        {
+          "name": "showExpiredBanner",
+          "line": 258
+        },
+        {
+          "name": "clearExpiredBanner",
+          "line": 270
+        },
+        {
+          "name": "doLogin",
+          "line": 275
+        },
+        {
+          "name": "doLogout",
+          "line": 288
+        },
+        {
+          "name": "applyAccount",
+          "line": 310
+        },
+        {
+          "name": "renderAccount",
+          "line": 334
+        },
+        {
+          "name": "refreshQuota",
+          "line": 406
+        },
+        {
+          "name": "closeOverlay",
+          "line": 419
+        },
+        {
+          "name": "openOverlay",
+          "line": 425
+        },
+        {
+          "name": "close",
+          "line": 432
+        },
+        {
+          "name": "onKey",
+          "line": 442
+        },
+        {
+          "name": "confirmDialog",
+          "line": 453
+        },
+        {
+          "name": "promptDialog",
+          "line": 500
+        },
+        {
+          "name": "submit",
+          "line": 543
+        },
+        {
+          "name": "pickDirDialog",
+          "line": 565
+        },
+        {
+          "name": "renderCrumbs",
+          "line": 611
+        },
+        {
+          "name": "loadDir",
+          "line": 629
+        },
+        {
+          "name": "closeCtx",
+          "line": 702
+        },
+        {
+          "name": "openCtx",
+          "line": 704
+        },
+        {
+          "name": "renderCrumbs",
+          "line": 728
+        },
+        {
+          "name": "loadCrumbs",
+          "line": 748
+        },
+        {
+          "name": "setTopbarForView",
+          "line": 770
+        },
+        {
+          "name": "navigate",
+          "line": 781
+        },
+        {
+          "name": "reloadCurrent",
+          "line": 799
+        },
+        {
+          "name": "resetList",
+          "line": 807
+        },
+        {
+          "name": "findItem",
+          "line": 829
+        },
+        {
+          "name": "selectedItems",
+          "line": 831
+        },
+        {
+          "name": "loadPage",
+          "line": 837
+        },
+        {
+          "name": "maybeAutoFill",
+          "line": 894
+        },
+        {
+          "name": "createRow",
+          "line": 901
+        },
+        {
+          "name": "updateRow",
+          "line": 940
+        },
+        {
+          "name": "renderRows",
+          "line": 963
+        },
+        {
+          "name": "scheduleRows",
+          "line": 1006
+        },
+        {
+          "name": "renderEmpty",
+          "line": 1014
+        },
+        {
+          "name": "clearEmpty",
+          "line": 1028
+        },
+        {
+          "name": "renderListFoot",
+          "line": 1033
+        },
+        {
+          "name": "updateSelectAll",
+          "line": 1055
+        },
+        {
+          "name": "setSelected",
+          "line": 1073
+        },
+        {
+          "name": "clearSelection",
+          "line": 1085
+        },
+        {
+          "name": "toggleSelect",
+          "line": 1106
+        },
+        {
+          "name": "currentDirName",
+          "line": 1150
+        },
+        {
+          "name": "openItem",
+          "line": 1155
+        },
+        {
+          "name": "awaitTask",
+          "line": 1162
+        },
+        {
+          "name": "sleep",
+          "line": 1187
+        },
+        {
+          "name": "downloadItems",
+          "line": 1189
+        },
+        {
+          "name": "doUploadPaths",
+          "line": 1214
+        },
+        {
+          "name": "onUploadClick",
+          "line": 1231
+        },
+        {
+          "name": "onMkdirClick",
+          "line": 1242
+        },
+        {
+          "name": "validateName",
+          "line": 1262
+        },
+        {
+          "name": "onRename",
+          "line": 1269
+        },
+        {
+          "name": "doTransferOp",
+          "line": 1296
+        },
+        {
+          "name": "dirNameOf",
+          "line": 1335
+        },
+        {
+          "name": "doRemove",
+          "line": 1346
+        },
+        {
+          "name": "onBulk",
+          "line": 1372
+        },
+        {
+          "name": "transferActions",
+          "line": 1386
+        },
+        {
+          "name": "createTransferRow",
+          "line": 1406
+        },
+        {
+          "name": "updateTransferRow",
+          "line": 1444
+        },
+        {
+          "name": "renderTransfers",
+          "line": 1496
+        },
+        {
+          "name": "refreshTransfers",
+          "line": 1544
+        },
+        {
+          "name": "onTransferAction",
+          "line": 1558
+        },
+        {
+          "name": "clearFinished",
+          "line": 1587
+        },
+        {
+          "name": "agentBridgeReady",
+          "line": 1638
+        },
+        {
+          "name": "agentOf",
+          "line": 1642
+        },
+        {
+          "name": "firstLine",
+          "line": 1644
+        },
+        {
+          "name": "asText",
+          "line": 1650
+        },
+        {
+          "name": "asRootStrings",
+          "line": 1658
+        },
+        {
+          "name": "agentErrText",
+          "line": 1668
+        },
+        {
+          "name": "fmtClock",
+          "line": 1676
+        },
+        {
+          "name": "agentResultLabel",
+          "line": 1683
+        },
+        {
+          "name": "agentEntrySummary",
+          "line": 1690
+        },
+        {
+          "name": "agentStatusLabel",
+          "line": 1702
+        },
+        {
+          "name": "agentStatusHintText",
+          "line": 1708
+        },
+        {
+          "name": "setAgentDot",
+          "line": 1719
+        },
+        {
+          "name": "renderAgentStatus",
+          "line": 1724
+        },
+        {
+          "name": "renderAgentWriteMode",
+          "line": 1791
+        },
+        {
+          "name": "agentEmptyHint",
+          "line": 1809
+        },
+        {
+          "name": "renderAgentList",
+          "line": 1814
+        },
+        {
+          "name": "renderAgentRemoteRoots",
+          "line": 1836
+        },
+        {
+          "name": "renderAgentLocalRoots",
+          "line": 1853
+        },
+        {
+          "name": "renderAgentJournal",
+          "line": 1865
+        },
+        {
+          "name": "renderAgentMcp",
+          "line": 1902
+        },
+        {
+          "name": "renderAgent",
+          "line": 1919
+        },
+        {
+          "name": "loadAgentStatus",
+          "line": 1932
+        },
+        {
+          "name": "loadAgentJournal",
+          "line": 1950
+        },
+        {
+          "name": "loadAgentMcp",
+          "line": 1971
+        },
+        {
+          "name": "ensureAgent",
+          "line": 1991
+        },
+        {
+          "name": "agentConfirm",
+          "line": 2002
+        },
+        {
+          "name": "refreshAgentAsync",
+          "line": 2018
+        },
+        {
+          "name": "agentToggle",
+          "line": 2024
+        },
+        {
+          "name": "agentRotate",
+          "line": 2055
+        },
+        {
+          "name": "agentSetWriteMode",
+          "line": 2074
+        },
+        {
+          "name": "agentAddCurrentDir",
+          "line": 2091
+        },
+        {
+          "name": "agentPickLocalRoots",
+          "line": 2109
+        },
+        {
+          "name": "agentScope",
+          "line": 2132
+        },
+        {
+          "name": "agentRemoveRoot",
+          "line": 2147
+        },
+        {
+          "name": "agentRefreshJournal",
+          "line": 2167
+        },
+        {
+          "name": "agentCopyMcp",
+          "line": 2173
+        },
+        {
+          "name": "copyTextToClipboard",
+          "line": 2204
+        },
+        {
+          "name": "chatOf",
+          "line": 2233
+        },
+        {
+          "name": "chatBridgeReady",
+          "line": 2236
+        },
+        {
+          "name": "baseUrlTail",
+          "line": 2241
+        },
+        {
+          "name": "renderChatCard",
+          "line": 2251
+        },
+        {
+          "name": "renderChatComposer",
+          "line": 2306
+        },
+        {
+          "name": "renderChatStatus",
+          "line": 2318
+        },
+        {
+          "name": "chatScrollBottom",
+          "line": 2357
+        },
+        {
+          "name": "chatBubble",
+          "line": 2363
+        },
+        {
+          "name": "updateChatToolRow",
+          "line": 2377
+        },
+        {
+          "name": "chatToolRow",
+          "line": 2403
+        },
+        {
+          "name": "chatEntryNode",
+          "line": 2423
+        },
+        {
+          "name": "renderChatHistory",
+          "line": 2456
+        },
+        {
+          "name": "appendUserMessage",
+          "line": 2488
+        },
+        {
+          "name": "chatBeginRound",
+          "line": 2499
+        },
+        {
+          "name": "chatFinishRound",
+          "line": 2516
+        },
+        {
+          "name": "chatFailRound",
+          "line": 2559
+        },
+        {
+          "name": "handleChatEvent",
+          "line": 2582
+        },
+        {
+          "name": "loadChatStatus",
+          "line": 2663
+        },
+        {
+          "name": "loadChatHistory",
+          "line": 2680
+        },
+        {
+          "name": "ensureChat",
+          "line": 2702
+        },
+        {
+          "name": "renderChat",
+          "line": 2713
+        },
+        {
+          "name": "chatAutoGrow",
+          "line": 2721
+        },
+        {
+          "name": "chatSaveConfig",
+          "line": 2727
+        },
+        {
+          "name": "chatTest",
+          "line": 2758
+        },
+        {
+          "name": "chatClear",
+          "line": 2778
+        },
+        {
+          "name": "chatClearConfig",
+          "line": 2799
+        },
+        {
+          "name": "chatFetchModels",
+          "line": 2830
+        },
+        {
+          "name": "renderChatModelList",
+          "line": 2853
+        },
+        {
+          "name": "chatToggleConfig",
+          "line": 2866
+        },
+        {
+          "name": "chatSend",
+          "line": 2873
+        },
+        {
+          "name": "applyTheme",
+          "line": 2939
+        },
+        {
+          "name": "loadSettings",
+          "line": 2949
+        },
+        {
+          "name": "renderSettings",
+          "line": 2974
+        },
+        {
+          "name": "saveSettings",
+          "line": 2991
+        },
+        {
+          "name": "pickDownloadDir",
+          "line": 3005
+        },
+        {
+          "name": "backupBridgeReady",
+          "line": 3035
+        },
+        {
+          "name": "backupNum",
+          "line": 3039
+        },
+        {
+          "name": "backupBindOnce",
+          "line": 3044
+        },
+        {
+          "name": "ensureBackup",
+          "line": 3126
+        },
+        {
+          "name": "startBackupPolling",
+          "line": 3137
+        },
+        {
+          "name": "backupPollTick",
+          "line": 3144
+        },
+        {
+          "name": "stopBackupPolling",
+          "line": 3150
+        },
+        {
+          "name": "backupPollOnce",
+          "line": 3154
+        },
+        {
+          "name": "renderBackupStats",
+          "line": 3180
+        },
+        {
+          "name": "renderBackupProgress",
+          "line": 3209
+        },
+        {
+          "name": "backupLoadTasks",
+          "line": 3219
+        },
+        {
+          "name": "renderBackupPlan",
+          "line": 3232
+        },
+        {
+          "name": "backupSampleText",
+          "line": 3257
+        },
+        {
+          "name": "renderBackupVerify",
+          "line": 3270
+        },
+        {
+          "name": "backupIssueText",
+          "line": 3302
+        },
+        {
+          "name": "fmtInt",
+          "line": 3315
+        },
+        {
+          "name": "fmtBytes",
+          "line": 3321
+        },
+        {
+          "name": "setView",
+          "line": 3332
+        },
+        {
+          "name": "setupDragDrop",
+          "line": 3362
+        },
+        {
+          "name": "hasFiles",
+          "line": 3365
+        },
+        {
+          "name": "handleDroppedFiles",
+          "line": 3410
+        },
+        {
+          "name": "bindEvents",
+          "line": 3436
+        },
+        {
+          "name": "clampInt",
+          "line": 3704
+        },
+        {
+          "name": "runRowOp",
+          "line": 3710
+        },
+        {
+          "name": "runSearch",
+          "line": 3719
+        },
+        {
+          "name": "leaveSearch",
+          "line": 3732
+        },
+        {
+          "name": "cacheEls",
+          "line": 3748
+        },
+        {
+          "name": "subscribeChannels",
+          "line": 3842
+        },
+        {
+          "name": "boot",
+          "line": 3868
+        }
+      ]
+    },
+    {
+      "path": "src/renderer/index.html",
+      "sha256": "b331d45e0645fd065919b62f6c26a81acf129fe388955ae0532ea97ca7e55196",
+      "lines": 576,
+      "symbols": []
+    },
+    {
+      "path": "src/renderer/startup.html",
+      "sha256": "7d40dddae075665d2c7af691ba2b94c8bd3c592a8893029882a40ca9c3f9ba65",
+      "lines": 13,
+      "symbols": []
+    },
+    {
+      "path": "src/renderer/styles.css",
+      "sha256": "fee152f5fd77a40b412934651691c901c6a828e9cc0ec318f1f8bb86d87538c8",
+      "lines": 859,
+      "symbols": []
+    },
+    {
+      "path": "src/renderer/tauri-bridge.js",
+      "sha256": "7eddf41ba252c4c0dfe3e023ed05214f8239b10c1cb99ec6a380e4994548ee4d",
+      "lines": 111,
+      "symbols": [
+        {
+          "name": "call",
+          "line": 8
+        },
+        {
+          "name": "method",
+          "line": 18
+        },
+        {
+          "name": "listen",
+          "line": 25
+        }
+      ]
+    },
+    {
+      "path": "src/renderer/virtual-list.js",
+      "sha256": "91f2bcec97ee4d6ba334a237080c0542df02e1a8c530a870206e07c7c095805c",
+      "lines": 17,
+      "symbols": [
+        {
+          "name": "range",
+          "line": 4
+        }
+      ]
+    },
+    {
+      "path": "test/renderer-harness.js",
+      "sha256": "50934a5de4ae1c25b756dce5dde4065124a64313baa3f0bda5d34c0330f1b540",
+      "lines": 849,
+      "symbols": [
+        {
+          "name": "parseAttributes",
+          "line": 49
+        },
+        {
+          "name": "parseHtml",
+          "line": 61
+        },
+        {
+          "name": "compoundMatcher",
+          "line": 88
+        },
+        {
+          "name": "selectorMatcher",
+          "line": 109
+        },
+        {
+          "name": "camelize",
+          "line": 127
+        },
+        {
+          "name": "loadApi",
+          "line": 364
+        },
+        {
+          "name": "fakeQk",
+          "line": 386
+        },
+        {
+          "name": "bootApp",
+          "line": 470
+        },
+        {
+          "name": "pick",
+          "line": 752
+        },
+        {
+          "name": "click",
+          "line": 759
+        },
+        {
+          "name": "typeAndSend",
+          "line": 770
+        },
+        {
+          "name": "latestOverlay",
+          "line": 779
+        },
+        {
+          "name": "clickOverlay",
+          "line": 785
+        }
+      ]
+    },
+    {
+      "path": "test/tauri-agent-ui.test.js",
+      "sha256": "e291472b555638a2ecf4dfe7229ccf5ea74cb7ce88ea0faee07d85d0edc47270",
+      "lines": 550,
+      "symbols": [
+        {
+          "name": "htmlIds",
+          "line": 53
+        },
+        {
+          "name": "referencedIds",
+          "line": 61
+        },
+        {
+          "name": "dynamicIds",
+          "line": 69
+        },
+        {
+          "name": "stripComments",
+          "line": 77
+        },
+        {
+          "name": "agentSectionSource",
+          "line": 82
+        },
+        {
+          "name": "clock",
+          "line": 92
+        }
+      ]
+    },
+    {
+      "path": "test/tauri-backup-ui.test.js",
+      "sha256": "88c58a5ac301c602b809a90fa066b6ed5e81183a372911d3ae58c14a6544c2a7",
+      "lines": 434,
+      "symbols": [
+        {
+          "name": "setView",
+          "line": 79
+        },
+        {
+          "name": "openBackup",
+          "line": 164
+        }
+      ]
+    },
+    {
+      "path": "test/tauri-chat-ui.test.js",
+      "sha256": "e22af8db98dedf28d770bb491ae76aec64720de2fceae56fe6b6ed23d430b678",
+      "lines": 658,
+      "symbols": [
+        {
+          "name": "htmlIds",
+          "line": 63
+        },
+        {
+          "name": "referencedIds",
+          "line": 71
+        },
+        {
+          "name": "dynamicIds",
+          "line": 79
+        },
+        {
+          "name": "stripComments",
+          "line": 87
+        },
+        {
+          "name": "chatSectionSource",
+          "line": 92
+        }
+      ]
+    },
+    {
+      "path": "test/tauri-renderer.test.js",
+      "sha256": "b4ff3e56958c6f7c417ea6a9350103371b0fe783f38a53531b0a8e3b5b43a76d",
+      "lines": 423,
+      "symbols": [
+        {
+          "name": "bridge",
+          "line": 11
+        },
+        {
+          "name": "cdp",
+          "line": 147
+        },
+        {
+          "name": "evaluate",
+          "line": 150
+        },
+        {
+          "name": "until",
+          "line": 155
+        },
+        {
+          "name": "click",
+          "line": 162
+        },
+        {
+          "name": "capture",
+          "line": 390
+        }
+      ]
+    },
+    {
+      "path": "tools/agent-bridge-client.js",
+      "sha256": "8f84369a2df412a8f5f0e6f5de74b5424ec43bea1191bbc661a825d7ffffc2b3",
+      "lines": 272,
+      "symbols": []
+    },
+    {
+      "path": "tools/agent-cli.js",
+      "sha256": "2380f9230ba21251bd2c981abd1163efc878fc1a44e8874871520c4705bd0b76",
+      "lines": 165,
+      "symbols": [
+        {
+          "name": "defaultProfileDir",
+          "line": 26
+        },
+        {
+          "name": "readBridgeCredentials",
+          "line": 35
+        },
+        {
+          "name": "resolveBridge",
+          "line": 69
+        },
+        {
+          "name": "usage",
+          "line": 78
+        },
+        {
+          "name": "main",
+          "line": 90
+        }
+      ]
+    },
+    {
+      "path": "tools/agent-mcp.js",
+      "sha256": "e8fce8985b9bfd5a48ab0eb310817026c5e8ee60b1a7bd4761e9edeae163da66",
+      "lines": 439,
+      "symbols": [
+        {
+          "name": "defaultProfileDir",
+          "line": 36
+        },
+        {
+          "name": "readBridgeCredentials",
+          "line": 45
+        },
+        {
+          "name": "log",
+          "line": 105
+        },
+        {
+          "name": "send",
+          "line": 111
+        },
+        {
+          "name": "resolveBridge",
+          "line": 116
+        },
+        {
+          "name": "toToolErrorPayload",
+          "line": 126
+        },
+        {
+          "name": "toContentResult",
+          "line": 134
+        },
+        {
+          "name": "toErrorResult",
+          "line": 144
+        },
+        {
+          "name": "createSession",
+          "line": 167
+        },
+        {
+          "name": "getClient",
+          "line": 180
+        },
+        {
+          "name": "resetClient",
+          "line": 194
+        },
+        {
+          "name": "loadTools",
+          "line": 201
+        },
+        {
+          "name": "handle",
+          "line": 212
+        },
+        {
+          "name": "shutdown",
+          "line": 371
+        },
+        {
+          "name": "main",
+          "line": 386
+        }
+      ]
+    },
+    {
+      "path": "tools/build_asar.py",
+      "sha256": "a555bceca73d03247e00d234bc4310c6ef3d8937e25b3ed1c25a32bde0dc26d6",
+      "lines": 120,
+      "symbols": []
+    },
+    {
+      "path": "tools/cdp_probe.js",
+      "sha256": "75faa180f363b9578084c3632b0200bbecfb4469ab258a2f0059436b4fe65598",
+      "lines": 146,
+      "symbols": [
+        {
+          "name": "sleep",
+          "line": 19
+        },
+        {
+          "name": "waitForDevtools",
+          "line": 23
+        }
+      ]
+    },
+    {
+      "path": "tools/check-quota.js",
+      "sha256": "b5811e85692ea4a4adcd710c097e7f32dbba4f2cf2dff014eb14c6527f8ce849",
+      "lines": 54,
+      "symbols": []
+    },
+    {
+      "path": "tools/check-session.js",
+      "sha256": "5daf0a8f337a264f585ff6837933ce7c2309676add920ec329b5973957f5ec52",
+      "lines": 29,
+      "symbols": []
+    },
+    {
+      "path": "tools/count_private_api.py",
+      "sha256": "83e1ba10787e751b42180ce25498ed32c53823fabd7e9d74f771f71c0087f99d",
+      "lines": 42,
+      "symbols": []
+    },
+    {
+      "path": "tools/ctx.py",
+      "sha256": "050394b5d4eddb6dc9828b57bcbb6e600bcfdd5a58f28f5650d8e7082183de70",
+      "lines": 57,
+      "symbols": []
+    },
+    {
+      "path": "tools/diag-s4.js",
+      "sha256": "d45d4faa60c03248ed14cf3e44ff8b338082694a1a131e19edfe6ce43ce864f9",
+      "lines": 27,
+      "symbols": [
+        {
+          "name": "findMain",
+          "line": 10
+        }
+      ]
+    },
+    {
+      "path": "tools/dl_conc.py",
+      "sha256": "c5646386f14632dc1f95d23136154304d3bef3f61ba29f20bde120e3f5d9426d",
+      "lines": 30,
+      "symbols": []
+    },
+    {
+      "path": "tools/dl_conc2.py",
+      "sha256": "12e7543b3100bbdd77538a7f8749db3ed7ce768b20cba2d57f5432aadd3dcd03",
+      "lines": 19,
+      "symbols": []
+    },
+    {
+      "path": "tools/dump_routes.py",
+      "sha256": "ce8236aae1685d90e05123d76b3807322c5601fbbdb54334accc2a0effe35018",
+      "lines": 12,
+      "symbols": []
+    },
+    {
+      "path": "tools/extract_asar.py",
+      "sha256": "3876e2c962bacd7d28337406a6689117330bfc14ff02458b0bce52df73e22d21",
+      "lines": 68,
+      "symbols": []
+    },
+    {
+      "path": "tools/find_sidenav.py",
+      "sha256": "29a0aeab74d3bf2563d59aeed8f2bfeddc23764282103fda5d9da3234cac4368",
+      "lines": 19,
+      "symbols": []
+    },
+    {
+      "path": "tools/fix-post-query.js",
+      "sha256": "35d97d05d6a877bc43936be63d17e6bc3c30c4c50c935d4d809e9a81bcf3f468",
+      "lines": 50,
+      "symbols": []
+    },
+    {
+      "path": "tools/import-browser-session.js",
+      "sha256": "c23c2dc23a203edbdb7ac21bd469d1057de3ebe9451ed02429b4da0465e17a3f",
+      "lines": 319,
+      "symbols": [
+        {
+          "name": "main",
+          "line": 55
+        },
+        {
+          "name": "short",
+          "line": 139
+        },
+        {
+          "name": "listProfiles",
+          "line": 144
+        },
+        {
+          "name": "readCookies",
+          "line": 163
+        },
+        {
+          "name": "getDpapiKey",
+          "line": 254
+        },
+        {
+          "name": "findPython",
+          "line": 277
+        },
+        {
+          "name": "checkAlive",
+          "line": 295
+        }
+      ]
+    },
+    {
+      "path": "tools/list-root.js",
+      "sha256": "04fdc71b01d28918c4fcd3d1c38a6aa58689b1058db225e8c91fc598ef98126f",
+      "lines": 26,
+      "symbols": []
+    },
+    {
+      "path": "tools/login-assisted.js",
+      "sha256": "9f0d8e49c4380135adfa6e607b7cd432a2032dfb3363503465c1d5bab860faf6",
+      "lines": 180,
+      "symbols": [
+        {
+          "name": "isLoggedIn",
+          "line": 47
+        }
+      ]
+    },
+    {
+      "path": "tools/loginprobe/main.js",
+      "sha256": "810f3b57b0419c73e8121dc450c7b01c3d243a92860e407727fa7a8eda6f6038",
+      "lines": 156,
+      "symbols": [
+        {
+          "name": "ok",
+          "line": 28
+        },
+        {
+          "name": "bad",
+          "line": 32
+        },
+        {
+          "name": "expect",
+          "line": 37
+        }
+      ]
+    },
+    {
+      "path": "tools/loginprobe/package.json",
+      "sha256": "c171b489a4c51bb349608be50eb0e4798d559f9feb08a55cae8cdfe743685060",
+      "lines": 1,
+      "symbols": []
+    },
+    {
+      "path": "tools/make-portable.js",
+      "sha256": "df3a99895e1159971b8e88beffe69edbbc42caaa160bc1c4da1dbca5e3d5b543",
+      "lines": 93,
+      "symbols": [
+        {
+          "name": "log",
+          "line": 26
+        },
+        {
+          "name": "verifySource",
+          "line": 38
+        },
+        {
+          "name": "walk",
+          "line": 78
+        }
+      ]
+    },
+    {
+      "path": "tools/mine_endpoints.py",
+      "sha256": "ae171939fddfa482cccbab9dbf79bea996757006e25b0b5900a03ac2277ba38d",
+      "lines": 55,
+      "symbols": []
+    },
+    {
+      "path": "tools/needles.txt",
+      "sha256": "b31128ebf7545d6482af3c7fd625d3717cfb6485868b8472639208b1de1b2dd5",
+      "lines": 5,
+      "symbols": []
+    },
+    {
+      "path": "tools/needles2.txt",
+      "sha256": "73cbb831df4e91177ec4c5751c898ae0e7a3ffd9ee6ce48e161ec3183f92a298",
+      "lines": 10,
+      "symbols": []
+    },
+    {
+      "path": "tools/needles3.txt",
+      "sha256": "4686f970493f9144d0626c13e8da40ea24a2fbb761258cece993d302aabc0f89",
+      "lines": 4,
+      "symbols": []
+    },
+    {
+      "path": "tools/needles4.txt",
+      "sha256": "663401284e53ec3f6794d8f368a612334e1e1793511e1618a6d179f073b01842",
+      "lines": 12,
+      "symbols": []
+    },
+    {
+      "path": "tools/probe-official-nav.js",
+      "sha256": "b07aa91faf619d1b57e4cc342b37a6cef146801ea85ccdc326dc061993fa32d8",
+      "lines": 52,
+      "symbols": [
+        {
+          "name": "getTargets",
+          "line": 9
+        }
+      ]
+    },
+    {
+      "path": "tools/probe_api.js",
+      "sha256": "3d09a16f26a1c3cf46f188cd6d7da34c54507aa0155c6de533c290214d58997b",
+      "lines": 79,
+      "symbols": [
+        {
+          "name": "cookieHeaderFor",
+          "line": 17
+        },
+        {
+          "name": "call",
+          "line": 32
+        }
+      ]
+    },
+    {
+      "path": "tools/quark-mini-native.js",
+      "sha256": "15e2326b6a7b8e62b59a4ae06ddf5016aec70cdca8e4df0c1a8cf2cf71031e97",
+      "lines": 187,
+      "symbols": [
+        {
+          "name": "hide",
+          "line": 29
+        },
+        {
+          "name": "findMainWindow",
+          "line": 62
+        },
+        {
+          "name": "visible",
+          "line": 127
+        }
+      ]
+    },
+    {
+      "path": "tools/repro-mkdir.js",
+      "sha256": "998ff103930dfb9ecc390290025a12efc8d7ca614184dc04a94650a85cd7e8ed",
+      "lines": 62,
+      "symbols": []
+    },
+    {
+      "path": "tools/reset-login.js",
+      "sha256": "bf89eb5d428bdedfeb79c5d5f3fa2348c9288cd0ddf25d1e628bd45aa7fb6aaf",
+      "lines": 115,
+      "symbols": []
+    },
+    {
+      "path": "tools/search_ucparam.py",
+      "sha256": "5407ec1a487984a4b18724739dc93239e254c752b5f5318e628f7649cc36f500",
+      "lines": 30,
+      "symbols": []
+    },
+    {
+      "path": "tools/search_ucparams2.py",
+      "sha256": "f9f7842358218c5356a1bff59bb4f5b9b236a921c0132fb95e923cae29636a94",
+      "lines": 25,
+      "symbols": []
+    },
+    {
+      "path": "tools/search_upload_host.py",
+      "sha256": "0316b7489e6110fd77eefc548ad640c10903ca388ed76fda6dd9cd692858741b",
+      "lines": 35,
+      "symbols": []
+    },
+    {
+      "path": "tools/speed-cmp/main.js",
+      "sha256": "31234b71c59ed0c8342d386f35606c14e955f327f933030996aed2ceae5cf982",
+      "lines": 92,
+      "symbols": [
+        {
+          "name": "run",
+          "line": 48
+        }
+      ]
+    },
+    {
+      "path": "tools/speed-cmp/package.json",
+      "sha256": "c9e2e81a5d3487b6c5b45f7e1fc0d6e3c33f130a4a72bb208d71b94f8eed4433",
+      "lines": 1,
+      "symbols": []
+    },
+    {
+      "path": "tools/stability-test.js",
+      "sha256": "0b926343a45001a3f8cca5ad117cad92d432d47167e3ccb52ffa8ee7f980ebe2",
+      "lines": 231,
+      "symbols": [
+        {
+          "name": "hide",
+          "line": 29
+        },
+        {
+          "name": "ok",
+          "line": 65
+        },
+        {
+          "name": "bad",
+          "line": 66
+        },
+        {
+          "name": "stopOwned",
+          "line": 70
+        },
+        {
+          "name": "findMain",
+          "line": 75
+        },
+        {
+          "name": "checkHidden",
+          "line": 86
+        },
+        {
+          "name": "vis",
+          "line": 90
+        },
+        {
+          "name": "procStat",
+          "line": 99
+        }
+      ]
+    },
+    {
+      "path": "tools/ua_extract.py",
+      "sha256": "c8e761b0e6ffda02eab16ea58f092b4f8358d37f171b56d371982594234035e9",
+      "lines": 26,
+      "symbols": []
+    },
+    {
+      "path": "tools/verify-multi-dl/main.js",
+      "sha256": "7072cb1fcf22060c8d6345d13c751809a01b7b552e32620550c3c81e74c5d6a1",
+      "lines": 158,
+      "symbols": [
+        {
+          "name": "ok",
+          "line": 23
+        },
+        {
+          "name": "bad",
+          "line": 24
+        }
+      ]
+    },
+    {
+      "path": "tools/verify-multi-dl/package.json",
+      "sha256": "9a3b4424f2f940a9437bf1267ffbe02bdc7e21d4d979e4c35ca236483a9247a5",
+      "lines": 1,
+      "symbols": []
+    },
+    {
+      "path": "tools/verify-parallel-dl/main.js",
+      "sha256": "b3dfe956f7275e1efac7db63c66d90cbc1f4a785fb2b6dffe1637f39deb82581",
+      "lines": 130,
+      "symbols": [
+        {
+          "name": "ok",
+          "line": 22
+        },
+        {
+          "name": "bad",
+          "line": 23
+        }
+      ]
+    },
+    {
+      "path": "tools/verify-parallel-dl/package.json",
+      "sha256": "bbae66fcc1d56fcea38a38115d9ce4361ccde07b1390aa8aac085b75ada1de99",
+      "lines": 1,
+      "symbols": []
+    }
+  ]
+}

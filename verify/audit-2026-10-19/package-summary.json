@@ -1,0 +1,13 @@
+{
+  "build": true,
+  "signing": "local ad-hoc; not notarized",
+  "architecture": "arm64",
+  "bundle_signature_verified": true,
+  "version": "0.3.0-alpha.1",
+  "zip": ".work/audit-2026-10-19/deliverables/QuarkDrive-Tauri-0.3.0-alpha.1-macOS-arm64-audit-20261019.zip",
+  "zip_sha256": "ae470a99f9f8c2b7b586e9b638b3f2be7ced40d2c873b2f9d8325a4d234bbfc4",
+  "zip_bytes": 5685911,
+  "extracted_signature_verified": true,
+  "isolated_hidden_packaged_startup_10s": true,
+  "test_process_stopped": true
+}

@@ -20,4 +20,5 @@ dirs = "6"
 libc = "0.2"
 
 [dev-dependencies]
+fs2 = "0.4"
 tempfile = "3"

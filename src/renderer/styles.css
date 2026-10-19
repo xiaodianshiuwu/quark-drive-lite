@@ -833,3 +833,27 @@ select.input { padding-right: 6px; }
 #backup-verify-result[data-level="error"] { color: var(--danger); }
 #backup-verify-result[data-level="warn"] { color: var(--warn); }
 #backup-verify-result[data-level="ok"] { color: var(--text); }
+
+/* Backup uses the existing spacing, surfaces and semantic colors. Lists stay paginated. */
+.backup-options {display:flex;gap:16px;flex-wrap:wrap;}
+.backup-options label {display:flex;align-items:center;gap:8px;color:var(--text-2);font-size:13px;}
+.backup-options .input {width:90px;}
+.backup-task-head {display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:20px;}
+.backup-task-list {list-style:none;margin:12px 0 0;padding:0;}
+.backup-task {display:grid;grid-template-columns:minmax(0,1fr) 76px;gap:4px 16px;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px;}
+.backup-task-path {overflow-wrap:anywhere;}
+.backup-task-state {color:var(--text-2);text-align:right;}
+.backup-task-error {grid-column:1/-1;overflow-wrap:anywhere;color:var(--danger);font-size:12px;}
+#view-backup .setlabel {min-width:0;}
+#view-backup .section-actions {max-width:600px;}
+#backup-target {min-width:140px;max-width:260px;}
+@media(max-width:1100px){#view-backup .setrow{flex-direction:column;align-items:stretch;gap:14px;}#view-backup .setcontrol{justify-content:flex-start;}#view-backup .section-head{align-items:flex-start;flex-direction:column;gap:8px;}}
+@media(max-width:820px){.backup-grid{grid-template-columns:repeat(3,minmax(0,1fr));}.backup-row .input-path{min-width:0;width:100%;}.backup-options{gap:10px;}}
+
+#backup-run > .setrow {flex-direction:column;align-items:stretch;gap:16px;}
+#backup-run > .setrow > .setcontrol {justify-content:flex-start;}
+#backup-run .backup-grid {grid-template-columns:repeat(5,minmax(0,1fr));gap:16px;}
+#view-backup .setcontrol label {white-space:nowrap;}
+#backup-sample-rate {max-width:270px;}
+@media(max-width:1100px){#backup-run .backup-grid{grid-template-columns:repeat(3,minmax(0,1fr));}}
+@media(max-height:650px){.toasts{max-height:30vh;overflow:auto;max-width:min(340px,calc(100vw - 36px));}}

@@ -196,6 +196,11 @@ pub struct ToolEnv {
 }
 
 impl ToolEnv {
+    async fn transfer_call(&self,method:&str,params:&Value)->Result<Value,AgentToolError> {
+        let mut bound=if params.is_object(){params.clone()}else{json!({})};
+        bound["_expectedSessionGeneration"]=json!(self.generation);
+        self.deps.transfer_call(method,&bound).await
+    }
     pub fn local_roots(&self) -> Vec<LocalRoot> {
         let mut roots: Vec<LocalRoot> = self
             .scope
@@ -242,6 +247,9 @@ impl ToolEnv {
                 break;
             }
             let info = self.safe_info(&current).await?;
+            if info["_approximate"]==true {
+                return Err(AgentToolError::new(AgentError::OutOfScope,"无法从服务端确认当前归属，近似记录不能授予权限").with_hint("请稍后重试，或用官方客户端核对目录归属"));
+            }
             let parent = info.get("pdirFid").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if parent.is_empty() || parent == current {
                 break;
@@ -283,7 +291,10 @@ impl ToolEnv {
                 .core_call(self.generation, "fs.info", &json!({ "fid": fid })).await
             {
                 Ok(env) => {
-                    if let Some(item) = env.get("item") {
+                    // quark-core returns a FileItem directly; the historical qck host
+                    // wraps it in {item}. Accept both, but never trust another fid.
+                    let item=env.get("item").unwrap_or(&env);
+                    if item["fid"].as_str()==Some(fid) {
                         self.info_cache.lock().unwrap().insert(fid.to_string(), item.clone());
                         return Ok(item.clone());
                     }
@@ -434,7 +445,7 @@ impl ToolEnv {
         let timeout = timeout_ms.clamp(0, MAX_WAIT_MS);
         let start = std::time::Instant::now();
         loop {
-            if let Ok(tasks) = self.deps.transfer_call("transfer.list", &Value::Null).await {
+            if let Ok(tasks) = self.transfer_call("transfer.list", &Value::Null).await {
                 let arr = tasks.as_array().cloned().unwrap_or_default();
                 let mut pending: Vec<String> = Vec::new();
                 let mut matched: Vec<Value> = Vec::new();
@@ -1001,7 +1012,7 @@ impl QuarkTools {
         });
         let kind = optional_string(&a("kind"), "kind")?;
         let status = optional_string(&a("status"), "status")?;
-        let tasks = env.deps.transfer_call("transfer.list", &Value::Null).await?;
+        let tasks = env.transfer_call("transfer.list", &Value::Null).await?;
         let arr = tasks.as_array().cloned().unwrap_or_default();
         let mut filtered: Vec<Value> = Vec::new();
         for t in arr {
@@ -1073,7 +1084,7 @@ impl QuarkTools {
                         return Err(AgentToolError::new(AgentError::NotFound, "本地尚未下载该文件")
                             .with_hint("请先调用 download_files，或设置 download_if_missing=true"));
                     }
-                    let accepted = env.deps.transfer_call(
+                    let accepted = env.transfer_call(
                         "transfer.download",
                         &json!({ "fids": [f], "localDir": workdir.to_string_lossy(), "names": [name.clone()] }),
                     ).await?;
@@ -1150,7 +1161,8 @@ impl QuarkTools {
         Ok(json!({
             "parent_fid": parent,
             "name": name,
-            "accepted": accepted.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
+            "accepted": true,
+            "completed": accepted.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
             "task_id": accepted.get("taskId").cloned().unwrap_or(Value::Null),
             "created_fid": created.as_ref().and_then(|c| c.get("fid")).cloned(),
             "visible": created.is_some(),
@@ -1185,6 +1197,7 @@ impl QuarkTools {
         }
         env.assert_writable("重命名")?;
         let accepted = env.deps.core_call(env.generation, "fs.rename", &json!({ "fid": fid, "name": name })).await?;
+        env.info_cache.lock().unwrap().clear();
         let after = env.safe_info(&fid).await.ok();
         let observed = after.as_ref().and_then(|x| x.get("name").and_then(|v| v.as_str())).map(|s| s.to_string());
         Ok(json!({
@@ -1193,7 +1206,8 @@ impl QuarkTools {
             "before": before.get("name").cloned(),
             "observed_after": observed,
             "verified": observed.as_deref() == Some(name.as_str()),
-            "accepted": accepted.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
+            "accepted": true,
+            "completed": accepted.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
             "task_id": accepted.get("taskId").cloned().unwrap_or(Value::Null),
             "note": if observed.as_deref() == Some(name.as_str()) {
                 "已核对一致"
@@ -1265,7 +1279,8 @@ impl QuarkTools {
         }
         Ok(json!({
             "executed": true, "fids": fids, "to_fid": to_fid, "conflicts": conflicts,
-            "accepted": accepted.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
+            "accepted": true,
+            "completed": accepted.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
             "task_id": accepted.get("taskId").cloned().unwrap_or(Value::Null),
             "note": if accepted.get("taskId").is_some_and(|v| !v.is_null()) {
                 "完成情况请另行确认，不要重复提交"
@@ -1296,7 +1311,8 @@ impl QuarkTools {
         ).await?;
         Ok(json!({
             "executed": true, "fids": fids, "to_fid": to_fid,
-            "accepted": accepted.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
+            "accepted": true,
+            "completed": accepted.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
             "task_id": accepted.get("taskId").cloned().unwrap_or(Value::Null),
             "note": "复制可能异步完成；请稍后用 list_dir 确认结果，不要重复提交。",
         }))
@@ -1322,7 +1338,7 @@ impl QuarkTools {
             }
             names.push(info.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string());
         }
-        let accepted = env.deps.transfer_call(
+        let accepted = env.transfer_call(
             "transfer.download",
             &json!({ "fids": fids, "localDir": dir.to_string_lossy(), "names": names }),
         ).await?;
@@ -1419,7 +1435,7 @@ impl QuarkTools {
             dst
         };
         let conflict = env.find_name_conflict(&target, &desired, None).await;
-        let accepted = env.deps.transfer_call(
+        let accepted = env.transfer_call(
             "transfer.upload",
             &json!({ "localPaths": [upload_path.to_string_lossy()], "pdirFid": target }),
         ).await?;
@@ -1526,7 +1542,7 @@ impl QuarkTools {
         }
         let local_hash = crate::policy::sha256_hex(text);
         let conflict = env.find_name_conflict(&target, &name, None).await;
-        let accepted = env.deps.transfer_call(
+        let accepted = env.transfer_call(
             "transfer.upload",
             &json!({ "localPaths": [local_path.to_string_lossy()], "pdirFid": target }),
         ).await?;
@@ -1598,7 +1614,7 @@ impl QuarkTools {
                 format!("action 只能是 pause/resume/retry/cancel，收到 {action}"),
             ));
         }
-        let tasks = env.deps.transfer_call("transfer.list", &Value::Null).await?;
+        let tasks = env.transfer_call("transfer.list", &Value::Null).await?;
         let arr = tasks.as_array().cloned().unwrap_or_default();
         let before = arr
             .iter()
@@ -1607,9 +1623,8 @@ impl QuarkTools {
             .ok_or_else(|| AgentToolError::new(AgentError::NotFound, "未找到该传输任务"))?;
         // 四种动作全部要求写权限：cancel 会删临时文件、中断用户自己的上传。
         env.assert_writable("控制传输任务")?;
-        env.deps.transfer_call(&format!("transfer.{action}"), &json!({ "id": task_id })).await?;
+        env.transfer_call(&format!("transfer.{action}"), &json!({ "id": task_id })).await?;
         let after = env
-            .deps
             .transfer_call("transfer.list", &Value::Null).await
             .ok()
             .and_then(|v| {
@@ -2169,13 +2184,8 @@ impl QuarkTools {
         }
         let accepted = env.deps.core_call(env.generation, "fs.remove", &json!({ "fids": fids })).await?;
         let task_id = accepted.get("taskId").cloned();
-        if let Some(tid) = task_id.as_ref().and_then(|v| v.as_str()) {
-            // 等待异步任务（best-effort；超时不等于失败）
-            let _ = env.deps.core_call(env.generation,
-                "fs.waitTask",
-                &json!({ "taskIds": [tid], "timeout": 60_000, "interval": 1000 }),
-            ).await;
-        }
+        // 核对对象本身即可确认删除。不要先等待可能长期未知的服务端任务状态，
+        // 否则已完成删除也会无意义地阻塞一分钟；task_id 仍保留供排查。
         // 逐项核对是否真的已不可见（NOT_FOUND=已删除；超时仍可见=不确定）。
         // 删除是写操作：核对必须新鲜读取（清掉本次调用内的旧缓存）。
         // 批量轮询：每轮同时查所有未确认 fid，最多 15 轮 × 2s（最坏 30s）——
@@ -2215,12 +2225,13 @@ impl QuarkTools {
         for (fid, name) in &pending {
             results.push(json!({"fid": fid, "name": name, "status": "uncertain"}));
         }
+        let all_confirmed=results.iter().all(|r|r["status"]=="deleted");
         Ok(json!({
-            "deleted_to_recycle": true,
-            "accepted": accepted.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
+            "deleted_to_recycle": all_confirmed,
+            "accepted": true,
             "task_id": task_id,
             "results": results,
-            "note": "删除进入网盘回收站（可恢复）；如需永久删除请在官方客户端清空回收站。status=uncertain 表示尚无法确认已删除，请稍后用 list_dir 复核。",
+            "note": if all_confirmed {"全部目标已确认删除至回收站（可恢复）。"} else {"删除请求已受理；仅 status=deleted 的目标已确认删除。status=uncertain 的目标请稍后用 list_dir 复核，不能认定已删除。"},
         }))
     }
 }
@@ -2406,6 +2417,7 @@ mod fake_tests {
         uploads: Mutex<Vec<Value>>,
         download_dir: Mutex<String>,
         transfers: Mutex<Vec<Value>>,
+        fail_removed_lookup: std::sync::atomic::AtomicBool,
     }
 
     impl FakeDrive {
@@ -2483,7 +2495,8 @@ mod fake_tests {
                     "fs.info" => {
                         let fid = p["fid"].as_str().unwrap_or("");
                         match self.nodes.lock().unwrap().get(fid) {
-                            Some(n) => Ok(json!({ "item": n.clone() })),
+                            Some(n) => Ok(n.clone()),
+                            None if self.fail_removed_lookup.load(std::sync::atomic::Ordering::Relaxed) => Err(AgentToolError::from_upstream("NETWORK","暂时无法核对",None)),
                             None => Err(AgentToolError::from_upstream("NOT_FOUND", "未找到该文件", None)),
                         }
                     }
@@ -2519,13 +2532,13 @@ mod fake_tests {
                                 self.move_node(f.as_str().unwrap_or(""), to);
                             }
                         }
-                        Ok(json!({"done": true}))
+                        Ok(json!({"done": false,"taskId":"async-move"}))
                     }
-                    "fs.copy" => Ok(json!({"done": true})),
+                    "fs.copy" => Ok(json!({"done": false,"taskId":"async-copy"})),
                     "fs.remove" => {
                         let fids: Vec<String> = p["fids"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
                         self.remove_nodes(&fids);
-                        Ok(json!({"done": true}))
+                        Ok(json!({"done": false,"taskId":"async-delete"}))
                     }
                     "fs.waitTask" => Ok(json!({"done": true})),
                     "auth.status" => Ok(json!({"loggedIn": true, "expired": false, "nickname": "测试", "memberLabel": ""})),
@@ -2685,11 +2698,45 @@ mod fake_tests {
         // 正确名称 → 删除并逐项核对为 deleted
         let ok = run(&h, &ctx, "delete_entries", json!({"fids": ["f1","f2"], "dry_run": false, "confirm_names": ["图片.jpg","报告.txt"]})).await;
         assert_eq!(ok["deleted_to_recycle"], true);
+        assert_eq!(ok["accepted"],true,"异步受理不等于 done=false 时未受理");
         let mut statuses: Vec<&str> = ok["results"].as_array().unwrap().iter().map(|r| r["status"].as_str().unwrap()).collect();
         statuses.sort();
         assert_eq!(statuses, vec!["deleted", "deleted"]);
         let removed = h.deps.removed.lock().unwrap().clone();
         assert!(removed.contains(&"f1".to_string()) && removed.contains(&"f2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn approximate_recent_metadata_cannot_authorize_a_remote_object() {
+        let h=harness(scope(&["root"],true,&[]));
+        h.tools.shared.remember("gone","root","old.txt",false);
+        let out=run(&h,&ctx_with(scope(&["root"],true,&[])),"file_info",json!({"fid":"gone"})).await;
+        assert_eq!(out["error"]["code"],"AGENT_OUT_OF_SCOPE");
+    }
+
+    #[tokio::test]
+    async fn rename_reads_fresh_metadata_and_async_moves_are_accepted_before_completion() {
+        let h=harness(scope(&["root"],true,&[]));let ctx=ctx_with(scope(&["root"],true,&[]));
+        h.deps.add("f1","old.txt",false,"root",3);h.deps.mkdir("dest","dest","root");
+        let renamed=run(&h,&ctx,"rename_entry",json!({"fid":"f1","name":"new.txt"})).await;
+        assert_eq!(renamed["verified"],true);assert_eq!(renamed["observed_after"],"new.txt");
+        let moved=run(&h,&ctx,"move_entries",json!({"fids":["f1"],"to_fid":"dest"})).await;
+        assert_eq!(moved["accepted"],true);assert_eq!(moved["completed"],false);
+        assert_eq!(h.deps.nodes.lock().unwrap()["f1"]["pdirFid"],"dest");
+        let copied=run(&h,&ctx,"copy_entries",json!({"fids":["f1"],"to_fid":"root"})).await;
+        assert_eq!(copied["accepted"],true);assert_eq!(copied["completed"],false);
+    }
+
+    #[tokio::test]
+    async fn accepted_delete_with_unavailable_verification_is_not_confirmed_deleted() {
+        let h=harness(scope(&["root"],true,&[]));
+        h.deps.add("f1","报告.txt",false,"root",3);
+        h.deps.fail_removed_lookup.store(true,std::sync::atomic::Ordering::Relaxed);
+        let out=run(&h,&ctx_with(scope(&["root"],true,&[])),"delete_entries",json!({"fids":["f1"],"dry_run":false,"confirm_names":["报告.txt"]})).await;
+        assert_eq!(out["accepted"],true);
+        assert_eq!(out["deleted_to_recycle"],false);
+        assert_eq!(out["results"][0]["status"],"uncertain");
+        assert_eq!(h.deps.removed.lock().unwrap().as_slice(),["f1"]);
     }
 
     #[tokio::test]
@@ -2832,7 +2879,8 @@ mod fake_tests {
         let registry: std::sync::Arc<dyn crate::registry::ToolRegistry> = h.tools.clone();
         let journal = std::sync::Arc::new(crate::journal::Journal::open(&h.dir).unwrap());
         let gateway = std::sync::Arc::new(AgentGateway::new(source, registry, journal));
-        let sock = h.dir.join("bridge.sock");
+        #[cfg(unix)] let sock = h.dir.join("bridge.sock");
+        #[cfg(windows)] let sock=std::path::PathBuf::from(format!(r"\\.\pipe\qk-cli-test-{}",uuid::Uuid::new_v4()));
         gateway.clone().start(&sock.to_string_lossy()).await.unwrap();
 
         let script = format!("{}/../../tools/agent-cli.js", env!("CARGO_MANIFEST_DIR"));

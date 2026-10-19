@@ -1,5 +1,7 @@
 # Tauri 2 + Rust 迁移交接
 
+> 2026-10-19：当前结果以 [独立审计交付](docs/AUDIT-2026-10-19.md) 为准。下文为历史记录：MCP脚本现已内置，Windows管道已实现但未真机验收；旧测试数量和“未实现”说明不代表当前状态。
+
 更新：2026-10-18。0.3.0-alpha 阶段新增 Agent 子系统（移植自原 Electron 版）：
 
 - `crates/quark-agent`：20 个工具（含新增 `delete_entries` 双阶段确认删除）、本机 MCP 网关（Unix socket + token）、内置对话（OpenAI 兼容端点）、加密配置与脱敏审计日志。75 项单元测试 + 16 步离线闭环验证（真实网关 + Node CLI 子进程）全过。

@@ -106,7 +106,10 @@ test('virtual rows remain bounded across a million items and preserve complete s
 });
 
 // Launch only a fresh project-specific headless browser profile, never the user's browser session.
-const browserPath = process.env.QCK_BROWSER_PATH;
+const browserPath=[process.env.QCK_BROWSER_PATH,process.env.CHROME_BIN,
+  process.platform==='darwin'?'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome':null,
+  process.platform==='win32'?path.join(process.env.PROGRAMFILES||'C:/Program Files','Google/Chrome/Application/chrome.exe'):null,
+  '/usr/bin/google-chrome','/usr/bin/chromium'].find(p=>p&&fs.existsSync(p));
 test('renderer DOM: virtual paging, file operations, transfers, settings and account lifecycle', { skip: !browserPath, timeout: 45000 }, async t => {
   const os = require('node:os');
   const { spawn } = require('node:child_process');
@@ -121,7 +124,7 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     if (socket) socket.close();
     child.kill('SIGTERM');
     await new Promise(resolve => { if (child.exitCode !== null) resolve(); else child.once('exit', resolve); });
-    fs.rmSync(profile, { recursive: true, force: true });
+    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const portFile = path.join(profile, 'DevToolsActivePort');
   while (!fs.existsSync(portFile)) {
@@ -168,7 +171,7 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     window.__fixture = {
       account:{loggedIn:true,expired:false,nickname:'Fixture',userId:'fixture-user'},
       settings:{downloadDir:'/fixture',uploadConcurrency:2,downloadConcurrency:2,downloadParallel:16,downloadStrategy:'auto',uploadPartConcurrency:3,theme:'light'},
-      tasks:[], names:{}, serial:0
+      tasks:[], names:{}, serial:0,backup:{hasSession:false,running:false}
     };
     window.__TAURI__ = {
       event: { listen: async (name, cb) => {
@@ -187,6 +190,21 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
           case 'auth.login': fixture.account={loggedIn:true,expired:false,nickname:'Fixture',userId:'fixture-user'};window.__fixtureEmit('qk:auth-changed',fixture.account);return snapshot(fixture.account);
           case 'auth.logout': fixture.account={loggedIn:false,expired:false};window.__fixtureEmit('qk:auth-changed',fixture.account);return snapshot(fixture.account);
           case 'auth.quota': return {total:1000000, used:1, free:999999};
+          case 'agent.status': return {enabled:false,running:false,writeMode:'read-only',remoteRoots:[],localReadRoots:[],localWriteRoots:[],connections:0};
+          case 'agent.journal': return {records:[]};
+          case 'agent.mcpConfig': return {mcpServers:{'quark-mini':{command:'node',args:['/fixture/agent/adapters/agent-mcp.js']}}};
+          case 'chat.status': return {configured:false,hasKey:false,baseUrl:'',model:'',running:false};
+          case 'chat.history': return [];
+          case 'backup.status': return snapshot(fixture.backup);
+          case 'backup.plan': return {files:5000,dirs:3,totalBytes:100000,warnings:1,truncated:true,samples:[{relPath:'样本.txt',size:20}]};
+          case 'backup.start': fixture.backup={hasSession:true,running:true,scanComplete:false,status:'scanning',totalDiscovered:80,discovered:20,pending:18,uploading:2,verifying:0,success:40,failed:0,skipped:0,warnings:0,queueDepth:40,uploadedBytes:3000,readyToVerify:false};return snapshot(fixture.backup);
+          case 'backup.pause': fixture.backup.paused=true;fixture.backup.running=false;fixture.backup.status='paused';return snapshot(fixture.backup);
+          case 'backup.resume': fixture.backup.paused=false;fixture.backup.running=true;fixture.backup.status='uploading';return snapshot(fixture.backup);
+          case 'backup.cancel': fixture.backup={hasSession:false,running:false};return {canceled:true};
+          case 'backup.retry': return {requeued:0};
+          case 'backup.export': return {exported:80};
+          case 'backup.tasks': return {tasks:Array.from({length:p.offset?2:40},(_,i)=>({rel_path:'文档/很长的文件名称_'.repeat(3)+(i+(p.offset||0))+'.txt',state:i%5===0?'failed':'success',last_error:i%5===0?'网络断开，稍后可重试；内容含<尖括号>仅按文本显示':null}))};
+          case 'backup.verify': fixture.backup.verification={status:'partial',total_success:78,listed_ok:78,listed_missing:0,size_mismatch:0,sample_requested:78,sample_checked:77,sample_ok:77,sample_mismatch:0,issues:[{kind:'sample_download_error',rel_path:'文档/未完成核验.txt',detail:'下载失败，不能视为完整备份'}]};return snapshot(fixture.backup.verification);
           case 'settings.get': return snapshot(fixture.settings);
           case 'settings.set': Object.assign(fixture.settings,p);return snapshot(fixture.settings);
           case 'fs.crumbs': return [{fid:'0',name:'全部文件'}];
@@ -220,6 +238,7 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
           }
           case 'transfer.clear': fixture.tasks=fixture.tasks.filter(task=>!p.ids.includes(task.id));emitTasks();return null;
           case 'transfer.openItem': return null;
+          case 'dialog.pickDirs': return ['/fixture/local-backup'];
           case 'dialog.pickFiles': return ['/fixture/local-upload.bin'];
           case 'dialog.saveDir': return '/fixture';
           case 'dialog.openPath': case 'dialog.showInFolder': case 'app.quit': return null;
@@ -366,4 +385,39 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await click('#account .btn');
     await until('QKUI.state.account.loggedIn && QKUI.state.loadedOnce && !QKUI.state.loading && QKUI.state.items.length===2', 'login reload');
   });
+  await t.test('backup workflow: direct incremental start, native folder selection, pause/resume, paginated errors and full verification',async()=>{
+    const screenshots=process.env.QCK_AUDIT_SCREENSHOTS;
+    async function capture(name){if(!screenshots)return;await evaluate('document.querySelectorAll(".toast-close").forEach(b=>b.click())');await new Promise(r=>setTimeout(r,180));fs.mkdirSync(screenshots,{recursive:true});const shot=await cdp('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(screenshots,name+'.png'),Buffer.from(shot.data,'base64'));}
+    await evaluate('document.documentElement.setAttribute("data-theme","light")');
+    await cdp('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
+    for(const view of ['files','transfers','settings','chat']){await evaluate('QKUI.setView('+JSON.stringify(view)+')');await new Promise(r=>setTimeout(r,40));await capture(view);}
+    await evaluate('document.documentElement.setAttribute("data-theme","light")');
+    await click('[data-view="backup"]');await click('#backup-pick-dir');
+    assert.equal(await evaluate('document.getElementById("backup-start").disabled'),false);
+    await click('#backup-pick-target');await click('.overlay:not(.overlay-out) .dlg-foot .btn:last-child');
+    await click('#backup-start');await until('__fixtureCalls.some(c=>c.method==="backup.tasks")','backup tasks loaded');
+    assert.equal(await evaluate('__fixtureCalls.filter(c=>c.method==="backup.plan").length'),0,'no mandatory full-directory pre-scan');
+    assert.equal(await evaluate('__fixtureCalls.find(c=>c.method==="backup.start").params.account'),undefined,'frontend cannot choose the account');
+    assert.ok((await evaluate('document.getElementById("backup-pct").textContent')).includes('总量仍在统计'));
+    await capture('backup-scanning');
+    await click('#backup-pause');assert.equal(await evaluate('__fixture.backup.paused'),true);await capture('backup-paused');
+    await click('#backup-pause');assert.equal(await evaluate('__fixture.backup.paused'),false);
+    await click('#backup-tasks-next');await until('__fixtureCalls.some(c=>c.method==="backup.tasks"&&c.params.offset===40)','second task page');
+    assert.ok((await evaluate('document.getElementById("backup-tasks-page").textContent')).includes('2'));
+    await evaluate('Object.assign(__fixture.backup,{scanComplete:true,running:false,status:"incomplete",readyToVerify:true,success:78,failed:2,discovered:0,pending:0,uploading:0,queueDepth:0});QKUI.setView("files");QKUI.setView("backup")');
+    await until('!document.getElementById("backup-verify").disabled','verification allowed after discovery/upload finishes');
+    assert.equal(await evaluate('document.getElementById("backup-run").hidden'),false,'completion must keep the report accessible');
+    await evaluate('document.getElementById("backup-sample-rate").value="1000000"');await click('#backup-verify');
+    await until('document.getElementById("backup-verify-result").textContent.includes("77/78")','missing sample remains visible in denominator');
+    assert.equal(await evaluate('__fixtureCalls.filter(c=>c.method==="backup.verify").at(-1).params.sampleRatePpm'),1000000);
+    await click('#backup-export');await until('__fixtureCalls.some(c=>c.method==="backup.export")','manifest export');
+    await capture('backup-report');
+    await evaluate('document.documentElement.setAttribute("data-theme","dark")');await capture('backup-dark');
+    await cdp('Emulation.setDeviceMetricsOverride',{width:760,height:520,deviceScaleFactor:1,mobile:false});
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=760'),true,'minimum desktop window must not overflow horizontally');
+    assert.equal(await evaluate('document.getElementById("view-backup").scrollWidth<=document.getElementById("view-backup").clientWidth'),true,'backup content must fit its pane');
+    await capture('backup-760');
+    await click('#backup-cancel');await until('document.getElementById("backup-run").hidden','cancellation closes only its run view');
+  });
+
 });

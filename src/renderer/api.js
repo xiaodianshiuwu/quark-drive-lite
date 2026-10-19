@@ -33,7 +33,8 @@
     'chat.models': 1, 'chat.history': 1, 'chat.clear': 1, 'chat.send': 1, 'chat.onEvent': 1,
     // 重装前备份（Phase-2）
     'backup.plan': 1, 'backup.start': 1, 'backup.status': 1,
-    'backup.retry': 1, 'backup.cancel': 1, 'backup.verify': 1
+    'backup.retry': 1, 'backup.cancel': 1, 'backup.verify': 1,
+    'backup.pause':1,'backup.resume':1,'backup.tasks':1,'backup.export':1
   };
 
   /**
@@ -349,7 +350,8 @@
       status: expose('backup', 'status'),
       retry: expose('backup', 'retry'),
       cancel: expose('backup', 'cancel'),
-      verify: expose('backup', 'verify')
+      verify: expose('backup', 'verify'),
+      pause:expose('backup','pause'),resume:expose('backup','resume'),tasks:expose('backup','tasks'),export:expose('backup','export')
     },
 
     /** 主进程 qk:toast 推送订阅。 */

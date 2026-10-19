@@ -12,7 +12,7 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 
 /// 一条备份任务（持久形态）。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Task {
     pub account: String,
     pub root_dir: String,
@@ -33,11 +33,15 @@ pub struct Task {
 
 impl Task {
     pub fn identity_key(&self) -> String {
-        format!("{}\u{1f}{}\u{1f}{}\u{1f}{}", self.account, self.root_dir, self.target_fid, self.rel_path)
+        format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            self.account, self.root_dir, self.target_fid, self.rel_path
+        )
     }
 }
 
 pub struct Store {
+    pub(crate) directory_lock: tokio::sync::Mutex<()>,
     /// rusqlite::Connection 是 !Sync；Mutex 使 Store 可跨线程共享（worker 池并发认领）。
     conn: std::sync::Mutex<Connection>,
 }
@@ -69,6 +73,14 @@ impl Store {
                 PRIMARY KEY (account, root_dir, target_fid, rel_path)
             );
             CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
+
+            CREATE TABLE IF NOT EXISTS counters (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+            INSERT OR IGNORE INTO counters VALUES ('claim', 0);
+            CREATE TABLE IF NOT EXISTS verification_issues (id INTEGER PRIMARY KEY, json TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_tasks_recent ON tasks(account,state,updated_at_ms);
+            CREATE TABLE IF NOT EXISTS scan_issues (
+                rel_path TEXT NOT NULL, message TEXT NOT NULL, PRIMARY KEY(rel_path, message)
+            );
             CREATE TABLE IF NOT EXISTS dirs (
                 account      TEXT NOT NULL,
                 target_fid   TEXT NOT NULL,
@@ -79,8 +91,14 @@ impl Store {
             "#,
         )?;
         // 存量库迁移：next_retry_at_ms 列（旧库无此列时补上；已存在则忽略）
-        let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN next_retry_at_ms INTEGER NOT NULL DEFAULT 0");
-        Ok(Self { conn: std::sync::Mutex::new(conn) })
+        let _ = conn.execute_batch(
+            "ALTER TABLE tasks ADD COLUMN next_retry_at_ms INTEGER NOT NULL DEFAULT 0",
+        );
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tasks_claim ON tasks(account,state,claim_seq,next_retry_at_ms,updated_at_ms)")?;
+        Ok(Self {
+            conn: std::sync::Mutex::new(conn),
+            directory_lock: tokio::sync::Mutex::new(()),
+        })
     }
 
     /// 崩溃恢复：应用重启后 uploading/verifying 任务无人认领（claim 只取
@@ -90,7 +108,7 @@ impl Store {
         let conn = self.conn();
         let n = conn.execute(
             r#"UPDATE tasks SET state='pending', updated_at_ms=?2, claim_seq=0, next_retry_at_ms=0
-               WHERE account=?1 AND state IN ('uploading','verifying')"#,
+               WHERE account=?1 AND (state IN ('uploading','verifying') OR (state='pending' AND claim_seq != 0))"#,
             params![account, Self::now()],
         )?;
         Ok(n)
@@ -127,7 +145,7 @@ impl Store {
             )?;
             let mut update = tx.prepare_cached(
                 r#"UPDATE tasks SET local_path=?5, size=?6, mtime_ms=?7, state='discovered',
-                    updated_at_ms=?8, last_error=NULL
+                    updated_at_ms=?8, last_error=NULL, attempts=0, claim_seq=0, next_retry_at_ms=0, remote_fid=NULL, chunk_progress=NULL
                    WHERE account=?1 AND root_dir=?2 AND target_fid=?3 AND rel_path=?4"#,
             )?;
             for t in tasks {
@@ -146,8 +164,14 @@ impl Store {
                 match existing {
                     None => {
                         insert.execute(params![
-                            t.account, t.root_dir, t.target_fid, t.rel_path, t.local_path,
-                            t.size as i64, t.mtime_ms, now
+                            t.account,
+                            t.root_dir,
+                            t.target_fid,
+                            t.rel_path,
+                            t.local_path,
+                            t.size as i64,
+                            t.mtime_ms,
+                            now
                         ])?;
                         added += 1;
                     }
@@ -155,7 +179,8 @@ impl Store {
                         let changed = old_size != t.size as i64 || old_mtime != t.mtime_ms;
                         // 终态且内容未变：不重新入队（重扫幂等）
                         if !changed
-                            && TaskState::parse(&old_state).is_some_and(|s| s.is_terminal() || s.is_active())
+                            && TaskState::parse(&old_state)
+                                .is_some_and(|s| s.is_terminal() || s.is_active())
                         {
                             unchanged += 1;
                         } else if (changed
@@ -163,8 +188,14 @@ impl Store {
                             || (!changed && old_state != "discovered" && old_state != "pending")
                         {
                             update.execute(params![
-                                t.account, t.root_dir, t.target_fid, t.rel_path, t.local_path,
-                                t.size as i64, t.mtime_ms, now
+                                t.account,
+                                t.root_dir,
+                                t.target_fid,
+                                t.rel_path,
+                                t.local_path,
+                                t.size as i64,
+                                t.mtime_ms,
+                                now
                             ])?;
                             requeued += 1;
                         } else {
@@ -186,7 +217,11 @@ impl Store {
         let conn = self.conn();
         let tx = conn.unchecked_transaction()?;
         {
-            let seq: i64 = tx.query_row("SELECT COALESCE(MAX(claim_seq),0)+1 FROM tasks", [], |r| r.get(0))?;
+            let seq: i64 = tx.query_row(
+                "UPDATE counters SET value=value+1 WHERE key='claim' RETURNING value",
+                [],
+                |r| r.get(0),
+            )?;
             let mut promote = tx.prepare_cached(
                 r#"UPDATE tasks SET state='pending', updated_at_ms=?2
                    WHERE rowid IN (
@@ -219,7 +254,12 @@ impl Store {
     }
 
     /// 更新状态（带迁移守卫；非法迁移返回 Err）。
-    pub fn transition(&self, task: &Task, next: TaskState, error: Option<&str>) -> rusqlite::Result<()> {
+    pub fn transition(
+        &self,
+        task: &Task,
+        next: TaskState,
+        error: Option<&str>,
+    ) -> rusqlite::Result<()> {
         self.transition_with_retry_at(task, next, error, 0)
     }
 
@@ -232,15 +272,22 @@ impl Store {
         error: Option<&str>,
         next_retry_at_ms: i64,
     ) -> rusqlite::Result<()> {
-        let old = self.state_of(task)?;
+        let conn = self.conn();
+        let old: String = conn.query_row(
+            "SELECT state FROM tasks WHERE account=?1 AND root_dir=?2 AND target_fid=?3 AND rel_path=?4",
+            params![task.account,task.root_dir,task.target_fid,task.rel_path], |r| r.get(0))?;
+        let old = TaskState::parse(&old).ok_or(rusqlite::Error::InvalidQuery)?;
         old.can_transition_to(next)
             .map_err(|e| rusqlite::Error::InvalidParameterName(e))?;
-        self.conn().execute(
+        conn.execute(
             r#"UPDATE tasks SET state=?5, last_error=?6, attempts=?7, remote_fid=?8,
                 chunk_progress=?9, updated_at_ms=?10, claim_seq=0, next_retry_at_ms=?11
                WHERE account=?1 AND root_dir=?2 AND target_fid=?3 AND rel_path=?4"#,
             params![
-                task.account, task.root_dir, task.target_fid, task.rel_path,
+                task.account,
+                task.root_dir,
+                task.target_fid,
+                task.rel_path,
                 next.as_str(),
                 error,
                 task.attempts as i64,
@@ -258,6 +305,7 @@ impl Store {
         Self::now()
     }
 
+    #[cfg(test)]
     fn state_of(&self, task: &Task) -> rusqlite::Result<TaskState> {
         let conn = self.conn();
         let s: String = conn.query_row(
@@ -265,15 +313,18 @@ impl Store {
             params![task.account, task.root_dir, task.target_fid, task.rel_path],
             |r| r.get(0),
         )?;
-        TaskState::parse(&s).ok_or_else(|| rusqlite::Error::InvalidParameterName(format!("未知状态 {s}")))
+        TaskState::parse(&s)
+            .ok_or_else(|| rusqlite::Error::InvalidParameterName(format!("未知状态 {s}")))
     }
 
     /// 各状态计数（水位判定用）。
-    pub fn counts(&self, account: &str) -> rusqlite::Result<std::collections::HashMap<String, i64>> {
+    pub fn counts(
+        &self,
+        account: &str,
+    ) -> rusqlite::Result<std::collections::HashMap<String, i64>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT state, COUNT(*) FROM tasks WHERE account=?1 GROUP BY state",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT state, COUNT(*) FROM tasks WHERE account=?1 GROUP BY state")?;
         let rows = stmt.query_map(params![account], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
         })?;
@@ -288,7 +339,8 @@ impl Store {
     /// 队列深度：pending + uploading + verifying（发现不算——扫描还在进行）。
     pub fn queue_depth(&self, account: &str) -> rusqlite::Result<i64> {
         let c = self.counts(account)?;
-        Ok(c.get("pending").copied().unwrap_or(0)
+        Ok(c.get("discovered").copied().unwrap_or(0)
+            + c.get("pending").copied().unwrap_or(0)
             + c.get("uploading").copied().unwrap_or(0)
             + c.get("verifying").copied().unwrap_or(0))
     }
@@ -309,8 +361,174 @@ impl Store {
         Ok(out)
     }
 
+    pub fn success_bytes(&self, account: &str) -> rusqlite::Result<u64> {
+        self.conn().query_row(
+            "SELECT COALESCE(SUM(size),0) FROM tasks WHERE account=?1 AND state='success'",
+            params![account],
+            |r| r.get(0),
+        )
+    }
+    pub fn recent_errors(
+        &self,
+        account: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<serde_json::Value>> {
+        let conn = self.conn();
+        let mut stmt=conn.prepare("SELECT rel_path,last_error FROM tasks WHERE account=?1 AND state IN ('failed','skipped') ORDER BY updated_at_ms DESC LIMIT ?2")?;
+        let rows=stmt.query_map(params![account,limit.min(20) as i64],|r|Ok(serde_json::json!({"relPath":r.get::<_,String>(0)?,"message":r.get::<_,Option<String>>(1)?})))?;
+        rows.collect()
+    }
+    pub fn clear_verification_issues(&self) -> rusqlite::Result<()> {
+        self.conn().execute("DELETE FROM verification_issues", [])?;
+        Ok(())
+    }
+    pub fn add_verification_issue(&self, issue: &serde_json::Value) -> rusqlite::Result<()> {
+        self.conn().execute(
+            "INSERT INTO verification_issues(json) VALUES (?1)",
+            params![issue.to_string()],
+        )?;
+        Ok(())
+    }
+    pub fn verification_issue_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<serde_json::Value>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT json FROM verification_issues ORDER BY id LIMIT ?1 OFFSET ?2")?;
+        let rows = stmt.query_map(params![limit.clamp(1, 500) as i64, offset as i64], |r| {
+            let text: String = r.get(0)?;
+            serde_json::from_str(&text).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })
+        })?;
+        rows.collect()
+    }
+    pub fn import_legacy(
+        &self,
+        path: &Path,
+        account: &str,
+        root: &str,
+        target: &str,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn();
+        let imported: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM counters WHERE key='legacy_imported'",
+            [],
+            |r| r.get(0),
+        )?;
+        if imported > 0 {
+            return Ok(());
+        }
+        conn.execute(
+            "ATTACH DATABASE ?1 AS legacy",
+            params![path.to_string_lossy().as_ref()],
+        )?;
+        let canonical = std::fs::canonicalize(root)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?
+            .to_string_lossy()
+            .to_string();
+        let result = (|| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute("INSERT OR IGNORE INTO tasks SELECT account,?4,target_fid,rel_path,local_path,size,mtime_ms,state,remote_fid,attempts,last_error,chunk_progress,updated_at_ms,claimed_at_ms,claim_seq,next_retry_at_ms FROM legacy.tasks WHERE account=?1 AND root_dir=?2 AND target_fid=?3",params![account,root,target,canonical])?;
+            tx.execute("INSERT OR IGNORE INTO dirs SELECT * FROM legacy.dirs WHERE account=?1 AND target_fid=?2",params![account,target])?;
+            tx.execute(
+                "INSERT OR IGNORE INTO counters VALUES ('legacy_imported',1)",
+                [],
+            )?;
+            tx.commit()
+        })();
+        let detach = conn.execute_batch("DETACH DATABASE legacy");
+        result.and(detach)
+    }
+    pub fn get_task(&self, task: &Task) -> rusqlite::Result<Task> {
+        self.conn().query_row("SELECT account,root_dir,target_fid,rel_path,local_path,size,mtime_ms,state,remote_fid,attempts,last_error,chunk_progress,updated_at_ms FROM tasks WHERE account=?1 AND root_dir=?2 AND target_fid=?3 AND rel_path=?4",params![task.account,task.root_dir,task.target_fid,task.rel_path],row_to_task)
+    }
+    /// Bounded pages for verification, task UI and export. Never materialize the full queue.
+    pub fn task_page(
+        &self,
+        account: &str,
+        state: Option<TaskState>,
+        offset: usize,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<Task>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT account,root_dir,target_fid,rel_path,local_path,size,mtime_ms,state,remote_fid,attempts,last_error,chunk_progress,updated_at_ms FROM tasks WHERE account=?1 AND (?2 IS NULL OR state=?2) ORDER BY rel_path LIMIT ?3 OFFSET ?4")?;
+        let rows = stmt.query_map(
+            params![
+                account,
+                state.map(|s| s.as_str()),
+                limit.clamp(1, 500) as i64,
+                offset as i64
+            ],
+            row_to_task,
+        )?;
+        rows.collect()
+    }
+
+    pub fn refresh_source(&self, task: &Task, size: u64, mtime: i64) -> rusqlite::Result<()> {
+        self.conn().execute("UPDATE tasks SET size=?5,mtime_ms=?6,remote_fid=NULL,chunk_progress=NULL WHERE account=?1 AND root_dir=?2 AND target_fid=?3 AND rel_path=?4", params![task.account,task.root_dir,task.target_fid,task.rel_path,size as i64,mtime])?;
+        Ok(())
+    }
+
+    pub fn add_issue(&self, rel: &str, message: &str) -> rusqlite::Result<()> {
+        self.conn().execute(
+            "INSERT OR IGNORE INTO scan_issues VALUES (?1,?2)",
+            params![rel, message],
+        )?;
+        Ok(())
+    }
+    pub fn issue_count(&self) -> rusqlite::Result<i64> {
+        self.conn()
+            .query_row("SELECT COUNT(*) FROM scan_issues", [], |r| r.get(0))
+    }
+    pub fn clear_issues(&self) -> rusqlite::Result<()> {
+        self.conn().execute("DELETE FROM scan_issues", [])?;
+        Ok(())
+    }
+    pub fn issue_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<serde_json::Value>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT rel_path,message FROM scan_issues ORDER BY rel_path LIMIT ?1 OFFSET ?2",
+        )?;
+        let rows = stmt.query_map(params![limit.clamp(1, 500) as i64, offset as i64], |r| {
+            Ok(serde_json::json!({"relPath":r.get::<_,String>(0)?,"message":r.get::<_,String>(1)?}))
+        })?;
+        rows.collect()
+    }
+    pub fn dir_page(
+        &self,
+        account: &str,
+        target: &str,
+        offset: usize,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT rel_path,remote_fid FROM dirs WHERE account=?1 AND target_fid=?2 ORDER BY rel_path LIMIT ?3 OFFSET ?4")?;
+        let rows = stmt.query_map(
+            params![account, target, limit.clamp(1, 500) as i64, offset as i64],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        rows.collect()
+    }
+
     /// 目录 relPath → remoteFid 映射（幂等建目录用）。
-    pub fn put_dir(&self, account: &str, target_fid: &str, rel_path: &str, remote_fid: &str) -> rusqlite::Result<()> {
+    pub fn put_dir(
+        &self,
+        account: &str,
+        target_fid: &str,
+        rel_path: &str,
+        remote_fid: &str,
+    ) -> rusqlite::Result<()> {
         self.conn().execute(
             r#"INSERT OR REPLACE INTO dirs (account, target_fid, rel_path, remote_fid) VALUES (?1,?2,?3,?4)"#,
             params![account, target_fid, rel_path, remote_fid],
@@ -318,12 +536,19 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_dir(&self, account: &str, target_fid: &str, rel_path: &str) -> rusqlite::Result<Option<String>> {
+    pub fn get_dir(
+        &self,
+        account: &str,
+        target_fid: &str,
+        rel_path: &str,
+    ) -> rusqlite::Result<Option<String>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT remote_fid FROM dirs WHERE account=?1 AND target_fid=?2 AND rel_path=?3",
         )?;
-        let mut rows = stmt.query_map(params![account, target_fid, rel_path], |r| r.get::<_, String>(0))?;
+        let mut rows = stmt.query_map(params![account, target_fid, rel_path], |r| {
+            r.get::<_, String>(0)
+        })?;
         match rows.next() {
             Some(Ok(fid)) => Ok(Some(fid)),
             _ => Ok(None),
@@ -401,7 +626,10 @@ mod tests {
         // 再 claim 拿下一批（10-3-3=4，第三次 claim 拿最后 4 个）
         let claimed2 = store.claim_batch("acc1", 3).unwrap();
         assert_eq!(claimed2.len(), 3);
-        assert_ne!(claimed[0].rel_path, claimed2[0].rel_path, "认领过的不会重复返回");
+        assert_ne!(
+            claimed[0].rel_path, claimed2[0].rel_path,
+            "认领过的不会重复返回"
+        );
         let claimed3 = store.claim_batch("acc1", 3).unwrap();
         assert_eq!(claimed3.len(), 3, "10-3-3=4 剩余，但单批上限 3");
         let claimed4 = store.claim_batch("acc1", 3).unwrap();
@@ -439,7 +667,11 @@ mod tests {
         let store = Store::open(&dir.path().join("t.db")).unwrap();
         let batch: Vec<Task> = (0..5).map(|i| task(&format!("g{i}.txt"), 1, 1)).collect();
         store.upsert_discovered(&batch).unwrap();
-        assert_eq!(store.queue_depth("acc1").unwrap(), 0, "discovered 不计入队列深度");
+        assert_eq!(
+            store.queue_depth("acc1").unwrap(),
+            5,
+            "所有未终结项参与背压"
+        );
         store.claim_batch("acc1", 5).unwrap();
         assert_eq!(store.queue_depth("acc1").unwrap(), 5);
     }
@@ -451,7 +683,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("t.db")).unwrap();
         store.upsert_discovered(&[task("u.txt", 10, 100)]).unwrap();
-        let mut t = store.claim_batch("acc1", 1).unwrap().remove(0);
+        let t = store.claim_batch("acc1", 1).unwrap().remove(0);
         store.transition(&t, TaskState::Uploading, None).unwrap();
         // 同内容重扫
         let (a, r, u) = store.upsert_discovered(&[task("u.txt", 10, 100)]).unwrap();
@@ -459,7 +691,11 @@ mod tests {
         assert_eq!(store.state_of(&t).unwrap(), TaskState::Uploading);
         // 源变化重扫：仍不重置 active（changed 且 active → skip，计入 unchanged）
         let (a, r, u) = store.upsert_discovered(&[task("u.txt", 99, 100)]).unwrap();
-        assert_eq!((a, r, u), (0, 0, 1), "active 任务源变化也不重置（归为未变化）");
+        assert_eq!(
+            (a, r, u),
+            (0, 0, 1),
+            "active 任务源变化也不重置（归为未变化）"
+        );
         assert_eq!(store.state_of(&t).unwrap(), TaskState::Uploading);
     }
 
@@ -469,22 +705,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("t.db")).unwrap();
         store.upsert_discovered(&[task("b.txt", 1, 1)]).unwrap();
-        let mut t = store.claim_batch("acc1", 1).unwrap().remove(0);
+        let t = store.claim_batch("acc1", 1).unwrap().remove(0);
         store.transition(&t, TaskState::Uploading, None).unwrap();
         // 失败 → pending，退避窗设到 1 小时后
         let far = store.now_ms() + 3_600_000;
-        store.transition_with_retry_at(&t, TaskState::Pending, Some("网络错误"), far).unwrap();
-        assert!(store.claim_batch("acc1", 5).unwrap().is_empty(), "退避窗内不得认领");
+        store
+            .transition_with_retry_at(&t, TaskState::Pending, Some("网络错误"), far)
+            .unwrap();
+        assert!(
+            store.claim_batch("acc1", 5).unwrap().is_empty(),
+            "退避窗内不得认领"
+        );
         // 窗口改到过去 → 可认领（经 uploading→pending 合法迁移重设窗）
         let past = store.now_ms() - 1;
         store.transition(&t, TaskState::Uploading, None).unwrap();
-        store.transition_with_retry_at(&t, TaskState::Pending, Some("网络错误"), past).unwrap();
-        assert_eq!(store.claim_batch("acc1", 5).unwrap().len(), 1, "到期后可认领");
+        store
+            .transition_with_retry_at(&t, TaskState::Pending, Some("网络错误"), past)
+            .unwrap();
+        assert_eq!(
+            store.claim_batch("acc1", 5).unwrap().len(),
+            1,
+            "到期后可认领"
+        );
         // 普通 transition（无退避参数）不设窗
         store.transition(&t, TaskState::Uploading, None).unwrap();
         store.transition(&t, TaskState::Verifying, None).unwrap();
-        store.transition_with_retry_at(&t, TaskState::Pending, None, 0).unwrap();
-        assert_eq!(store.claim_batch("acc1", 5).unwrap().len(), 1, "无退避窗立即认领");
+        store
+            .transition_with_retry_at(&t, TaskState::Pending, None, 0)
+            .unwrap();
+        assert_eq!(
+            store.claim_batch("acc1", 5).unwrap().len(),
+            1,
+            "无退避窗立即认领"
+        );
     }
 
     #[test]
@@ -504,7 +757,8 @@ mod tests {
         let again = store.claim_batch("acc1", 1).unwrap();
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].rel_path, "crash.txt");
-        // 二次恢复无动作
+        // 已认领但尚未进入 uploading 的窗口崩溃，同样必须释放 claim。
+        assert_eq!(store.recover_interrupted("acc1").unwrap(), 1);
         assert_eq!(store.recover_interrupted("acc1").unwrap(), 0);
     }
 
@@ -514,10 +768,16 @@ mod tests {
         let store = Store::open(&dir.path().join("t.db")).unwrap();
         assert_eq!(store.get_dir("acc1", "root1", "图片").unwrap(), None);
         store.put_dir("acc1", "root1", "图片", "fid-abc").unwrap();
-        assert_eq!(store.get_dir("acc1", "root1", "图片").unwrap().as_deref(), Some("fid-abc"));
+        assert_eq!(
+            store.get_dir("acc1", "root1", "图片").unwrap().as_deref(),
+            Some("fid-abc")
+        );
         // 幂等覆盖
         store.put_dir("acc1", "root1", "图片", "fid-xyz").unwrap();
-        assert_eq!(store.get_dir("acc1", "root1", "图片").unwrap().as_deref(), Some("fid-xyz"));
+        assert_eq!(
+            store.get_dir("acc1", "root1", "图片").unwrap().as_deref(),
+            Some("fid-xyz")
+        );
     }
 
     #[test]
@@ -526,6 +786,10 @@ mod tests {
         let mut b = task("a.txt", 1, 1);
         b.target_fid = "root2".into();
         assert_ne!(a.identity_key(), b.identity_key());
-        assert_eq!(a.identity_key(), task("a.txt", 999, 42).identity_key(), "同键不同内容仍是同一任务");
+        assert_eq!(
+            a.identity_key(),
+            task("a.txt", 999, 42).identity_key(),
+            "同键不同内容仍是同一任务"
+        );
     }
 }

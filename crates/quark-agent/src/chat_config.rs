@@ -14,7 +14,7 @@
 //! （`agentAccess` / `agentChat`），清空对话配置不得影响"外部能否连进来"，
 //! 反之停用 Agent 接入也不该把模型配置一起抹掉。
 
-use crate::config::{decrypt_from_file, encrypt_to_file, load_or_create_key};
+use crate::config::{decrypt_from_file, encrypt_to_file, load_or_create_key, read_key};
 use crate::policy::{AgentError, AgentToolError};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -278,7 +278,7 @@ impl ChatConfigManager {
         if !self.path.exists() {
             return Map::new();
         }
-        let key = match load_or_create_key(&self.key_path) {
+        let key = match read_key(&self.key_path) {
             Ok(k) => k,
             Err(_) => return Map::new(),
         };
@@ -338,6 +338,10 @@ impl ChatConfigManager {
     ///
     /// 校验失败时**不得写入半截配置**：先完成全部校验，再一次性落盘。
     pub fn update(&self, patch: &Value) -> Result<Value, AgentToolError> {
+        if self.path.exists() {
+            let key=read_key(&self.key_path).map_err(|_|AgentToolError::new(AgentError::Internal,"对话密钥不可读或损坏，原文件已保留"))?;
+            decrypt_from_file(&key,&self.path).map_err(|_|AgentToolError::new(AgentError::Internal,"对话配置损坏，拒绝覆盖原文件；可显式清除配置后重设"))?;
+        }
         let cur = self.read_raw();
         let str_of = |key: &str| to_str(cur.get(key), usize::MAX);
         // 注意：这里按字段语义逐个合并，而不是整体覆盖 —— 未提交的字段保持原值。
@@ -415,9 +419,9 @@ impl ChatConfigManager {
     }
 
     /// 清除对话配置：删除加密文件；Key 随之消失（qck `clear`）。
-    pub fn clear(&self) -> Value {
-        let _ = std::fs::remove_file(&self.path);
-        self.snapshot()
+    pub fn clear(&self) -> Result<Value,AgentToolError> {
+        match std::fs::remove_file(&self.path){Ok(())=>{},Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},Err(e)=>return Err(AgentToolError::new(AgentError::Internal,format!("无法清除对话配置：{e}")))}
+        Ok(self.snapshot())
     }
 }
 
@@ -495,7 +499,7 @@ mod tests {
         assert_eq!(snap["configured"], false);
         assert_eq!(mgr.internal().api_key, "");
         // clear：整份配置消失（回落默认）
-        mgr.clear();
+        mgr.clear().unwrap();
         let cfg = mgr.internal();
         assert_eq!(cfg.base_url, "");
         assert_eq!(cfg.model, "");
@@ -525,7 +529,7 @@ mod tests {
         assert_eq!(cfg.model, "good-model");
         assert_eq!(cfg.api_key, "sk-keep");
         // 合并后只剩半个配置 → 拒绝（先清空，保证不是靠已有字段"补齐"通过）
-        mgr.clear();
+        mgr.clear().unwrap();
         let err = mgr.update(&json!({ "baseUrl": "https://other.example.com/v1" })).unwrap_err();
         assert_eq!(err.code, AgentError::InvalidArg);
         assert_eq!(err.message, "请填写模型名称");
@@ -625,4 +629,12 @@ mod tests {
         assert!(cfg.model.chars().all(|c| c == 'м'), "不得在 UTF-8 中间切开");
         let _ = std::fs::remove_dir_all(&dir);
     }
+    #[test]
+    fn invalid_existing_chat_config_is_preserved_until_explicit_clear() {
+        let dir=tempfile::tempdir().unwrap();let manager=ChatConfigManager::open(dir.path()).unwrap();
+        manager.update(&json!({"baseUrl":"https://example.test/v1","model":"m","apiKey":"test-only"})).unwrap();
+        std::fs::write(manager.config_path(),b"damaged").unwrap();assert!(manager.update(&json!({"model":"other"})).is_err());
+        assert_eq!(std::fs::read(manager.config_path()).unwrap(),b"damaged");manager.clear().unwrap();assert!(!manager.config_path().exists());
+    }
+
 }

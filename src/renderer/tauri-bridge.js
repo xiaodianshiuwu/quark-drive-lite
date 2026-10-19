@@ -74,7 +74,7 @@
   api.settings.set = method('settings.set');
   // 重装前备份（Phase-2）：方法名与 main.rs backup.* 分支一致。
   api.backup = {};
-  ['plan', 'start', 'status', 'retry', 'cancel', 'verify'].forEach(function (name) {
+  ['plan', 'start', 'status', 'retry', 'cancel', 'verify', 'pause', 'resume', 'tasks', 'export'].forEach(function (name) {
     api.backup[name] = method('backup.' + name);
   });
   // 外部 Agent 接入（crates/quark-agent 的 runtime.handle 分发；方法名与其 match 分支一致）。

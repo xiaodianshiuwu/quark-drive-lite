@@ -4,7 +4,7 @@
  *
  * 覆盖：
  *  A. 静态契约：index.html 的 id 与 app.js 引用一致；导航/视图存在；无 innerHTML 动态注入。
- *  B. 桥接契约：CONTRACT 登记 6 个 backup.* 且计入扩展契约；tauri-bridge 提供 6 个方法；
+ *  B. 桥接契约：CONTRACT 登记 10 个 backup.* 且计入扩展契约；tauri-bridge 提供 6 个方法；
  *     base 桥返回 NO_BRIDGE；假桥参数转发。
  *  C. 交互：选目录 → 预览（统计 + samples 前 5 条）→ 开始（account 取值 + 并发默认由后端承担）
  *     → 状态网格 + 进度条轮询 → verify 结果渲染 → 取消 → 轮询随视图离开停止、
@@ -28,7 +28,7 @@ const BACKUP_IDS = [
   'backup-retry', 'backup-cancel', 'backup-verify', 'backup-verify-result',
 ];
 
-const BACKUP_METHODS = ['plan', 'start', 'status', 'retry', 'cancel', 'verify'];
+const BACKUP_METHODS = ['plan', 'start', 'status', 'retry', 'cancel', 'verify', 'pause', 'resume', 'tasks', 'export'];
 
 const RUNNING_STATUS = {
   running: true, account: 'fixture-user', discovered: 10, pending: 2, uploading: 1,
@@ -96,7 +96,7 @@ test('A3: 样式类真实存在（网格/进度条/徽章/列表）', () => {
 
 /* ------------------------------ B. 桥接契约 ------------------------------ */
 
-test('B1: CONTRACT 登记 6 个 backup.* 方法，且计入扩展契约（missingExtension 不弹横幅）', () => {
+test('B1: CONTRACT 登记 10 个 backup.* 方法，且计入扩展契约（missingExtension 不弹横幅）', () => {
   const api = loadApi();
   for (const m of BACKUP_METHODS) {
     assert.equal(api.CONTRACT['backup.' + m], 1, 'CONTRACT 缺 backup.' + m);
@@ -124,12 +124,11 @@ test('B2: base 桥（命令未接线）下 backup.* 返回 NO_BRIDGE，不污染
   await assert.rejects(base.backup.status(), (err) => err.code === 'NO_BRIDGE');
 });
 
-test('B3: tauri-bridge.js 循环注册 6 个 backup 方法并映射到 qk_call', () => {
+test('B3: tauri-bridge.js 注册 10 个 backup 方法并映射到 qk_call', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const vm = require('node:vm');
   const bridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'tauri-bridge.js'), 'utf8');
-  assert.ok(bridge.includes("['plan', 'start', 'status', 'retry', 'cancel', 'verify']"), 'bridge 应批量注册 backup 方法');
   const calls = [];
   const window = {
     navigator: { platform: 'MacIntel' },
@@ -139,7 +138,7 @@ test('B3: tauri-bridge.js 循环注册 6 个 backup 方法并映射到 qk_call',
     }
   };
   vm.runInNewContext(bridge, { window });
-  assert.equal(typeof window.qk.backup.plan, 'function');
+  for(const method of BACKUP_METHODS) assert.equal(typeof window.qk.backup[method],'function','bridge method '+method);
   assert.equal(typeof window.qk.backup.verify, 'function');
   // plan/start 走对象参数；retry/cancel 无标量包装（与 main.rs 分发一致）
   window.qk.backup.plan({ rootDir: '/d', targetFid: '0' });
@@ -209,7 +208,7 @@ test('C2: 预览失败 → 收回结果并禁用「开始备份」', async () =>
   assert.ok(inst.text('toasts').includes('预览失败'), '失败应有 toast 提示');
 });
 
-test('C3: 开始备份 → 运行区出现，account 取登录 userId，状态网格渲染全部键位', async () => {
+test('C3: 开始备份 → 运行区出现，身份由后端绑定，状态网格渲染全部键位', async () => {
   // backupRunning=true：start 后首个轮询即渲染网格（与真机一致：start 立即产生会话）
   const inst = await openBackup({ backupRunning: true, backupImpl: { plan: PLAN_RESULT } });
   await inst.click('backup-pick-dir');
@@ -223,31 +222,32 @@ test('C3: 开始备份 → 运行区出现，account 取登录 userId，状态�
 
   const startCall = inst.calls.filter((c) => c.ns === 'backup' && c.name === 'start').pop();
   assert.ok(startCall, '应调用 backup.start');
-  assert.equal(startCall.args[0].account, 'fixture-user', 'account 应取登录态 userId');
+  assert.equal(startCall.args[0].account, undefined, '身份必须由后端真实会话确定，不能由界面传入');
+  assert.equal(startCall.args[0].config.uploadConcurrency,2);
   assert.equal(startCall.args[0].rootDir, inst.$('backup-root').value, 'rootDir 取向导值');
   assert.equal(startCall.args[0].targetFid, 'fid-target-1', 'targetFid 取输入值');
 
   assert.equal(inst.$('backup-run').hidden, false, '运行区显示');
   const grid = inst.$('backup-stats');
-  for (const label of ['已发现', '排队', '上传中', '核对中', '成功', '失败', '跳过', '队列深度', '已上传']) {
+  for (const label of ['已发现', '排队', '上传中', '核对中', '成功', '失败', '跳过', '待处理', '已上传']) {
     assert.ok(grid.textContent.includes(label), '状态网格应含 ' + label);
   }
-  assert.ok(grid.textContent.includes('10'), '已发现计数渲染');
+  assert.ok(grid.textContent.includes('6'), '成功计数渲染');
   assert.ok(grid.textContent.includes('4 KB'), '已上传字节应人类可读');
 });
 
-test('C4: 状态轮询更新进度条（success/(discovered+success)），离开视图轮询停止', async () => {
+test('C4: 状态轮询更新进度条（所有状态均计入已发现总量），离开视图轮询停止', async () => {
   const inst = await openBackup({ backupRunning: true });
   await flush(); // ensureBackup 恢复轮询（运行区出现）
   assert.equal(inst.$('backup-run').hidden, false, '已有会话时进入视图应显示运行区');
 
   await flush();
   assert.ok(inst.$('backup-bar'), '进度条存在');
-  // success=6, discovered=10 → 6/16 = 37.5%
-  assert.ok(inst.$('backup-pct').textContent.includes('37%'), '进度文本 37%：' + inst.$('backup-pct').textContent);
+  // success=6, totalDiscovered=19 → 31.58%
+  assert.ok(inst.$('backup-pct').textContent.includes('31%'), '进度文本 31%：' + inst.$('backup-pct').textContent);
   const fill = inst.$('backup-bar').querySelector('i');
   assert.ok(fill, '进度条填充节点存在');
-  assert.equal(fill.style.width, '37.50%', '填充宽度 37.50%');
+  assert.equal(fill.style.width, '31.58%', '填充宽度 31.58%');
 
   const before = inst.calls.filter((c) => c.ns === 'backup' && c.name === 'status').length;
   const n = await inst.backupTick();
@@ -286,7 +286,7 @@ test('C5: 验证结果渲染（verified 徽章 + snake_case 汇总），无 HTML
   assert.ok(box.textContent.includes('验证通过'), '徽章中文文案');
   assert.ok(box.textContent.includes('verified'), '保留原始状态码');
   assert.ok(box.textContent.includes('8/8'), '清单一致性渲染');
-  assert.ok(box.textContent.includes('抽样哈希一致 8/8'), '抽样一致性渲染');
+  assert.ok(box.textContent.includes('选定核验项哈希一致 8/8'), '抽样一致性渲染');
   assert.equal(inst.$('backup-verify').disabled, false, '验证按钮应恢复可用');
 });
 
@@ -319,7 +319,7 @@ test('C6: 部分验证 issues 以 textContent 列表展示，恶意文件名不�
 });
 
 test('C7: 重试失败把 requeued 数量入 toast；取消隐藏运行区并发出 cancel 调用', async () => {
-  const inst = await openBackup({ backupRunning: true, backupImpl: { retry: { requeued: 3 } } });
+  const inst = await openBackup({ backupRunning: true, backupImpl: { retry: { requeued: 3 },status:{...RUNNING_STATUS,failed:3} } });
   await inst.click('backup-retry');
   await flush();
   assert.ok(inst.calls.some((c) => c.ns === 'backup' && c.name === 'retry'), '应调用 backup.retry');
@@ -392,4 +392,43 @@ test('C10: 状态轮询单次失败不影响下一周期（恢复后继续渲染
   await inst.backupTick();   // 下一周期恢复
   await flush();
   assert.ok(inst.$('backup-stats').textContent.includes('成功'), '恢复后继续渲染状态网格');
+});
+
+
+test('D1: 选择源目录后可直接开始，不要求全盘预扫描；云端目标可用当前目录',async()=>{
+  const inst=await openBackup();await inst.click('backup-pick-dir');assert.equal(inst.$('backup-start').disabled,false);
+  inst.ui.state.fid='chosen-folder';await inst.click('backup-use-current');assert.equal(inst.$('backup-target').value,'chosen-folder');
+  await inst.click('backup-start');const call=inst.calls.find(c=>c.ns==='backup'&&c.name==='start');assert.ok(call);
+  assert.equal(inst.calls.filter(c=>c.ns==='backup'&&c.name==='plan').length,0);
+});
+test('D2: 扫描中禁止显示100%，结束后保留结果和核验入口',async()=>{
+  const st={hasSession:true,running:true,scanComplete:false,success:5,totalDiscovered:5,status:'scanning',failed:0};
+  const inst=await openBackup({backupImpl:{status:st}});await flush();
+  assert.ok(inst.text('backup-pct').includes('99%'));assert.ok(inst.text('backup-pct').includes('总量仍在统计'));
+  inst.qk.backup.status=()=>Promise.resolve({...st,running:false,scanComplete:true,status:'awaiting_verification',readyToVerify:true});
+  await inst.backupTick();await flush();assert.equal(inst.$('backup-run').hidden,false);assert.equal(inst.$('backup-verify').disabled,false);
+});
+test('D3: 暂停、继续、全量核验与导出按真实契约调用，任务名始终是文本',async()=>{
+  let paused=false;const calls=[];
+  const inst=await openBackup({backupImpl:{status:{hasSession:true,running:true,success:0,failed:0,scanComplete:false}},backupOverrides:{
+    pause:async()=>{calls.push('pause');paused=true;return {paused:true,hasSession:true};},
+    resume:async()=>{calls.push('resume');paused=false;return {paused:false,hasSession:true};},
+    tasks:async()=>({tasks:[{rel_path:'<img src=x onerror=alert(1)>',state:'failed',last_error:'<script>data</script>'}]}),
+    export:async()=>{calls.push('export');return {exported:1};},
+    verify:async p=>{calls.push(p.sampleRatePpm);return {...VERIFY_OK,sample_requested:30,sample_checked:20};},
+  }});
+  await inst.click('backup-pause');assert.equal(paused,true);
+  // Status comes from the backend in real use. Keep the controlled fixture consistent.
+  inst.qk.backup.status=async()=>({hasSession:true,running:false,paused:true,failed:0});await inst.backupTick();await flush();
+  await inst.click('backup-pause');assert.equal(paused,false);
+  inst.$('backup-sample-rate').value='1000000';await inst.click('backup-verify');assert.ok(calls.includes(1000000));assert.ok(inst.text('backup-verify-result').includes('8/30'));
+  await inst.click('backup-export');assert.ok(calls.includes('export'));assert.equal(inst.$('backup-task-list').querySelectorAll('img,script').length,0);
+});
+test('D4: 慢状态请求不会叠加轮询，失败后仍能恢复',async()=>{
+  let resolveStatus;let requests=0;
+  const inst=await openBackup({backupRunning:true});
+  inst.qk.backup.status=()=>{requests++;return new Promise(r=>{resolveStatus=r;});};
+  await inst.backupTick();await inst.backupTick();assert.equal(requests,1);
+  resolveStatus({running:true,hasSession:true});await flush();await inst.backupTick();assert.equal(requests,2);
+  resolveStatus({running:false});await flush();
 });

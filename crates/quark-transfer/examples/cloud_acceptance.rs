@@ -152,6 +152,20 @@ async fn run(
     core.call("fs.rename", json!({"fid":fid,"name":"renamed-32MiB.bin"}))
         .await?;
     find(core, root_id, "renamed-32MiB.bin").await?;
+    // Exercise real copy/move/search inside this run's UUID directory only.
+    core.call("fs.mkdir",json!({"pdirFid":root_id,"name":"copied"})).await?;
+    core.call("fs.mkdir",json!({"pdirFid":root_id,"name":"moved"})).await?;
+    let copied=find(core,root_id,"copied").await?;let moved=find(core,root_id,"moved").await?;
+    core.call("fs.copy",json!({"fids":[fid],"toFid":copied["fid"]})).await?;
+    let copy=find(core,copied["fid"].as_str().unwrap(),"renamed-32MiB.bin").await?;
+    if copy["size"]!=uploaded["size"] || copy["fid"]==uploaded["fid"] {return Err(fail("复制结果身份或大小不符"));}
+    core.call("fs.move",json!({"fids":[fid],"toFid":moved["fid"]})).await?;
+    let moved_file=find(core,moved["fid"].as_str().unwrap(),"renamed-32MiB.bin").await?;
+    if moved_file["fid"]!=fid{return Err(fail("移动结果fid不符"));}
+    let mut search_ok=false;
+    for _ in 0..15 {let result=core.call("fs.search",json!({"keyword":"renamed-32MiB","page":1,"size":200})).await?;if result["list"].as_array().is_some_and(|list|list.iter().any(|f|f["fid"]==fid)){search_ok=true;break;}tokio::time::sleep(Duration::from_millis(500)).await;}
+    if !search_ok{return Err(fail("搜索未确认本轮上传文件"));}
+    ledger["crud"]=json!({"rename":true,"copy":true,"move":true,"search":true});
     let output = work.join("download");
     fs::create_dir_all(&output).map_err(io)?;
     let ids = manager
@@ -298,7 +312,10 @@ async fn execute() -> Result<()> {
             return Err(fail("测试目录归属变化，禁止删除"));
         }
         core.call("fs.remove", json!({"fids":[fid]})).await?;
-        ledger["cleaned"] = json!(true);
+        let mut removed=false;
+        for _ in 0..15 {match core.call("fs.info",json!({"fid":fid})).await {Err(e) if e.code=="NOT_FOUND"=>{removed=true;break;},_=>tokio::time::sleep(Duration::from_millis(500)).await}}
+        ledger["cleaned"]=json!(removed);
+        if !removed{return Err(fail("删除受理后尚未确认，现场记录已保留"));}
     }
     fs::write(
         work.join("ledger.json"),

@@ -47,16 +47,16 @@ async fn scan_100k_entries_batches_and_queue() {
         target_fid: "t1".into(),
         batch_size: 500,
     };
-    let (tx, mut rx) = mpsc::channel::<Vec<ScanItem>>(1000);
+    let (tx, mut rx) = mpsc::channel::<Vec<ScanItem>>(1);
     let files_seen = Arc::new(AtomicU64::new(0));
     let scan_start = Instant::now();
 
     let handle = tokio::task::spawn_blocking(move || scan(&cfg, tx));
-    let mut first_batch_latency: Option<Instant> = None;
+    let mut first_batch_latency = None;
     let mut insert_elapsed = std::time::Duration::ZERO;
     while let Some(batch) = rx.recv().await {
         if first_batch_latency.is_none() {
-            first_batch_latency = Some(scan_start);
+            first_batch_latency = Some(scan_start.elapsed());
         }
         let t_ins = Instant::now();
         let tasks: Vec<quark_backup::Task> = batch
@@ -87,7 +87,7 @@ async fn scan_100k_entries_batches_and_queue() {
         insert_elapsed,
         st.files as f64 / insert_elapsed.as_secs_f64().max(0.001),
     );
-    println!("[water] channel 容量 1000（高水位）；扫描端 send 满即阻塞——本测试 rx 消费足够快未触发满载");
+    println!("[first-batch] {:?}; channel容量1批。此项仅测扫描/数据库吞吐；完整上传背压另由manager会话测试验证。",first_batch_latency.unwrap());
 
     assert_eq!(st.files, 100_000);
     assert!(st.batches >= 200);

@@ -189,8 +189,9 @@ struct Harness {
 impl Harness {
     fn new() -> Self {
         // 短路径（Unix socket SUN_LEN 限制）
-        let dir = PathBuf::from(format!(
-            "/tmp/qk-loop-{}-{}",
+        let short_base=if cfg!(unix){PathBuf::from("/tmp")}else{std::env::temp_dir()};
+        let dir = short_base.join(format!(
+            "qk-loop-{}-{}",
             std::process::id(),
             &uuid::Uuid::new_v4().to_string()[..8]
         ));
@@ -227,7 +228,8 @@ impl Harness {
             tools.clone() as Arc<dyn ToolRegistry>,
             journal,
         ));
-        let sock = dir.join("bridge.sock").to_string_lossy().to_string();
+        #[cfg(unix)] let sock = dir.join("bridge.sock").to_string_lossy().to_string();
+        #[cfg(windows)] let sock=format!(r"\\.\pipe\qk-loop-{}",uuid::Uuid::new_v4());
         Self { drive, tools, gateway, token, sock, dir, results: Mutex::new(Vec::new()) }
     }
 

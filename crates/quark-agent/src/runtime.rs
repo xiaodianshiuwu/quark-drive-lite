@@ -80,6 +80,8 @@ pub struct AgentRuntime {
     pub chat_config: Arc<ChatConfigManager>,
     /// 工具层宿主的会话 generation 提供者（真实 Core 的 generation）。
     pub generation: Arc<dyn Fn() -> u64 + Send + Sync>,
+    lifecycle:tokio::sync::Mutex<()>,
+
 }
 
 
@@ -132,11 +134,13 @@ impl AgentRuntime {
             chat,
             chat_config,
             generation,
+            lifecycle:tokio::sync::Mutex::new(()),
         }))
     }
 
     /// 启动时调用：若已启用则启动网关；失败不阻断客户端启动（只记状态）。
     pub async fn boot(&self) {
+        let _lifecycle=self.lifecycle.lock().await;
         let active = {
             let mut mgr = self.config.lock().unwrap();
             let cfg = mgr.get();
@@ -166,6 +170,7 @@ impl AgentRuntime {
 
     /// 启用：写凭据文件并启动监听。
     pub async fn enable(&self, patch: &Value) -> Result<Value, AgentToolError> {
+        let _lifecycle=self.lifecycle.lock().await;
         if patch.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
             let mut mgr = self.config.lock().unwrap();
             mgr.update(patch, crate::journal::now_ms())?;
@@ -192,6 +197,7 @@ impl AgentRuntime {
     }
 
     pub async fn disable(&self) -> Result<Value, AgentToolError> {
+        let _lifecycle=self.lifecycle.lock().await;
         self.gateway.stop().await;
         {
             let mut mgr = self.config.lock().unwrap();
@@ -236,6 +242,7 @@ impl AgentRuntime {
 
     /// 重新生成凭据（旧凭据立即失效；运行中的网关重启以应用新端点）。
     pub async fn rotate(&self) -> Result<Value, AgentToolError> {
+        let _lifecycle=self.lifecycle.lock().await;
         let was_running = self
             .gateway
             .status()
@@ -300,24 +307,25 @@ impl AgentRuntime {
     }
 
     /// 可复制的 MCP 客户端配置片段。
-    /// 与 qck 不同：Tauri 版本没有 Node 依赖，适配器用同仓库的 Node 脚本（tools/agent-mcp.js）
-    /// 或已构建的二进制定位；这里给出"当前进程可执行文件 + 资料目录"的通用形态。
-    pub fn mcp_config(&self) -> Value {
+    /// 桌面客户端不依赖 Node；外部 MCP 客户端使用 Node 运行随应用内置、
+    /// 安装到当前资料目录的适配脚本。
+    pub fn mcp_config(&self) -> Result<Value,AgentToolError> {
+        let script=standalone_mcp_script_path(&self.profile_dir).map_err(|e|AgentToolError::new(AgentError::Internal,format!("无法安装MCP适配脚本：{e}")))?;
         let exe = std::env::current_exe()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        json!({
+        Ok(json!({
             "mcpServers": {
                 "quark-mini": {
                     "command": "node",
-                    "args": [standalone_mcp_script_path()],
+                    "args": [script],
                     "env": {
                         "QCK_PROFILE_DIR": self.profile_dir.to_string_lossy()
                     }
                 }
             },
-            "note": format!("当前客户端可执行文件：{exe}；适配器脚本读取 bridge.json 即可，无需其他凭据。")
-        })
+            "note": format!("外部MCP客户端需要可用的Node.js。当前客户端可执行文件：{exe}；适配器已随应用内置并安装到本资料目录，不依赖源码工作区。")
+        }))
     }
 
     /// 网关当前可执行任务的工具清单（MCP `tools/list` 复用）。
@@ -354,18 +362,18 @@ impl AgentRuntime {
                 .unwrap_or(30) as usize;
                 Ok(self.recent_journal(limit))
             }
-            "agent.mcpConfig" | "agent.mcp-config" | "agent.copyMcpConfig" => Ok(self.mcp_config()),
+            "agent.mcpConfig" | "agent.mcp-config" | "agent.copyMcpConfig" => self.mcp_config(),
             "agent.tools" => Ok(json!(self.list_tools())),
             "chat.status" => Ok(self.chat.status()),
-            "chat.saveConfig" => self.chat_config.update(&params),
-            "chat.clearConfig" => Ok(self.chat_config.clear()),
+            "chat.saveConfig" => self.chat.with_idle(||self.chat_config.update(&params)),
+            "chat.clearConfig" => self.chat.with_idle(||self.chat_config.clear()),
             "chat.test" => self.chat.test_connection().await,
             "chat.models" => self.chat.list_models().await,
             "chat.history" => {
                 let limit = params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
                 Ok(json!(self.chat.history(limit)))
             }
-            "chat.clear" => Ok(self.chat.clear()),
+            "chat.clear" => self.chat.clear(),
             "chat.send" => {
                 let text = params
                     .get("text")
@@ -379,19 +387,37 @@ impl AgentRuntime {
     }
 }
 
-/// 适配器脚本路径（随源码分发的 Node 脚本）。
-fn standalone_mcp_script_path() -> String {
-    // 与源码树相对定位：优先仓库 tools/agent-mcp.js；打包后由宿主替换为资源路径。
-    let candidates = [
-        PathBuf::from("tools/agent-mcp.js"),
-        PathBuf::from("../tools/agent-mcp.js"),
-    ];
-    for c in candidates {
-        if c.exists() {
-            if let Ok(abs) = std::fs::canonicalize(&c) {
-                return abs.to_string_lossy().to_string();
-            }
+/// Embed source at build time and install a content-addressed adapter alongside the profile.
+/// Packaged clients therefore work from any current directory without the source checkout.
+fn standalone_mcp_script_path(profile:&Path)->std::io::Result<PathBuf> {
+    use sha2::{Digest,Sha256};use std::io::Write;
+    let scripts=[("agent-mcp.js",include_str!("../../../tools/agent-mcp.js")),("agent-bridge-client.js",include_str!("../../../tools/agent-bridge-client.js"))];
+    let content=scripts.iter().map(|(_,s)|*s).collect::<String>();
+    let dir=profile.join("agent/adapters").join(format!("{:x}",Sha256::digest(content.as_bytes())));
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&dir,std::fs::Permissions::from_mode(0o700))?;}
+    for (name,source) in scripts {
+        let path=dir.join(name);
+        if let Ok(meta)=std::fs::symlink_metadata(&path) {
+            if !meta.is_file() || meta.file_type().is_symlink() || std::fs::read(&path)?!=source.as_bytes() {return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"已安装适配脚本被替换"));}
+            continue;
         }
+        let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+        #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        let mut file=options.open(path)?;file.write_all(source.as_bytes())?;file.sync_all()?;
     }
-    "tools/agent-mcp.js".to_string()
+    Ok(dir.join("agent-mcp.js"))
+}
+
+#[cfg(test)]
+mod adapter_tests {
+    use super::*;
+    #[test]
+    fn packaged_mcp_adapter_is_self_contained_and_detects_replacement() {
+        let temp=tempfile::tempdir().unwrap();
+        let script=standalone_mcp_script_path(temp.path()).unwrap();
+        assert!(script.is_absolute());assert!(script.parent().unwrap().join("agent-bridge-client.js").is_file());
+        assert_eq!(standalone_mcp_script_path(temp.path()).unwrap(),script);
+        std::fs::write(&script,"modified").unwrap();assert!(standalone_mcp_script_path(temp.path()).is_err());
+    }
 }

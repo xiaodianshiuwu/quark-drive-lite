@@ -7,10 +7,11 @@ const { root, env } = require('./build-env');
 fs.mkdirSync(path.join(root, '.work'), { recursive: true });
 const profile = fs.mkdtempSync(path.join(tmpdir(), 'qck-native-smoke-'));
 const report = path.join(root, '.work', 'native-smoke.json');
+const source=path.join(profile,'source');fs.mkdirSync(path.join(source,'空目录'),{recursive:true});fs.writeFileSync(path.join(source,'测试.txt'),'native smoke');
 fs.rmSync(report, { force: true });
 const child = spawn('cargo', ['run', '-p', 'quark-drive-lite-tauri', '--locked'], {
   cwd: root, stdio: 'inherit', detached: process.platform !== 'win32',
-  env: { ...env, QK_PROFILE_DIR: profile, QK_SMOKE_REPORT: report, QK_SMOKE_EXIT: '1' }
+  env: { ...env, QK_PROFILE_DIR: profile, QK_SMOKE_REPORT: report, QK_SMOKE_EXIT: '1', QK_SMOKE_SOURCE:source }
 });
 const stop = () => { try { process.platform === 'win32' ? child.kill() : process.kill(-child.pid, 'SIGTERM'); } catch (_) {} };
 const timer = setTimeout(() => { process.stderr.write('Native smoke timed out\n'); stop(); }, 180000);

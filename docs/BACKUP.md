@@ -1,60 +1,77 @@
-# 备份（Windows 重装前海量文件批量上传）
+# 重装前增量备份
 
-Phase-2 交付：把整个本地目录树（10 万+ 文件）分批、限速、可恢复地备份到夸克网盘指定目录。
+产品定义见 [PRODUCT.md](PRODUCT.md)。本功能把原生本地目录分批备份到夸克网盘，读取本地源，不删除或移动它。
 
-## 能力概览
+## 界面使用
 
-| 能力 | 行为 |
+1. 在桌面应用登录，进入「备份」，选择本地源目录。
+2. 使用云端目录选择器、当前文件目录，或手动输入 fid。建议使用专门的空目录，避免同名冲突。目标根目录为 `0`。
+3. 可以直接「开始备份」。可选的「有限预览」最多统计前 5000 项，不能视为全目录总量。
+4. 可分别设置发现批次、上传并发及 MiB/s 带宽。任务区显示扫描状态、已发现文件的成功率、当前文件/速度、队列、失败、跳过和排除项；扫描结束前总量未知。
+5. 暂停后可继续。达到最终失败时会暂停自动工作，避免系统错误产生大量无效任务；可「重试失败」，或继续剩余文件，失败仍保留。取消等待扫描与 worker 结束，保留现场；选择同一登录会话、源与目标后重新开始可恢复。
+6. 上传结束后选择抽样或全量哈希核验。结果区会保留；任何失败、跳过或排除均不能表示完整备份。重装前保存导出的 JSONL 清单，并检查剩余问题。
+
+## API 与配置
+
+Tauri 主窗口通过 `qk_call` 使用：
+
+| 方法 | 参数/行为 |
 |---|---|
-| 分批发现 | 每批 ~500 条（`discoveryBatchSize`，1..5000），批次间让出事件循环 |
-| 队列背压 | channel 容量 = `highWatermark`（默认 1000），扫描端 send 满即阻塞；消费后自然恢复（低水位 `lowWatermark` 用于展示） |
-| 上传并发 | `uploadConcurrency` 默认 2（1..8），与传输分片并发正交 |
-| 持久任务库 | SQLite WAL，`<资料目录>/backup/bk<rootDir 哈希>.db`；同目录重开自动续扫（增量） |
-| 任务身份 | (account, rootDir, targetFid, relPath) 主键；重扫幂等——mtime/size 未变的终态条目不重跑 |
-| 状态机 | discovered → pending → uploading → verifying → success；failed/skipped/canceled 可回 pending（手动重试）；崩溃恢复 uploading/verifying → pending |
-| 源变更检测 | 上传前重 stat：size/mtime 与发现时不一致 → 重新入队（不盲传旧快照） |
-| 冲突策略 | 默认不覆盖：远端同名存在 → skipped（错误信息含远端 fid） |
-| 幂等建目录 | relPath 逐级 list 确认 → mkdir → 轮询拿 fid；映射持久化在任务库 |
-| 退避重试 | 指数 2^n × `retryBaseMs`（默认 30s），上限 `maxAttempts`（默认 6）；手动「重试失败」清零 attempts |
-| 验证 | 清单核对（relPath/size/remoteFid 逐目录比对）+ 抽样下载 SHA-256 比对（`sampleRatePpm`，默认 1% 且 ∈[5,20]；验收用 1000000=全量） |
-| 完成判定 | 扫描结束 ∧ pending/uploading/verifying=0 ∧ failed 全部重试或接受 → 可核对完成；**测试通过 ≠ 你的备份已完成**（报告分层） |
-| 源安全 | 只读本地源；绝不删除/移动本地文件；云端只写 `targetFid` 子树 |
+| `backup.plan` | `{rootDir,targetFid}`，最多 5000 项，返回 `truncated` |
+| `backup.start` | `{rootDir,targetFid,config?}`，身份由真实 Core 会话绑定，忽略旧的前端 account 字段 |
+| `backup.status` | 会话、扫描、计数、当前文件/速度、错误和最近核验 |
+| `backup.pause` / `backup.resume` | 暂停/继续；暂停保留分片进度 |
+| `backup.retry` | 失败重新排队，清零手动重试次数并继续 worker |
+| `backup.cancel` | 停止并等待本会话退出，不删除源或已上传成果 |
+| `backup.tasks` | `{offset,limit}`，每页最多 500，UI 每页 40 |
+| `backup.export` | 主窗口原生保存对话框，导出摘要、逐文件结果、扫描与完整核验问题；不覆盖已有清单文件 |
+| `backup.verify` | `{sampleRatePpm}`；1000000 逐文件全量，默认 10000 为 1%（5–20 项） |
 
-## 使用（UI）
+配置使用 **camelCase**，原 snake_case 字段兼容但不推荐：
 
-1. 侧栏「备份」→ 选择本地目录 → 填云端目标目录 fid（可在「文件」视图复制，或用默认根）。
-2. 「预览」看 files/dirs/warnings/totalBytes；「开始备份」启动。
-3. 运行区实时水位与计数；失败可「重试失败」；「取消」保留任务现场（再次开始同一目录=续扫）。
-4. 完成后「验证」：verified=清单全过+抽样哈希一致；partial/failed 看 issues 列表。
-
-## 使用（命令行 / qk_call）
-
-```
-backup.plan   {rootDir, targetFid}
-backup.start  {account, rootDir, targetFid, config?{discoveryBatchSize,highWatermark,lowWatermark,uploadConcurrency,retryBaseMs,maxAttempts}}
-backup.status
-backup.retry
-backup.cancel
-backup.verify {sampleRatePpm}
+```json
+{"discoveryBatchSize":500,"highWatermark":1000,"lowWatermark":500,"uploadConcurrency":2,"retryBaseMs":30000,"maxAttempts":6,"bandwidthLimitBps":0}
 ```
 
-## 配置迁移与回滚
+批次 1..5000；高水位不小于批次且最多 100000；低水位必须小于高水位；并发 1..8；重试基数 1..3600000ms；总尝试次数 1..20；带宽为字节/秒，0 表示不限，否则最少 1024。未知字段或越界配置会拒绝。
 
-- 全部配置带默认值（500/1000/500/2/30000/6）；不设置即用默认，settings 无需迁移。
-- 回滚：不使用备份功能即无任何持久状态；任务库是独立 SQLite 文件，删除 `<资料目录>/backup/` 即完全移除（不影响会话/传输/Agent 数据）。
+上传分片大小由云端协议协商，受传输核心的 16 MiB 上限控制；分片并发由设置中的上传分片并发控制，与文件并发及带宽分别生效。限速器在同一 TransferManager 中跨受限文件/分片共享，避免多 worker 叠加超出预算；不会限制用户另行启动的不限速传输。
 
-## 已知边界（如实）
+## 持久化与恢复
 
-- 上传经 TransferManager 单文件入队 → 等终态 → clear：任务会**短暂出现在 GUI 传输列表**（每文件一条）；海量场景下传输列表会被备份任务刷屏（可接受的权衡，后续可把 upload.rs 核心提为独立入口绕开）。
-- 分片级断点续传沿用 quark-transfer 现有能力（X-Oss-Hash-Ctx 并行分片，任务级 checkpoint）；**无"字节级任意断点"**——单个文件中断后重传从该文件的分片 checkpoint 续。
-- Windows 真机验证未做（本阶段 macOS 开发）：长路径（\\?\ 前缀）、Windows 保留名（CON/COM1…）、junction、大小写不敏感冲突的**发现期标注**已实现（`windows_name_risk`），但**运行时行为未在 Windows 上实测**。
-- 10 万条目离线性能（Apple M 系列）：扫描 ~11.4 万条/秒、SQLite upsert ~11.5 万条/秒、认领 ~2.5 万条/秒（`cargo test -p quark-backup --test massive_scan`）。Windows 机械硬盘数字会低一个数量级，属正常。
-- 空目录：只建云端目录，不产生上传任务（如实）。
-- 抽样验证是**抽样**：未抽中的文件只有"远端存在且 size 一致"证据，无内容哈希证据。要全量哈希核对，用 `sampleRatePpm: 1000000`。
-- UI 侧：云端目标目录为 fid 文本输入（可在「文件」视图复制），暂无目录树选择器；大目录「预览」期间无进度反馈（后端全量扫完才返回）；verify 固定 1% 抽样率未在 UI 暴露配置。
+- SQLite WAL 位于 `<资料目录>/backup/bk-<SHA256>.db`，文件名覆盖完整会话身份、规范化源和目标。任务主键还包含相对路径；不同目标不会交叉认领。
+- discovered → pending → uploading → verifying → success；失败、跳过、取消单独保留。pending 认领窗口、uploading/verifying 在重新开始时释放为 pending，保留尝试次数。
+- 源 size/mtime 变化会更新发现元数据并释放旧文件绑定；上传期间变化会终止该项，防止将旧内容当作当前文件成功。
+- 分片状态实际保存在 quark-transfer 的持久任务中，备份库不伪造分片信息。暂停/恢复复用匹配本地路径、云端目录及真实登录绑定的任务。
+- 已确认上传 fid 先落到传输任务，再写备份库，成功记账后清理传输记录。提交不确定但有可归属记录时只核对结果；无法归属的同名文件按冲突跳过，不能默认为成功或覆盖。
+- 扫描检查点不序列化 OS 迭代器：重开时重新进行有界惰性扫描并持久去重，代价是重新枚举源目录。不会重新上传未变化的 success 项。
+- 旧 `bk<DefaultHasher>.db` 原文件保留，只允许迁入完整身份匹配的记录。旧版本若使用 `local/default/acceptance` 或裸 userId，不能擅自视为当前登录绑定；其成果需另行核对，不做不安全的自动串接。
+- 重新登录会产生新的登录绑定并隔离旧传输。需核对旧会话记录与云端成果；不会通过冒用旧身份自动续传。
 
-## 验证记录（真实账号）
+## 核验强度与清单
 
-- `cargo run -p quark-backup --example backup_acceptance`：
-  UUID 测试目录 8 文件（中文/空格名 + 子目录 + 空文件 + 300KB）→ 上传 8/8 success →
-  清单核对 listed_ok=8 → 抽样下载 SHA-256 比对 8/8 一致 → `{"ok":true,...}` → 云端测试目录删除（回收站）。
+清单逐条核对远端名称、目录映射、fid、大小，包含空目录。默认抽样内容以 SHA-256 比较；全量选项逐文件流式下载与哈希，不把大文件全部放入内存。核验请求失败、源不可读、缺失 fid、未结束任务、跳过、排除均会降级结果。摘要最多显示 200 条核验问题，完整问题落库并随清单导出；不能把显示上限当成问题总数。
+
+核验期间仍可读取状态或取消；重试会被拒绝，避免改变正在核对的任务集合。导出文件包含本地路径和文件名，应自行妥善保管，不含 Cookie、API Key、内部登录绑定或上传 checkpoint。
+
+## 已知边界
+
+- 本轮在 macOS 实测；Windows 长路径、设备保留名、大小写目录、junction/重解析点、安装包尚需真机验证。扫描不会跟随重解析点；Windows 风险会显式记录。
+- 最多 128 层目录深度，超出部分记录为排除。该限制保证目录句柄和遍历栈有界，含排除时不能表示完整备份。
+- 源为动态文件系统，未创建操作系统快照。应尽量关闭会持续修改文件的软件；核验也不能保证随后新增/修改的数据已包含。
+- 同名默认不覆盖；外部进程或云端同时修改时，只能基于接口实际结果核对，不能提供跨云端事务。
+- 上传任务会短暂显示在传输列表；轮询改为按单任务读取，不再为每个文件序列化完整队列。最终失败会暂停自动处理，保留异常分片记录以供核对。
+- 单文件上传/核验等待上限为 24 小时。超时保留进度或报告失败，不会无限等待。
+- macOS 成功不代表 Windows 通过；小规模真实云端测试不等于十万文件真实云端性能测试。
+
+## Windows 验收步骤
+
+在 Windows 原生环境准备项目构建依赖，执行 `npm ci`、`cargo test --workspace --locked`、`npm test`、`npm run verify:native`、`npm run build`。启动桌面应用并登录，仅使用专门测试源和云端目录：
+
+1. 中文/空格、空文件、空目录、深层目录、长路径、不可读/占用文件及 junction 环；确认排除项可导出且不越界。
+2. 单目录与多层共十万文件；首批先上传，数据库待处理不超过高水位，UI 可操作；记录首批延迟、吞吐、RSS 和队列峰值。
+3. 上传中暂停继续、进程强制终止后重新开始、断网/恢复、认证失效、限流、容量不足；不能串号或静默覆盖。
+4. 故意制造远端缺失、同名不同内容、源变化、抽样下载失败；确认结果不是“完整备份”。全量哈希必须覆盖超过 20 个文件。
+5. 扫码登录/退出、文件 CRUD、传输、Agent 管道认证/轮转/关闭和内置对话回归，记录每项实际结果。
+
+绝不执行本地源清理、格式化或重装。当前验证台账见独立审计报告。

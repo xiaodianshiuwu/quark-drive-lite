@@ -37,6 +37,56 @@ async fn call(tools: &QuarkTools, ctx: &ToolContext, name: &str, args: Value) ->
     }
 }
 
+// Optional broad acceptance stays inside the UUID directory and the owned local fixture.
+async fn full_acceptance(tools:&QuarkTools,ctx:&ToolContext,root:&str,file:&str,local:&std::path::Path,dir:&std::path::Path)->Result<Vec<String>,String> {
+    async fn checked(tools:&QuarkTools,ctx:&ToolContext,name:&str,args:Value)->Result<Value,String>{
+        let value=call(tools,ctx,name,args).await;
+        if value.get("error").is_some(){Err(format!("{name}: {}",value["error"]))}else{Ok(value)}
+    }
+    fn need(ok:bool,name:&str)->Result<(),String>{if ok{Ok(())}else{Err(format!("业务结果未达到预期：{name}"))}}
+    let mut checks=Vec::new();
+    let st=checked(tools,ctx,"drive_status",json!({})).await?;need(st["logged_in"]==true,"drive_status")?;checks.push("drive_status".into());
+    let info=checked(tools,ctx,"file_info",json!({"fid":file})).await?;need(info["item"]["name"]=="accept.txt","file_info")?;checks.push("file_info".into());
+    let search=checked(tools,ctx,"search_files",json!({"keyword":"accept.txt","only_in_scope":true})).await?;
+    need(search["list"].as_array().is_some_and(|a|a.iter().any(|v|v["fid"]==file)),"search_files")?;checks.push("search_files".into());
+    let tree=checked(tools,ctx,"tree_dir",json!({"root_fid":root,"max_depth":4})).await?;need(tree["count"].as_u64().unwrap_or(0)>0,"tree_dir")?;checks.push("tree_dir".into());
+    let text=checked(tools,ctx,"read_text_file",json!({"path":local})).await?;need(text["text"].as_str().is_some_and(|s|s.contains("quark-agent acceptance")),"read_text_file")?;checks.push("read_text_file".into());
+    let saved=checked(tools,ctx,"save_text_file",json!({"name":"extra.txt","text":"agent extra fixture\n","pdir_fid":root,"wait":true,"verify":true,"timeout_ms":300000})).await?;
+    need(saved["verification"]["status"]=="visible","save_text_file")?;checks.push("save_text_file".into());
+    let extra=saved["verification"]["fid"].as_str().ok_or("extra fid absent")?;
+    let renamed=checked(tools,ctx,"rename_entry",json!({"fid":extra,"name":"extra.md"})).await?;need(renamed["accepted"]==true,"rename_entry受理")?;
+    let mut renamed_visible=false;for _ in 0..30{let info=checked(tools,ctx,"file_info",json!({"fid":extra})).await?;if info["item"]["name"]=="extra.md"{renamed_visible=true;break;}tokio::time::sleep(std::time::Duration::from_secs(1)).await;}need(renamed_visible,"rename_entry名称核对")?;checks.push("rename_entry".into());
+    let made=checked(tools,ctx,"create_folder",json!({"parent_fid":root,"name":"copy-destination"})).await?;
+    let destination=made["created_fid"].as_str().ok_or("destination absent")?;
+    let copied=checked(tools,ctx,"copy_entries",json!({"fids":[extra],"to_fid":destination})).await?;need(copied["accepted"]==true && copied["executed"]==true,"copy_entries受理")?;
+    let mut copied_fid=String::new();
+    for _ in 0..30 {let page=checked(tools,ctx,"list_dir",json!({"pdir_fid":destination})).await?;if let Some(item)=page["list"].as_array().and_then(|a|a.iter().find(|v|v["name"]=="extra.md")){copied_fid=item["fid"].as_str().unwrap_or("").into();break;}tokio::time::sleep(std::time::Duration::from_secs(1)).await;}
+    need(!copied_fid.is_empty(),"copy_entries远端可见")?;checks.push("copy_entries".into());
+    let renamed=checked(tools,ctx,"rename_entry",json!({"fid":extra,"name":"moved.md"})).await?;need(renamed["accepted"]==true,"rename before move")?;
+    let mut renamed_visible=false;for _ in 0..30{let info=checked(tools,ctx,"file_info",json!({"fid":extra})).await?;if info["item"]["name"]=="moved.md"{renamed_visible=true;break;}tokio::time::sleep(std::time::Duration::from_secs(1)).await;}need(renamed_visible,"rename before move核对")?;
+    let moved=checked(tools,ctx,"move_entries",json!({"fids":[extra],"to_fid":destination})).await?;need(moved["accepted"]==true && moved["executed"]==true,"move_entries受理")?;
+    let mut move_visible=false;for _ in 0..30{let info=checked(tools,ctx,"file_info",json!({"fid":extra})).await?;if info["item"]["pdirFid"]==destination{move_visible=true;break;}tokio::time::sleep(std::time::Duration::from_secs(1)).await;}need(move_visible,"move_entries父目录核对")?;checks.push("move_entries".into());
+    let download_dir=dir.join("downloaded");std::fs::create_dir_all(&download_dir).map_err(|e|e.to_string())?;
+    let down=checked(tools,ctx,"download_files",json!({"fids":[&copied_fid],"local_dir":download_dir,"wait":false})).await?;
+    let id=down["task_ids"][0].as_str().ok_or("download task absent")?;
+    checked(tools,ctx,"transfer_control",json!({"task_id":id,"action":"pause"})).await?;
+    checked(tools,ctx,"transfer_control",json!({"task_id":id,"action":"resume"})).await?;checks.push("transfer_control".into());
+    let mut done=false;for _ in 0..120{let tasks=checked(tools,ctx,"list_transfers",json!({"task_ids":[id]})).await?;if tasks["tasks"].as_array().is_some_and(|a|a.iter().any(|v|v["id"]==id && v["status"]=="done")){done=true;break;}tokio::time::sleep(std::time::Duration::from_secs(1)).await;}
+    need(done,"download_files完成")?;need(std::fs::read(download_dir.join("extra.md")).map_err(|e|e.to_string())?==b"agent extra fixture\n","download_files正文一致")?;checks.extend(["download_files".into(),"list_transfers".into()]);
+    let plan=checked(tools,ctx,"plan_create",json!({"root_fid":root,"by":"ext","include_subdirs":true})).await?;
+    let plan_id=plan["plan"]["plan_id"].as_str().ok_or("plan id absent")?;checks.push("plan_create".into());
+    let details=checked(tools,ctx,"get_plan",json!({"plan_id":plan_id})).await?;need(details["plan"]["plan_id"]==plan_id && details["plan"]["entries"].as_array().is_some_and(|a|!a.is_empty()),"get_plan")?;checks.push("get_plan".into());
+    let executed=checked(tools,ctx,"plan_execute",json!({"plan_id":plan_id,"revision":plan["plan"]["revision"],"content_hash":plan["plan"]["content_hash"]})).await?;need(executed["summary"]["accepted"].as_u64().unwrap_or(0)>0 && executed["partial"]==false,"plan_execute")?;checks.push("plan_execute".into());
+    for result in executed["results"].as_array().ok_or("plan results absent")? {
+        if result["status"]!="accepted"{continue;}
+        let mut observed=false;
+        for _ in 0..30{let info=checked(tools,ctx,"file_info",json!({"fid":result["fid"]})).await?;if info["item"]["pdirFid"]==result["to_fid"]{observed=true;break;}tokio::time::sleep(std::time::Duration::from_secs(1)).await;}
+        need(observed,"plan_execute移动结果核对")?;
+    }
+    let journal=checked(tools,ctx,"list_journal",json!({"limit":50})).await?;need(journal["records"].as_array().is_some_and(|a|!a.is_empty()),"list_journal")?;checks.push("list_journal".into());
+    Ok(checks)
+}
+
 #[tokio::main]
 async fn main() {
     let profile = std::env::var_os("QK_PROFILE_DIR")
@@ -46,6 +96,9 @@ async fn main() {
             PathBuf::from(home).join("Library/Application Support/cn.quarkdrive.lite.tauri")
         });
     println!("profile: {}", profile.display());
+    std::fs::create_dir_all(&profile).expect("profile");
+    let _profile_lock=std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(profile.join("app.lock")).expect("profile lock");
+    if fs2::FileExt::try_lock_exclusive(&_profile_lock).is_err(){eprintln!("客户端正在使用此资料目录，请先退出客户端后重试验收");std::process::exit(4);}
     let core = match Core::open(profile.clone()) {
         Ok(c) => c,
         Err(e) => {
@@ -157,6 +210,8 @@ async fn main() {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let full=if std::env::var_os("QK_AGENT_FULL").is_some(){Some(full_acceptance(&tools,&ctx,&dir_fid,&file_fid,&local,&dir).await)}else{None};
+    if let Some(result)=&full {println!("full_acceptance: {}",match result{Ok(v)=>json!({"ok":true,"checks":v}),Err(e)=>json!({"ok":false,"error":e})});}
     let dry = call(&tools, &ctx, "delete_entries", json!({"fids": [file_fid]})).await;
     println!("delete dry_run: {}", dry);
     let del = call(
@@ -188,8 +243,10 @@ async fn main() {
         .map(|a| a.iter().all(|r| r.get("status").and_then(|v| v.as_str()) == Some("deleted")))
         .unwrap_or(false);
 
+    let ok=visible && file_deleted && dir_deleted && del["accepted"]==true && del_dir["accepted"]==true && del["deleted_to_recycle"]==true && del_dir["deleted_to_recycle"]==true && full.as_ref().is_none_or(|r|r.is_ok());
     let summary = json!({
-        "ok": file_deleted && dir_deleted,
+        "ok": ok,
+        "accepted": del["accepted"],
         "test_dir": name,
         "dir_fid": dir_fid,
         "upload_visible": visible,
@@ -204,7 +261,7 @@ async fn main() {
         let _ = std::fs::write(&path, serde_json::to_string_pretty(&summary).unwrap_or_default());
         println!("ledger: {}", path.display());
     }
-    if !(file_deleted && dir_deleted) {
+    if !ok {
         std::process::exit(1);
     }
 }

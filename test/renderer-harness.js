@@ -572,7 +572,7 @@ async function bootApp(opts = {}) {
         if (bkImpl.status) return Promise.resolve(clone(bkImpl.status));
         const running = !!opts.backupRunning;
         return Promise.resolve(running ? {
-          running: true, account: 'fixture-user', discovered: 10, pending: 2, uploading: 1,
+          hasSession:true,scanComplete:false,totalDiscovered:19,status:'scanning',running: true, account: 'fixture-user', discovered: 10, pending: 2, uploading: 1,
           verifying: 0, success: 6, failed: 0, skipped: 0, canceled: 0, queueDepth: 2, uploadedBytes: 4096,
         } : { running: false });
       };

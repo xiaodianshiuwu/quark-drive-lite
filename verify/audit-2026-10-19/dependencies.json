@@ -1,0 +1,66 @@
+{
+  "rustsec_database": {
+    "advisory-count": 1338,
+    "last-commit": "999ec89d5d3f10f20be14750ec8c2d8b44e0ac9b",
+    "last-updated": "2026-10-17T17:23:59+02:00"
+  },
+  "vulnerability_class_count": 0,
+  "warnings": [
+    {
+      "kind": "unmaintained",
+      "package": "proc-macro-error",
+      "version": "1.0.4",
+      "advisory": "RUSTSEC-2024-0370",
+      "title": "proc-macro-error is unmaintained",
+      "url": "https://gitlab.com/CreepySkeleton/proc-macro-error/-/issues/20",
+      "patched": []
+    },
+    {
+      "kind": "unmaintained",
+      "package": "zbus_names",
+      "version": "4.3.4",
+      "advisory": "RUSTSEC-2026-0371",
+      "title": "`zbus_names` is unmaintained",
+      "url": "https://github.com/z-galaxy/zbus/issues/2043",
+      "patched": []
+    },
+    {
+      "kind": "unmaintained",
+      "package": "zvariant",
+      "version": "5.15.0",
+      "advisory": "RUSTSEC-2026-0370",
+      "title": "`zvariant` is unmaintained",
+      "url": "https://github.com/z-galaxy/zbus/issues/2043",
+      "patched": []
+    },
+    {
+      "kind": "unmaintained",
+      "package": "zvariant_derive",
+      "version": "5.15.0",
+      "advisory": "RUSTSEC-2026-0372",
+      "title": "`zvariant_derive` is unmaintained",
+      "url": "https://github.com/z-galaxy/zbus/issues/2043",
+      "patched": []
+    },
+    {
+      "kind": "unsound",
+      "package": "glib",
+      "version": "0.18.5",
+      "advisory": "RUSTSEC-2024-0429",
+      "title": "Unsoundness in `Iterator` and `DoubleEndedIterator` impls for `glib::VariantStrIter`",
+      "url": "https://github.com/gtk-rs/gtk-rs-core/pull/1343",
+      "patched": [
+        ">=0.20.0"
+      ]
+    }
+  ],
+  "npm_vulnerabilities": {
+    "info": 0,
+    "low": 0,
+    "moderate": 0,
+    "high": 0,
+    "critical": 0,
+    "total": 0
+  },
+  "note": "warning entries include an unresolved GLib soundness advisory; zero vulnerability-class count is not a clean security result"
+}

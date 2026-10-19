@@ -1,0 +1,7 @@
+
+> quark-mini@0.3.0-alpha.1 verify:native
+> node scripts/native-smoke.js
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.31s
+     Running `target/debug/quark-drive-lite-tauri`
+Native WebView: 20/20. Report: /Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/.work/native-smoke.json

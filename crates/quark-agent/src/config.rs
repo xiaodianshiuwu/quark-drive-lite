@@ -170,25 +170,25 @@ pub(crate) fn encrypt_to_file(key: &[u8; 32], path: &Path, plaintext: &Value) ->
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-        }
-        f.write_all(&buf)?;
-        f.flush()?;
-    }
-    std::fs::rename(&tmp, path)
+    let tmp=path.with_extension(format!("{}.tmp",uuid::Uuid::new_v4()));
+    let result=(||{
+        let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+        #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        let mut file=options.open(&tmp)?;file.write_all(&buf)?;file.sync_all()?;
+        std::fs::rename(&tmp,path)?;
+        #[cfg(unix)] if let Some(parent)=path.parent(){std::fs::File::open(parent)?.sync_all()?;}
+        Ok(())
+    })();
+    let _=std::fs::remove_file(tmp);result
 }
 
 pub(crate) fn decrypt_from_file(key: &[u8; 32], path: &Path) -> std::io::Result<Value> {
     use aes_gcm::aead::{Aead, KeyInit, Payload};
     use aes_gcm::{Aes256Gcm, Nonce};
+    let meta=std::fs::symlink_metadata(path)?;
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.len()>1024*1024{return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"invalid encrypted config file"));}
     let buf = std::fs::read(path)?;
-    if buf.len() < 4 + 4 + 12 + 16 || &buf[0..4] != b"QCK2" {
+    if buf.len() < 4 + 4 + 12 + 16 || &buf[0..4] != b"QCK2" || buf[4..8]!=1u32.to_be_bytes() {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "bad magic"));
     }
     let nonce = Nonce::from_slice(&buf[8..20]);
@@ -199,38 +199,27 @@ pub(crate) fn decrypt_from_file(key: &[u8; 32], path: &Path) -> std::io::Result<
     serde_json::from_slice(&pt).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "bad json"))
 }
 
-pub(crate) fn load_or_create_key(path: &Path) -> std::io::Result<[u8; 32]> {
-    if let Ok(k) = std::fs::read(path) {
-        if k.len() == 32 {
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&k);
-            return Ok(out);
-        }
+pub(crate) fn read_key(path:&Path)->std::io::Result<[u8;32]> {
+        let meta=std::fs::symlink_metadata(path)?;
+        if !meta.is_file() || meta.file_type().is_symlink() || meta.len()!=32{return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"invalid existing config key; original retained"));}
+        std::fs::read(path)?.try_into().map_err(|_|std::io::Error::new(std::io::ErrorKind::InvalidData,"invalid key length"))
     }
-    let mut key = [0u8; 32];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut key);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // 与登录态密钥一致：写临时文件后 hard_link 原子落盘（避免截断/部分写）。
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&tmp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-        }
-        f.write_all(&key)?;
-        f.flush()?;
-    }
-    match std::fs::hard_link(&tmp, path) {
-        Ok(_) => {}
-        Err(_) if path.exists() => {}
-        Err(e) => return Err(e),
-    }
-    let _ = std::fs::remove_file(&tmp);
-    Ok(key)
+
+pub(crate) fn load_or_create_key(path:&Path)->std::io::Result<[u8;32]> {
+    match read_key(path){Ok(k)=>return Ok(k),Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},Err(e)=>return Err(e)}
+    let mut key=[0u8;32];rand::RngCore::fill_bytes(&mut rand::rngs::OsRng,&mut key);
+    if let Some(parent)=path.parent(){std::fs::create_dir_all(parent)?;}
+    let tmp=path.with_extension(format!("{}.tmp",uuid::Uuid::new_v4()));
+    let result=(||{
+        let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+        #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        let mut file=options.open(&tmp)?;file.write_all(&key)?;file.sync_all()?;
+        match std::fs::hard_link(&tmp,path){Ok(())=>{},Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>{},Err(e)=>return Err(e)}
+        #[cfg(unix)] if let Some(parent)=path.parent(){std::fs::File::open(parent)?.sync_all()?;}
+        // Another concurrent creator may have won: always return the persisted key.
+        read_key(path)
+    })();
+    let _=std::fs::remove_file(tmp);result
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +261,7 @@ impl AgentConfigManager {
             return c.clone();
         }
         let cfg = (|| -> std::io::Result<AgentConfig> {
-            let key = load_or_create_key(&self.key_path)?;
+            let key = read_key(&self.key_path)?;
             let v = decrypt_from_file(&key, &self.access_path)?;
             Ok(AgentConfig::from_json(&v.get("data").unwrap_or(&Value::Null)))
         })()
@@ -282,8 +271,10 @@ impl AgentConfigManager {
     }
 
     fn save(&mut self, cfg: &AgentConfig) -> Result<(), AgentToolError> {
-        let key = load_or_create_key(&self.key_path)
-            .map_err(|e| AgentToolError::new(AgentError::Internal, format!("无法写入 Agent 配置：{e}")))?;
+        let key = if self.access_path.exists(){
+            let key=read_key(&self.key_path).map_err(|_|AgentToolError::new(AgentError::Internal,"Agent密钥不可读或损坏，原文件已保留"))?;
+            decrypt_from_file(&key,&self.access_path).map_err(|_|AgentToolError::new(AgentError::Internal,"Agent配置损坏，拒绝覆盖原文件"))?;key
+        }else{load_or_create_key(&self.key_path).map_err(|e|AgentToolError::new(AgentError::Internal,format!("无法写入Agent配置：{e}")))?};
         encrypt_to_file(&key, &self.access_path, &json!({ "v": 2, "data": cfg.to_json() }))
             .map_err(|e| AgentToolError::new(AgentError::Internal, format!("无法写入 Agent 配置：{e}")))?;
         self.cache = Some(cfg.clone());
@@ -567,4 +558,21 @@ mod tests {
         assert_eq!(s.local_write_roots.len(), 1);
         assert_eq!(s.remote_roots, vec!["a".to_string()]);
     }
+    #[test]
+    fn key_creation_is_atomic_and_corruption_does_not_replace_existing_material() {
+        let temp=tempfile::tempdir().unwrap();let path=std::sync::Arc::new(temp.path().join("key"));
+        let handles:Vec<_>=(0..16).map(|_|{let path=path.clone();std::thread::spawn(move||load_or_create_key(&path).unwrap())}).collect();
+        let keys:Vec<_>=handles.into_iter().map(|h|h.join().unwrap()).collect();assert!(keys.iter().all(|k|k==&keys[0]));
+        std::fs::write(&*path,b"damaged").unwrap();assert!(load_or_create_key(&path).is_err());assert_eq!(std::fs::read(&*path).unwrap(),b"damaged");
+    }
+
+    #[test]
+    fn corrupt_existing_access_config_is_never_overwritten_by_a_partial_patch() {
+        let temp=tempfile::tempdir().unwrap();let mut manager=AgentConfigManager::open(temp.path()).unwrap();
+        manager.update(&json!({"writeMode":"read-only"}),1).unwrap();
+        std::fs::write(manager.dir().join("access.bin"),b"damaged").unwrap();
+        assert!(manager.update(&json!({"enabled":true}),2).is_err());
+        assert_eq!(std::fs::read(manager.dir().join("access.bin")).unwrap(),b"damaged");
+    }
+
 }

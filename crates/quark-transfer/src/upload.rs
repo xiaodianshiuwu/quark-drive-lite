@@ -181,8 +181,12 @@ async fn signature(
     required(&env["data"], "auth_key").map(str::to_string)
 }
 pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Result<()> {
-    let generation = m.inner.core.session_generation();
+    let generation = m.bound_generation()?;
     let task = m.task(id)?;
+    if task.account_key.is_none() || task.account_key != m.inner.core.account_key() {
+        return Err(err("ACCOUNT_MISMATCH", "传输所属账号已改变"));
+    }
+    m.inner.core.ensure_session(generation)?;
     let local = PathBuf::from(
         task.local_path
             .as_deref()
@@ -210,7 +214,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         return Err(err("LOCAL_IO", "上传进度缺少内容绑定信息，原记录已保留"));
     }
     if cp.phase == "result" {
-        return confirm(m, parent, name, &cp, false, token, generation).await;
+        return confirm(m, id, parent, name, &cp, false, token, generation).await;
     }
     if [
         "pre_started",
@@ -222,7 +226,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
     {
         // A crash or lost HTTP response at a mutating endpoint cannot safely be replayed.
         // First recognize an attributable completed cloud file; otherwise preserve the checkpoint for explicit inspection.
-        if confirm(m, parent, name, &cp, true, token, generation)
+        if confirm(m, id, parent, name, &cp, true, token, generation)
             .await
             .is_ok()
         {
@@ -259,7 +263,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
             .await?;
         cp.phase = "result".into();
         store(m, id, &cp)?;
-        return confirm(m, parent, name, &cp, false, token, generation).await;
+        return confirm(m, id, parent, name, &cp, false, token, generation).await;
     }
     let stamp = FileStamp::from(&fs::metadata(&local).await.map_err(io_err)?)?;
     let size = stamp.size;
@@ -339,7 +343,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         cp.phase = "result".into();
         store(m, id, &cp)?;
         m.progress(id, size, size)?;
-        return confirm(m, parent, name, &cp, false, token, generation).await;
+        return confirm(m, id, parent, name, &cp, false, token, generation).await;
     }
     check(token)?;
     if cp.phase == "prepared" {
@@ -357,7 +361,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
                 cp.phase = "result".into();
                 store(m, id, &cp)?;
                 m.progress(id, size, size)?;
-                return confirm(m, parent, name, &cp, false, token, generation).await;
+                return confirm(m, id, parent, name, &cp, false, token, generation).await;
             }
             Ok(_) => {}
             Err(e) => {
@@ -391,7 +395,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
             cp.phase = "result".into();
             store(m, id, &cp)?;
         }
-        return confirm(m, parent, name, &cp, false, token, generation).await;
+        return confirm(m, id, parent, name, &cp, false, token, generation).await;
     }
     let part_size = cp.part_size;
     if part_size == 0 || part_size % 65536 != 0 || part_size > 16 * 1024 * 1024 {
@@ -424,6 +428,14 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
                 ));
             }
         }
+        let rate = if task.rate_limit_bps == 0 {
+            None
+        } else {
+            Some(std::sync::Arc::new(UploadRate {
+                bps: task.rate_limit_bps,
+                next: m.inner.upload_rate_next.clone(),
+            }))
+        };
         loop {
             let concurrency = if cp.parallel_requested && !cp.parallel_disabled {
                 m.inner.core.settings()["uploadPartConcurrency"]
@@ -443,6 +455,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
             let pre_ref = &pre;
             let base_ref = &base;
             let mime_ref = mime.as_str();
+            let rate = &rate;
             let launch = |number| async move {
                 let _buffer = cancellable(token, async {
                     m.inner
@@ -470,8 +483,19 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
                     None
                 };
                 let etag = put_part(
-                    m, pre_ref, base_ref, mime_ref, bucket, key, upload_id, number, bytes, context,
-                    token, generation,
+                    m,
+                    pre_ref,
+                    base_ref,
+                    mime_ref,
+                    bucket,
+                    key,
+                    upload_id,
+                    number,
+                    bytes,
+                    context,
+                    token,
+                    generation,
+                    rate.clone(),
                 )
                 .await?;
                 Ok::<_, quark_core::Error>((number, length, etag))
@@ -588,7 +612,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         store(m, id, &cp)?;
     }
     m.progress(id, size, size)?;
-    confirm(m, parent, name, &cp, false, token, generation).await
+    confirm(m, id, parent, name, &cp, false, token, generation).await
 }
 async fn part_window<F, Fut, S>(
     pending: Vec<u64>,
@@ -724,6 +748,7 @@ async fn put_part(
     hash_context: Option<&str>,
     token: &CancellationToken,
     generation: u64,
+    rate: Option<std::sync::Arc<UploadRate>>,
 ) -> Result<String> {
     for attempt in 0..3 {
         check(token)?;
@@ -742,7 +767,7 @@ async fn put_part(
             .append_pair("uploadId", upload_id);
         let result = cancellable(
             token,
-            put_request(
+            put_request_limited(
                 &m.inner.core.http_client(),
                 url,
                 mime,
@@ -750,6 +775,7 @@ async fn put_part(
                 &auth,
                 bytes.clone(),
                 hash_context,
+                rate.clone(),
             ),
         )
         .await;
@@ -770,6 +796,20 @@ async fn put_part(
     unreachable!()
 }
 
+struct UploadRate {
+    bps: u64,
+    next: std::sync::Arc<tokio::sync::Mutex<tokio::time::Instant>>,
+}
+#[cfg(test)]
+impl UploadRate {
+    fn new(bps: u64) -> Self {
+        Self {
+            bps,
+            next: std::sync::Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now())),
+        }
+    }
+}
+#[cfg(test)]
 async fn put_request(
     client: &reqwest::Client,
     url: reqwest::Url,
@@ -779,16 +819,59 @@ async fn put_request(
     bytes: bytes::Bytes,
     hash_context: Option<&str>,
 ) -> Result<String> {
+    put_request_limited(client, url, mime, date, auth, bytes, hash_context, None).await
+}
+
+async fn put_request_limited(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+    mime: &str,
+    date: &str,
+    auth: &str,
+    bytes: bytes::Bytes,
+    hash_context: Option<&str>,
+    rate: Option<std::sync::Arc<UploadRate>>,
+) -> Result<String> {
     let expected = format!("{:x}", Md5::digest(&bytes));
+    let length = bytes.len();
+    let timeout = 180
+        + rate
+            .as_ref()
+            .map(|r| 64 * length as u64 / r.bps.max(1))
+            .unwrap_or(0);
+    let body = if let Some(rate) = rate {
+        let stream = futures_util::stream::unfold(
+            (bytes, 0usize, rate),
+            |(bytes, offset, rate)| async move {
+                if offset >= bytes.len() {
+                    return None;
+                }
+                let end = (offset + 64 * 1024).min(bytes.len());
+                {
+                    let mut next = rate.next.lock().await;
+                    tokio::time::sleep_until((*next).max(tokio::time::Instant::now())).await;
+                    *next = tokio::time::Instant::now()
+                        + Duration::from_secs_f64((end - offset) as f64 / rate.bps.max(1) as f64);
+                }
+                Some((
+                    Ok::<_, std::io::Error>(bytes.slice(offset..end)),
+                    (bytes, end, rate),
+                ))
+            },
+        );
+        reqwest::Body::wrap_stream(stream)
+    } else {
+        reqwest::Body::from(bytes)
+    };
     let mut request = client
         .put(url)
         .header("authorization", auth)
         .header("content-type", mime)
-        .header("content-length", bytes.len())
+        .header("content-length", length)
         .header("x-oss-date", date)
         .header("x-oss-user-agent", OSS_USER_AGENT)
-        .body(bytes)
-        .timeout(Duration::from_secs(180));
+        .body(body)
+        .timeout(Duration::from_secs(timeout));
     if let Some(context) = hash_context {
         request = request.header("X-Oss-Hash-Ctx", context);
     }
@@ -881,6 +964,7 @@ async fn matching(
 }
 async fn confirm(
     m: &TransferManager,
+    id: &str,
     parent: &str,
     name: &str,
     checkpoint: &Checkpoint,
@@ -918,6 +1002,11 @@ async fn confirm(
             .collect();
         if changed.len() == 1 {
             if verified_result(changed[0], checkpoint, require_digest)? {
+                let fid = changed[0]["fid"]
+                    .as_str()
+                    .ok_or_else(|| err("TASK_FAILED", "上传结果缺少fid"))?
+                    .to_string();
+                m.update(id, |t| t.fid = Some(fid), true)?;
                 return Ok(());
             }
         }
@@ -1173,5 +1262,32 @@ mod tests {
                 .code,
             "CONTENT_MISMATCH"
         );
+    }
+    #[tokio::test]
+    async fn bandwidth_limit_applies_to_the_actual_http_request_body() {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let bytes = bytes::Bytes::from(vec![9u8; 128 * 1024]);
+        let digest = format!("{:x}", Md5::digest(&bytes));
+        let (url, server) = fixture("200 OK", "", Some(&digest));
+        let start = std::time::Instant::now();
+        let tag = put_request_limited(
+            &client,
+            url,
+            "application/octet-stream",
+            "date",
+            "test",
+            bytes.clone(),
+            None,
+            Some(std::sync::Arc::new(UploadRate::new(512 * 1024))),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tag, digest);
+        assert!(
+            start.elapsed() >= Duration::from_millis(100),
+            "second chunk must wait for its bandwidth reservation"
+        );
+        let request = server.join().unwrap();
+        assert!(request.ends_with(&bytes));
     }
 }

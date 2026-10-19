@@ -20,6 +20,16 @@
     check('settings view', !document.querySelector('#view-settings').hidden);
     document.querySelector('[data-view="transfers"]').click();
     check('transfers view', !document.querySelector('#view-transfers').hidden);
+    document.querySelector('[data-view="backup"]').click();
+    check('backup view',!document.getElementById('view-backup').hidden);
+    const backupStatus=await window.qk.backup.status();check('Rust backup status',backupStatus.hasSession===false);
+    const plan=await window.qk.backup.plan({rootDir:window.__qkSmokeRoot,targetFid:'0'});check('Rust backup scanner via native IPC',plan.files===1 && plan.dirs===2);
+    let backupCode;try {await window.qk.backup.start({rootDir:window.__qkSmokeRoot,targetFid:'0',account:'spoofed'});}catch(e){backupCode=e.code;}
+    check('backup cannot spoof unauthenticated account',backupCode==='NEED_LOGIN');
+    const agent=await window.qk.agent.status();check('Rust agent status',typeof agent.enabled==='boolean');
+    const mcp=await window.qk.agent.mcpConfig();check('packaged MCP adapter path',mcp.mcpServers['quark-mini'].args[0].includes('adapters'));
+    document.querySelector('[data-view="chat"]').click();check('chat view',!document.getElementById('view-chat').hidden);
+    const chat=await window.qk.chat.status();check('Rust chat status',chat.configured===false);
     document.querySelector('[data-view="files"]').click();
     check('no mock data', !location.search.includes('mock=1'));
   } catch(e) { checks.push({name:'exception',ok:false,code:e.code || 'JS',message:String(e.message).slice(0,180)}); }

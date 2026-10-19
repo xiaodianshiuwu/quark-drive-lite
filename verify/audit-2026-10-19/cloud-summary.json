@@ -1,0 +1,87 @@
+{
+  "backup": {
+    "fixture_files": 8,
+    "fixture_bytes": 308215,
+    "verification": {
+      "directories_checked": 3,
+      "incomplete": 0,
+      "issue_total": 0,
+      "issues": [],
+      "listed_missing": 0,
+      "listed_ok": 8,
+      "sample_checked": 8,
+      "sample_mismatch": 0,
+      "sample_ok": 8,
+      "sample_requested": 8,
+      "size_mismatch": 0,
+      "status": "verified",
+      "total_success": 8,
+      "warning_count": 0
+    },
+    "cleanup_confirmed": true,
+    "test_dir": "qk-bak-accept-83937f12"
+  },
+  "transfer": {
+    "fixture_bytes": 33554432,
+    "sha256": "3ca2f2ba13ced2f33478c7e254204efa59c94cff6a3254975487d9b84047d76e",
+    "crud": {
+      "copy": true,
+      "move": true,
+      "rename": true,
+      "search": true
+    },
+    "download_pause_resume_exercised": true,
+    "verified": true,
+    "cleanup_confirmed": true
+  },
+  "agent": {
+    "basic_checks": [
+      "create_folder",
+      "upload_file",
+      "list_dir",
+      "delete_entries"
+    ],
+    "expanded_checks": [
+      "drive_status",
+      "file_info",
+      "search_files",
+      "tree_dir",
+      "read_text_file",
+      "save_text_file",
+      "rename_entry",
+      "copy_entries",
+      "move_entries",
+      "transfer_control",
+      "download_files",
+      "list_transfers",
+      "plan_create",
+      "get_plan",
+      "plan_execute",
+      "list_journal"
+    ],
+    "all_20_tools_positive_paths": true,
+    "accepted": true,
+    "file_deleted": true,
+    "dir_deleted": true,
+    "deleted_to_recycle": true,
+    "test_dir": "qk-agent-accept-53d30716",
+    "plan_results_verified_against_file_info": true,
+    "read_text_variant": "local authorized fixture path; cloud download tool separately verified by exact bytes"
+  },
+  "intermediate_failures": [
+    {
+      "issue": "B04",
+      "result": "initial upstream account metadata had no userId; fixed to Core durable login binding; temporary test directory cleaned"
+    },
+    {
+      "issue": "A06/A10",
+      "result": "expanded acceptance exposed stale rename metadata / Core info shape mismatch; first failed run cleaned normally; second failed cleanup required guarded Core cleanup",
+      "guarded_cleanup": {
+        "cleanup_confirmed": true,
+        "reason": "pre-fix metadata adapter test fixture",
+        "test_dir": "qk-agent-accept-f7832ed7"
+      }
+    }
+  ],
+  "scope": "Only UUID directories and owned fixtures created in this audit. No existing user cloud objects modified. No permanent recycle-bin deletion. No private whole-disk backup performed."
+}

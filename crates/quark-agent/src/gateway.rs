@@ -21,7 +21,7 @@
 //! `JSON.stringify(payload) + '\n'`，qck 的两个真实客户端（agent-bridge-client.js /
 //! agent-mcp.js）同样按行收发，所以 Rust 版照搬行帧而不是长度前缀帧。
 //!
-//! 平台：本阶段只实现 Unix domain socket；Windows 命名管道留 TODO（见 [`AgentGateway::start`]）。
+//! 平台：Unix domain socket / Windows 本机命名管道，共用同一套认证、限流和帧处理。Windows运行仍需真机验收。
 
 use crate::config::ScopeSnapshot;
 use crate::journal::Journal;
@@ -29,7 +29,14 @@ use crate::policy::{safe_equal, AgentError, AgentToolError};
 use crate::registry::{ToolContext, ToolRegistry};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
+#[cfg(unix)]
 use std::path::Path;
+
+trait BridgeIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> BridgeIo for T {}
+type BridgeStream=Box<dyn BridgeIo>;
+type BridgeReader=tokio::io::ReadHalf<BridgeStream>;
+type BridgeWriter=tokio::io::WriteHalf<BridgeStream>;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
 use std::time::Duration;
@@ -231,6 +238,7 @@ pub struct AgentGateway {
     auth_timeout_ms: u64,
     max_rps: u32,
     now_fn: NowFn,
+    lifecycle:tokio::sync::Mutex<()>,
 }
 
 impl AgentGateway {
@@ -247,6 +255,7 @@ impl AgentGateway {
             auth_timeout_ms: AUTH_TIMEOUT_MS,
             max_rps: MAX_REQUESTS_PER_SECOND,
             now_fn: StdArc::new(crate::journal::now_ms),
+            lifecycle:tokio::sync::Mutex::new(()),
         }
     }
 
@@ -288,6 +297,7 @@ impl AgentGateway {
     /// 注意：**不在此处检查/推导端点**——端点由宿主（config.activate 的 endpoint_factory）
     /// 生成并持久化，网关只接受 endpoint 字符串，避免两处各算一份。
     pub async fn start(self: StdArc<Self>, endpoint: &str) -> Result<(), AgentToolError> {
+        let _lifecycle=self.lifecycle.lock().await;
         if self.shared.running.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -393,21 +403,44 @@ impl AgentGateway {
             Ok(())
         }
 
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
-            // TODO(Windows)：命名管道（\\.\pipe\quark-mini-agent-<token12>）。
-            // 需要 tokio::net::windows::named_pipe::ServerOptions + 每连接的 pipe 实例复用；
-            // 本阶段按任务约定只保证 macOS/Linux（qck 开发机为 macOS arm64，规格 §12.9 同此边界）。
-            let _ = endpoint;
-            Err(AgentToolError::new(
-                AgentError::Internal,
-                "当前平台暂不支持 Agent 网关（Windows 命名管道尚未实现）",
-            ))
+            use tokio::net::windows::named_pipe::ServerOptions;
+            let mut server=ServerOptions::new().first_pipe_instance(true).reject_remote_clients(true).create(endpoint)
+                .map_err(|e|AgentToolError::new(AgentError::Internal,format!("无法创建本机命名管道：{e}")))?;
+            *self.shared.endpoint.lock().unwrap()=endpoint.to_string();
+            *self.shared.started_at.lock().unwrap()=(self.now_fn)();
+            self.shared.last_error.lock().unwrap().clear();
+            self.shared.running.store(true,Ordering::SeqCst);
+            self.audit("gateway","","client","started",&json!({"transport":"named-pipe"}));
+            let this=self.clone();let endpoint=endpoint.to_string();
+            let accept=tokio::spawn(async move {
+                loop {
+                    if let Err(e)=server.connect().await {
+                        *this.shared.last_error.lock().unwrap()=format!("命名管道连接失败：{e}");
+                        tokio::time::sleep(Duration::from_millis(100)).await;continue;
+                    }
+                    // Keep one listening instance alive before handing the connected one off.
+                    // This avoids a gap in which another process could squat on the pipe name.
+                    let next=loop {
+                        match ServerOptions::new().reject_remote_clients(true).create(&endpoint) {
+                            Ok(next)=>break next,
+                            Err(e)=>{*this.shared.last_error.lock().unwrap()=format!("命名管道实例创建失败：{e}");tokio::time::sleep(Duration::from_millis(100)).await;}
+                        }
+                    };
+                    Self::attach(&this,std::mem::replace(&mut server,next));
+                }
+            });
+            *self.shared.accept_abort.lock().unwrap()=Some(accept.abort_handle());
+            Ok(())
         }
+        #[cfg(not(any(unix,windows)))]
+        {let _=endpoint;Err(AgentToolError::new(AgentError::Internal,"当前平台暂不支持本机Agent网关"))}
     }
 
     /// 停止监听并断开所有连接。幂等。
     pub async fn stop(&self) {
+        let _lifecycle=self.lifecycle.lock().await;
         if !self.shared.running.swap(false, Ordering::SeqCst) {
             return;
         }
@@ -748,8 +781,7 @@ impl AgentGateway {
     }
 
     /// 接受一条新连接（池检查 → 注册 → spawn 连接任务）。
-    #[cfg(unix)]
-    fn attach(me: &StdArc<Self>, stream: tokio::net::UnixStream) {
+    fn attach<S:BridgeIo+'static>(me:&StdArc<Self>,stream:S) {
         let conn_id = me.shared.next_conn.fetch_add(1, Ordering::SeqCst);
         // 总连接位已满：新连接不可能再认证成功（认证还要再占一个位置），立即断开。
         {
@@ -767,18 +799,17 @@ impl AgentGateway {
             pending.insert(conn_id);
         }
         let this = me.clone();
-        let task = tokio::spawn(async move { this.run_connection(stream, conn_id).await });
+        let task = tokio::spawn(async move { this.run_connection(Box::new(stream), conn_id).await });
         me.shared.conn_aborts.lock().unwrap().insert(conn_id, task.abort_handle());
     }
 
     /// 一条连接的完整生命周期：reader（切帧/超限/认证超时）+ worker（串行派发）。
-    #[cfg(unix)]
     async fn run_connection(
         self: StdArc<Self>,
-        stream: tokio::net::UnixStream,
+        stream: BridgeStream,
         conn_id: u64,
     ) {
-        let (rd, wr) = stream.into_split();
+        let (rd, wr) = tokio::io::split(stream);
         let wr = StdArc::new(tokio::sync::Mutex::new(wr));
         let authenticated = StdArc::new(AtomicBool::new(false));
         let inflight = StdArc::new(AtomicUsize::new(0));
@@ -813,14 +844,11 @@ impl AgentGateway {
         // 正在执行的工具不能继续占着连接位，否则 8 条慢工具会把适配器全部挡在门外。
         closed.store(true, Ordering::SeqCst);
         self.shared.release(conn_id);
-        {
-            let mut aborts = self.shared.conn_aborts.lock().unwrap();
-            aborts.remove(&conn_id);
-            aborts.remove(&(u64::MAX - conn_id));
-        }
-        // worker 可能仍在执行已进入工具内部的调用；它无法被中断（与 qck 一致），
-        // 这里只是等它收尾，避免测试结束时留下悬挂任务。
-        let _ = worker.await;
+        // Retain both abort handles while an already-started tool finishes. A later
+        // disable/rotate must still be able to stop work after the client disconnected.
+        let _=worker.await;
+        let mut aborts=self.shared.conn_aborts.lock().unwrap();
+        aborts.remove(&conn_id);aborts.remove(&(u64::MAX-conn_id));
     }
 
     /// 读侧：按行切帧、消息上限、认证超时、排队上限。
@@ -828,12 +856,11 @@ impl AgentGateway {
     /// 连接断开（客户端退出/超限半关闭）后不再启动新的工具调用；
     /// 已经进入工具内部的调用无法中断（工具层没有贯穿取消信号），
     /// 这一层保证的是"断开后不再累积新工作"，配合排队上限形成有界队列（规格 §12.3 第 21 条）。
-    #[cfg(unix)]
     #[allow(clippy::too_many_arguments)]
     async fn reader_loop(
         &self,
-        mut rd: tokio::net::unix::OwnedReadHalf,
-        wr: StdArc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+        mut rd: BridgeReader,
+        wr: StdArc<tokio::sync::Mutex<BridgeWriter>>,
         line_tx: tokio::sync::mpsc::Sender<String>,
         close_tx: tokio::sync::watch::Sender<bool>,
         mut close_rx: tokio::sync::watch::Receiver<bool>,
@@ -939,11 +966,10 @@ impl AgentGateway {
     }
 
     /// 写侧：一串行派发（含单连接限速与 JSON 解析错误兜底）。
-    #[cfg(unix)]
     async fn worker_loop(
         self: StdArc<Self>,
         mut line_rx: tokio::sync::mpsc::Receiver<String>,
-        wr: StdArc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+        wr: StdArc<tokio::sync::Mutex<BridgeWriter>>,
         close_rx: tokio::sync::watch::Receiver<bool>,
         close_tx: tokio::sync::watch::Sender<bool>,
         control: ConnControl,
@@ -977,11 +1003,10 @@ impl AgentGateway {
 
     /// 处理一行文本：JSON 解析 → 单连接限速 → handleMessage → 写回。
     /// 返回 true 表示这条连接应当停止（close:true / 限流）。
-    #[cfg(unix)]
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_line(
         &self,
-        wr: &StdArc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+        wr: &StdArc<tokio::sync::Mutex<BridgeWriter>>,
         close_tx: &tokio::sync::watch::Sender<bool>,
         control: &ConnControl,
         session: &mut Session,
@@ -1035,10 +1060,9 @@ impl AgentGateway {
         close
     }
 
-    #[cfg(unix)]
     async fn write_payload(
         &self,
-        wr: &StdArc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+        wr: &StdArc<tokio::sync::Mutex<BridgeWriter>>,
         payload: &Value,
         close: bool,
     ) {
@@ -1325,8 +1349,9 @@ mod tests {
     use std::pin::Pin;
     use tempfile::TempDir;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+    #[cfg(unix)]
     use tokio::net::UnixStream;
+    #[cfg(unix)] use std::path::Path;
 
     // -----------------------------------------------------------------------
     // 测试夹具
@@ -1441,7 +1466,8 @@ mod tests {
 
     async fn harness_with_clock(auth_timeout_ms: u64, now: Option<NowFn>) -> Harness {
         let tmp = TempDir::new().unwrap();
-        let endpoint = tmp.path().join("g.sock").to_string_lossy().to_string();
+        #[cfg(unix)] let endpoint = tmp.path().join("g.sock").to_string_lossy().to_string();
+        #[cfg(windows)] let endpoint=format!(r"\\.\pipe\qk-test-{}",uuid::Uuid::new_v4());
         let source = StdArc::new(MockSource::new("tok-0123456789abcdef"));
         let registry = StdArc::new(MockRegistry::default());
         let journal = StdArc::new(Journal::open(&tmp.path().join("journal")).unwrap());
@@ -1456,13 +1482,17 @@ mod tests {
     }
 
     struct Conn {
-        wr: OwnedWriteHalf,
-        rd: BufReader<OwnedReadHalf>,
+        wr: BridgeWriter,
+        rd: BufReader<BridgeReader>,
     }
 
     async fn connect(endpoint: &str) -> Conn {
-        let stream = UnixStream::connect(endpoint).await.unwrap();
-        let (rd, wr) = stream.into_split();
+        #[cfg(unix)] let stream:BridgeStream=Box::new(UnixStream::connect(endpoint).await.unwrap());
+        #[cfg(windows)] let stream:BridgeStream={
+            let deadline=tokio::time::Instant::now()+Duration::from_secs(5);
+            loop {match tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint){Ok(stream)=>break Box::new(stream),Err(e)=>{assert!(tokio::time::Instant::now()<deadline,"pipe connect failed: {e}");tokio::time::sleep(Duration::from_millis(10)).await;}}}
+        };
+        let (rd,wr)=tokio::io::split(stream);
         Conn { wr, rd: BufReader::new(rd) }
     }
 
@@ -1902,7 +1932,8 @@ mod tests {
     #[tokio::test]
     async fn disabled_source_blocks_start_and_calls() {
         let tmp = TempDir::new().unwrap();
-        let endpoint = tmp.path().join("g.sock").to_string_lossy().to_string();
+        #[cfg(unix)] let endpoint = tmp.path().join("g.sock").to_string_lossy().to_string();
+        #[cfg(windows)] let endpoint=format!(r"\\.\pipe\qk-test-{}",uuid::Uuid::new_v4());
         let source = StdArc::new(MockSource::new("tok-x"));
         source.enabled.store(false, Ordering::SeqCst);
         let registry = StdArc::new(MockRegistry::default());
@@ -1991,7 +2022,7 @@ mod tests {
     #[tokio::test]
     async fn start_is_idempotent_stop_removes_socket_and_is_safe_to_repeat() {
         let h = harness_with(AUTH_TIMEOUT_MS).await;
-        assert!(Path::new(&h.endpoint).exists());
+        #[cfg(unix)] assert!(Path::new(&h.endpoint).exists());
         // 幂等：再次 start 不报错也不换端点
         h.gateway.clone().start(&h.endpoint).await.unwrap();
         // 断连后 stop 删除 socket 文件
@@ -2009,6 +2040,7 @@ mod tests {
         drop(c);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn stale_socket_file_is_replaced_but_regular_file_is_refused() {
         let tmp = TempDir::new().unwrap();

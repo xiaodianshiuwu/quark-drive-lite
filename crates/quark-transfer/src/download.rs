@@ -73,7 +73,12 @@ fn path_key(path: &str) -> String {
 }
 
 pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Result<()> {
+    let generation = m.bound_generation()?;
     let mut task = m.task(id)?;
+    if task.account_key.is_none() || task.account_key != m.inner.core.account_key() {
+        return Err(err("ACCOUNT_MISMATCH", "传输所属账号已改变"));
+    }
+    m.inner.core.ensure_session(generation)?;
     let fid = task
         .fid
         .clone()
@@ -142,6 +147,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
                 "已完成下载的临时文件损坏，原文件已保留",
             ));
         }
+        m.check_session()?;
         publish(&temp, Path::new(&cp.target), token).await?;
         return m.progress(id, total, total);
     }
@@ -243,6 +249,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
     cp.sha1 = sha1;
     cp.sha256 = sha256;
     store(m, id, &cp)?;
+    m.check_session()?;
     publish(&temp, Path::new(&cp.target), token).await?;
     task.local_path = Some(cp.target.clone());
     m.progress(id, total, total)
@@ -308,9 +315,11 @@ async fn reserve(m: &TransferManager, id: &str, dir: &Path, name: &str) -> Resul
 async fn get_link(m: &TransferManager, fid: &str, token: &CancellationToken) -> Result<String> {
     let env = cancellable(
         token,
-        m.inner
-            .core
-            .post("/1/clouddrive/file/download", json!({"fids":[fid]})),
+        m.inner.core.post_in_session(
+            m.bound_generation()?,
+            "/1/clouddrive/file/download",
+            json!({"fids":[fid]}),
+        ),
     )
     .await?;
     let list = env["data"]
@@ -381,6 +390,7 @@ async fn send(
 ) -> Result<reqwest::Response> {
     let mut url = reqwest::Url::parse(url).map_err(|_| err("SERVER", "下载链接无效"))?;
     for _ in 0..6 {
+        m.check_session()?;
         if url.scheme() != "https"
             && !(cfg!(test) && url.scheme() == "http" && url.host_str() == Some("127.0.0.1"))
         {
@@ -409,6 +419,7 @@ async fn send(
         if let Some((start, end)) = range {
             req = req.header("range", format!("bytes={start}-{end}"));
         }
+        m.check_session()?;
         let response = cancellable(token, async {
             tokio::time::timeout(Duration::from_secs(60), req.send())
                 .await
@@ -416,6 +427,7 @@ async fn send(
                 .map_err(net_err)
         })
         .await?;
+        m.check_session()?;
         if response.status().is_redirection() {
             let location = response
                 .headers()

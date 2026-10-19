@@ -15,4 +15,5 @@ walkdir = "2.5"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+fs2 = "0.4"
 tempfile = "3"

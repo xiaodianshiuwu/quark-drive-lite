@@ -1,0 +1,1221 @@
+warning: this looks like an `else if` but the `else` is missing
+   --> crates/quark-core/src/files.rs:294:314
+    |
+294 | ...iter().cloned());if list.is_empty()||p["hasMore"]!=true{break;}if page==max_pages{truncated=true;}}
+    |                                                                   ^
+    |
+    = note: to remove this lint, add the missing `else` or add a new line before the second `if`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#possible_missing_else
+    = note: `#[warn(clippy::possible_missing_else)]` on by default
+
+warning: this `map_or` can be simplified
+  --> crates/quark-core/src/session.rs:70:21
+   |
+70 |         .filter(|c| c["expires"].as_i64().map_or(true, |v| v <= 0 || v > now))
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_map_or
+   = note: `#[warn(clippy::unnecessary_map_or)]` on by default
+help: use `is_none_or` instead
+   |
+70 -         .filter(|c| c["expires"].as_i64().map_or(true, |v| v <= 0 || v > now))
+70 +         .filter(|c| c["expires"].as_i64().is_none_or(|v| v <= 0 || v > now))
+   |
+
+warning: `quark-core` (lib) generated 2 warnings (run `cargo clippy --fix --lib -p quark-core -- ` to apply 1 suggestion)
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/quark-transfer/src/download.rs:265:27
+    |
+265 |             || hash_range(&temp, start, len, token).await? != done.sha256
+    |                           ^^^^^ help: change this to: `temp`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+    = note: `#[warn(clippy::needless_borrow)]` on by default
+
+warning: this function has too many arguments (9/7)
+   --> crates/quark-transfer/src/download.rs:537:1
+    |
+537 | / async fn fetch_part(
+538 | |     m: &TransferManager,
+539 | |     fid: &str,
+540 | |     link: &str,
+...   |
+546 | |     on_progress: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+547 | | ) -> Result<(u64, DonePart)> {
+    | |____________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: unneeded `return` statement
+   --> crates/quark-transfer/src/download.rs:894:9
+    |
+894 |         return Err(io_err(e));
+    |         ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_return
+    = note: `#[warn(clippy::needless_return)]` on by default
+help: remove `return`
+    |
+894 -         return Err(io_err(e));
+894 +         Err(io_err(e))
+    |
+
+warning: manual checked division
+   --> crates/quark-transfer/src/manager.rs:319:28
+    |
+319 |                 t.eta = if t.speed > 0 {
+    |                            ^^^^^^^^^^^ check performed here
+320 |                     (total.saturating_sub(bytes) / t.speed) as i64
+    |                     --------------------------------------- division performed here
+    |
+    = help: consider using `checked_div`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_checked_ops
+    = note: `#[warn(clippy::manual_checked_ops)]` on by default
+
+warning: using `chunks_exact` with a constant chunk size
+  --> crates/quark-transfer/src/sha1_state.rs:43:32
+   |
+43 |         let mut blocks = input.chunks_exact(64);
+   |                                ^^^^^^^^^^^^^^^^
+   |
+help: consider using `as_chunks::<64>()` instead
+  --> crates/quark-transfer/src/sha1_state.rs:43:32
+   |
+43 |         let mut blocks = input.chunks_exact(64);
+   |                                ^^^^^^^^^^^^^^^^
+   = note: you can access the chunks using `blocks.0.iter()`, and the remainder using `blocks.1`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#chunks_exact_to_as_chunks
+   = note: `#[warn(clippy::chunks_exact_to_as_chunks)]` on by default
+
+warning: using `chunks_exact` with a constant chunk size
+  --> crates/quark-transfer/src/sha1_state.rs:53:60
+   |
+53 |         for (word, bytes) in schedule.iter_mut().zip(block.chunks_exact(4)) {
+   |                                                            ^^^^^^^^^^^^^^^
+   |
+help: consider using `as_chunks::<4>()` instead
+  --> crates/quark-transfer/src/sha1_state.rs:53:60
+   |
+53 |         for (word, bytes) in schedule.iter_mut().zip(block.chunks_exact(4)) {
+   |                                                            ^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#chunks_exact_to_as_chunks
+
+warning: manual implementation of `.is_multiple_of()`
+   --> crates/quark-transfer/src/upload.rs:130:60
+    |
+130 |             if position > 0 && position < expected.size && position % span == 0 {
+    |                                                            ^^^^^^^^^^^^^^^^^^^^ help: replace with: `position.is_multiple_of(span)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+    = note: `#[warn(clippy::manual_is_multiple_of)]` on by default
+
+warning: manual implementation of `.is_multiple_of()`
+   --> crates/quark-transfer/src/upload.rs:152:16
+    |
+152 |             if position % span == 0 || position == expected.size {
+    |                ^^^^^^^^^^^^^^^^^^^^ help: replace with: `position.is_multiple_of(span)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+
+warning: manual implementation of `.is_multiple_of()`
+   --> crates/quark-transfer/src/upload.rs:401:26
+    |
+401 |     if part_size == 0 || part_size % 65536 != 0 || part_size > 16 * 1024 * 1024 {
+    |                          ^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!part_size.is_multiple_of(65536)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+
+warning: this function has too many arguments (13/7)
+   --> crates/quark-transfer/src/upload.rs:738:1
+    |
+738 | / async fn put_part(
+739 | |     m: &TransferManager,
+740 | |     pre: &Value,
+741 | |     base: &reqwest::Url,
+...   |
+751 | |     rate: Option<std::sync::Arc<UploadRate>>,
+752 | | ) -> Result<String> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+   --> crates/quark-transfer/src/upload.rs:825:1
+    |
+825 | / async fn put_request_limited(
+826 | |     client: &reqwest::Client,
+827 | |     url: reqwest::Url,
+828 | |     mime: &str,
+...   |
+833 | |     rate: Option<std::sync::Arc<UploadRate>>,
+834 | | ) -> Result<String> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+   --> crates/quark-transfer/src/upload.rs:965:1
+    |
+965 | / async fn confirm(
+966 | |     m: &TransferManager,
+967 | |     id: &str,
+968 | |     parent: &str,
+...   |
+973 | |     generation: u64,
+974 | | ) -> Result<()> {
+    | |_______________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this `if` statement can be collapsed
+    --> crates/quark-transfer/src/upload.rs:1003:9
+     |
+1003 | /         if changed.len() == 1 {
+1004 | |             if verified_result(changed[0], checkpoint, require_digest)? {
+1005 | |                 let fid = changed[0]["fid"]
+1006 | |                     .as_str()
+...    |
+1012 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+     = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+     |
+1003 ~         if changed.len() == 1
+1004 ~             && verified_result(changed[0], checkpoint, require_digest)? {
+1005 |                 let fid = changed[0]["fid"]
+ ...
+1010 |                 return Ok(());
+1011 ~             }
+     |
+
+warning: `quark-transfer` (lib) generated 13 warnings (run `cargo clippy --fix --lib -p quark-transfer -- ` to apply 6 suggestions)
+warning: equality checks against false can be replaced by a negation
+   --> crates/quark-backup/src/manager.rs:111:40
+    |
+111 |                 if items.is_empty() || listed["hasMore"].as_bool().unwrap_or(false) == false {
+    |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `!listed["hasMore"].as_bool().unwrap_or(false)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#bool_comparison
+    = note: `#[warn(clippy::bool_comparison)]` on by default
+
+warning: this function has too many arguments (8/7)
+   --> crates/quark-backup/src/manager.rs:365:5
+    |
+365 | /     pub async fn start(
+366 | |         &self,
+367 | |         core: Core,
+368 | |         transfers: quark_transfer::TransferManager,
+...   |
+373 | |         cfg_patch: Value,
+374 | |     ) -> Result<Value, BackupError> {
+    | |___________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: this function has too many arguments (9/7)
+   --> crates/quark-backup/src/scheduler.rs:192:1
+    |
+192 | / pub(crate) async fn worker_loop_controlled(
+193 | |     store: Arc<Store>,
+194 | |     remote: Arc<dyn RemoteOps>,
+195 | |     cfg: BackupConfig,
+...   |
+201 | |     keep_alive: bool,
+202 | | ) -> SchedulerStats {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+  --> crates/quark-backup/src/verifier.rs:33:10
+   |
+33 |       ) -> std::pin::Pin<
+   |  __________^
+34 | |         Box<dyn std::future::Future<Output = Result<(Vec<RemoteEntry>, bool), String>> + Send + 'a>,
+35 | |     > {
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+   = note: `#[warn(clippy::type_complexity)]` on by default
+
+warning: this loop could be written as a `while let` loop
+   --> crates/quark-backup/src/verifier.rs:305:17
+    |
+305 | /                 loop {
+306 | |                     match ops.list_page(&fid, page).await {
+307 | |                         Ok((entries, more)) => {
+308 | |                             if entries
+...   |
+322 | |                 }
+    | |_________________^ help: try: `while let Ok((entries, more)) = ops.list_page(&fid, page).await { .. }`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#while_let_loop
+    = note: `#[warn(clippy::while_let_loop)]` on by default
+
+warning: redundant closure
+   --> crates/quark-backup/src/store.rs:281:22
+    |
+281 |             .map_err(|e| rusqlite::Error::InvalidParameterName(e))?;
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the tuple variant itself: `rusqlite::Error::InvalidParameterName`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+    = note: `#[warn(clippy::redundant_closure)]` on by default
+
+warning: `quark-backup` (lib) generated 6 warnings (run `cargo clippy --fix --lib -p quark-backup -- ` to apply 2 suggestions)
+    Checking quark-agent v0.1.0 (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/crates/quark-agent)
+warning: unnecessary use of `clone` to create a slice from a reference
+   --> crates/quark-backup/src/scheduler.rs:677:33
+    |
+677 |         store.upsert_discovered(&[t.clone()]).unwrap();
+    |                                 ^^^^^^^^^^^^ help: try: `std::slice::from_ref(&t)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#cloned_ref_to_slice_refs
+    = note: `#[warn(clippy::cloned_ref_to_slice_refs)]` on by default
+
+warning: unnecessary use of `clone` to create a slice from a reference
+   --> crates/quark-backup/src/scheduler.rs:704:33
+    |
+704 |         store.upsert_discovered(&[t2.clone()]).unwrap();
+    |                                 ^^^^^^^^^^^^^ help: try: `std::slice::from_ref(&t2)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#cloned_ref_to_slice_refs
+
+warning: unnecessary use of `clone` to create a slice from a reference
+   --> crates/quark-backup/src/verifier.rs:531:37
+    |
+531 |             store.upsert_discovered(&[t.clone()]).unwrap();
+    |                                     ^^^^^^^^^^^^ help: try: `std::slice::from_ref(t)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#cloned_ref_to_slice_refs
+
+warning: unnecessary use of `clone` to create a slice from a reference
+   --> crates/quark-backup/src/verifier.rs:660:37
+    |
+660 |             store.upsert_discovered(&[task.clone()]).unwrap();
+    |                                     ^^^^^^^^^^^^^^^ help: try: `std::slice::from_ref(&task)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#cloned_ref_to_slice_refs
+
+warning: used `assert_eq!` with a literal bool
+   --> crates/quark-backup/src/scanner.rs:315:9
+    |
+315 |         assert_eq!(normalize_rel(Path::new("..")).is_none(), true);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#bool_assert_comparison
+    = note: `#[warn(clippy::bool_assert_comparison)]` on by default
+help: replace it with `assert!(..)`
+    |
+315 -         assert_eq!(normalize_rel(Path::new("..")).is_none(), true);
+315 +         assert!(normalize_rel(Path::new("..")).is_none());
+    |
+
+warning: used `assert_eq!` with a literal bool
+   --> crates/quark-backup/src/scanner.rs:316:9
+    |
+316 |         assert_eq!(normalize_rel(Path::new("a/../../b")).is_none(), true);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#bool_assert_comparison
+help: replace it with `assert!(..)`
+    |
+316 -         assert_eq!(normalize_rel(Path::new("a/../../b")).is_none(), true);
+316 +         assert!(normalize_rel(Path::new("a/../../b")).is_none());
+    |
+
+warning: `quark-backup` (lib test) generated 12 warnings (6 duplicates) (run `cargo clippy --fix --lib -p quark-backup --tests -- ` to apply 6 suggestions)
+warning: `quark-transfer` (lib test) generated 13 warnings (13 duplicates)
+warning: `quark-core` (lib test) generated 2 warnings (2 duplicates)
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/policy.rs:136:55
+    |
+136 | pub fn assert_plain_path(value: &str, label: &str) -> Result<String, AgentToolError> {
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+    = note: `#[warn(clippy::result_large_err)]` on by default
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/policy.rs:150:39
+    |
+150 | pub fn resolve_real(target: &Path) -> Result<PathBuf, AgentToolError> {
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/policy.rs:231:6
+    |
+231 | ) -> Result<PathBuf, AgentToolError> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: field assignment outside of initializer for an instance created with Default::default()
+  --> crates/quark-agent/src/config.rs:79:9
+   |
+79 |         c.enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: consider initializing the variable with `config::AgentConfig { enabled: v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false), ..Default::default() }` and removing relevant reassignments
+  --> crates/quark-agent/src/config.rs:78:9
+   |
+78 |         let mut c = Self::default();
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#field_reassign_with_default
+   = note: `#[warn(clippy::field_reassign_with_default)]` on by default
+
+warning: this can be `std::io::Error::other(_)`
+   --> crates/quark-agent/src/config.rs:164:22
+    |
+164 |         .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "encrypt failed"))?;
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#io_other_error
+    = note: `#[warn(clippy::io_other_error)]` on by default
+help: use `std::io::Error::other`
+    |
+164 -         .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "encrypt failed"))?;
+164 +         .map_err(|_| std::io::Error::other("encrypt failed"))?;
+    |
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/quark-agent/src/config.rs:266:39
+    |
+266 |             Ok(AgentConfig::from_json(&v.get("data").unwrap_or(&Value::Null)))
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `v.get("data").unwrap_or(&Value::Null)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+    = note: `#[warn(clippy::needless_borrow)]` on by default
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/config.rs:273:46
+    |
+273 |     fn save(&mut self, cfg: &AgentConfig) -> Result<(), AgentToolError> {
+    |                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/config.rs:289:61
+    |
+289 |     pub fn update(&mut self, patch: &Value, now_ms: i64) -> Result<AgentConfig, AgentToolError> {
+    |                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/config.rs:347:52
+    |
+347 |     pub fn rotate_token(&mut self, now_ms: i64) -> Result<AgentConfig, AgentToolError> {
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/config.rs:358:95
+    |
+358 | ...ing, now_ms: i64) -> Result<(AgentConfig, String), AgentToolError> {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/config.rs:378:50
+    |
+378 |     pub fn deactivate(&mut self, now_ms: i64) -> Result<AgentConfig, AgentToolError> {
+    |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/config.rs:387:55
+    |
+387 |     fn write_bridge_file(&self, cfg: &AgentConfig) -> Result<(), AgentToolError> {
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/config.rs:453:55
+    |
+453 | pub fn read_bridge_credentials(profile_dir: &Path) -> Result<(String, String), AgentToolError> {
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/plans.rs:185:10
+    |
+185 |     ) -> Result<Value, AgentToolError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/plans.rs:259:41
+    |
+259 |     pub fn get(&self, plan_id: &str) -> Result<Value, AgentToolError> {
+    |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/plans.rs:278:10
+    |
+278 |     ) -> Result<Plan, AgentToolError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/plans.rs:327:52
+    |
+327 |     pub fn mark_executing(&self, plan_id: &str) -> Result<(), AgentToolError> {
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/plans.rs:338:85
+    |
+338 |     pub fn mark_executed(&self, plan_id: &str, results: &Value, summary: &Value) -> Result<Value, AgentToolError> {
+    |                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: consider using `sort_by_key`
+   --> crates/quark-agent/src/plans.rs:355:9
+    |
+355 |         plans.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_sort_by
+    = note: `#[warn(clippy::unnecessary_sort_by)]` on by default
+help: try
+    |
+355 -         plans.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+355 +         plans.sort_by_key(|a| std::cmp::Reverse(a.created_at));
+    |
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/gateway.rs:299:63
+    |
+299 |     pub async fn start(self: StdArc<Self>, endpoint: &str) -> Result<(), AgentToolError> {
+    |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/quark-agent/src/gateway.rs:383:53
+    |
+383 |                 &json!({ "endpoint": audit_endpoint(&endpoint) }),
+    |                                                     ^^^^^^^^^ help: change this to: `endpoint`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/gateway.rs:529:10
+    |
+529 |     ) -> Result<Value, AgentToolError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: manual implementation of `ok`
+   --> crates/quark-agent/src/gateway.rs:881:21
+    |
+881 | /                     match tokio::time::timeout_at(deadline, rd.read(&mut scratch)).await {
+882 | |                         Ok(r) => Some(r),
+883 | |                         // 认证超时：qck 直接 destroy（不写响应），只记审计。
+884 | |                         Err(_) => None,
+885 | |                     }
+    | |_____________________^ help: replace with: `tokio::time::timeout_at(deadline, rd.read(&mut scratch)).await.ok()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_ok_err
+    = note: `#[warn(clippy::manual_ok_err)]` on by default
+
+warning: this `if let` can be collapsed into the outer `if let`
+    --> crates/quark-agent/src/gateway.rs:1204:9
+     |
+1204 | /         if let Value::Object(obj) = &parsed {
+1205 | |             if let Some(id) = obj.get("id") {
+1206 | |                 return id.clone();
+1207 | |             }
+1208 | |         }
+     | |_________^
+     |
+help: the outer pattern can be modified to include the inner pattern
+    --> crates/quark-agent/src/gateway.rs:1203:15
+     |
+1203 |     if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+     |               ^^^^^^    ----------------------------------- use: `serde_json::from_str::<Value>(text).as_ref()`
+     |               |
+     |               replace this binding
+1204 |         if let Value::Object(obj) = &parsed {
+     |                ^^^^^^^^^^^^^^^^^^ with this pattern
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_match
+     = note: `#[warn(clippy::collapsible_match)]` on by default
+
+warning: this `impl` can be derived
+  --> crates/quark-agent/src/chat.rs:85:1
+   |
+85 | / impl Default for ChatState {
+86 | |     fn default() -> Self {
+87 | |         Self { messages: Vec::new(), transcript: Vec::new(), last_error: String::new() }
+88 | |     }
+89 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#derivable_impls
+   = note: `#[warn(clippy::derivable_impls)]` on by default
+help: replace the manual implementation with a derive attribute
+   |
+77 + #[derive(Default)]
+78 | struct ChatState {
+   |
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat.rs:145:10
+    |
+145 |     ) -> Result<SendOutcome, AgentToolError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat.rs:218:10
+    |
+218 |     ) -> Result<SendOutcome, AgentToolError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat.rs:476:10
+    |
+476 |     ) -> Result<Value, AgentToolError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat.rs:487:10
+    |
+487 |     ) -> Result<Value, AgentToolError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat.rs:580:78
+    |
+580 |     async fn run_tool(&self, name: &str, raw_args: &Value,generation:u64) -> Result<Value, AgentToolError> {
+    |                                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat.rs:692:44
+    |
+692 |     pub async fn test_connection(&self) -> Result<Value, AgentToolError> {
+    |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat.rs:724:40
+    |
+724 |     pub async fn list_models(&self) -> Result<Value, AgentToolError> {
+    |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat.rs:837:49
+    |
+837 |     fn ensure_generation(&self,generation:u64)->Result<(),AgentToolError> {
+    |                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat.rs:841:80
+    |
+841 |     pub fn with_idle<T>(&self,action:impl FnOnce()->Result<T,AgentToolError>)->Result<T,AgentToolError> {
+    |                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat.rs:845:26
+    |
+845 |     pub fn clear(&self)->Result<Value,AgentToolError> {
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this closure is very large
+   --> crates/quark-agent/src/chat.rs:846:24
+    |
+846 | ...le(||{let mut st=self.state.lock().unwrap();st.messages.clear();st.transcript.clear();st.last_error.clear();Ok(json!({"ok":true}))})
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat.rs:855:71
+    |
+855 | async fn read_model_body(mut response:reqwest::Response,limit:usize)->Result<Vec<u8>,AgentToolError> {
+    |                                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat_config.rs:201:53
+    |
+201 | pub fn normalize_base_url(input: Option<&Value>) -> Result<String, AgentToolError> {
+    |                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat_config.rs:340:44
+    |
+340 |     pub fn update(&self, patch: &Value) -> Result<Value, AgentToolError> {
+    |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/chat_config.rs:422:28
+    |
+422 |     pub fn clear(&self) -> Result<Value,AgentToolError> {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:145:62
+    |
+145 | pub fn require_string(v: &Value, label: &str, trim: bool) -> Result<String, AgentToolError> {
+    |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:156:51
+    |
+156 | pub fn optional_string(v: &Value, label: &str) -> Result<Option<String>, AgentToolError> {
+    |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:199:62
+    |
+199 |     async fn transfer_call(&self,method:&str,params:&Value)->Result<Value,AgentToolError> {
+    |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:219:50
+    |
+219 |     pub fn assert_writable(&self, what: &str) -> Result<(), AgentToolError> {
+    |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:231:62
+    |
+231 |     pub async fn assert_remote_in_scope(&self, fid: &str) -> Result<String, AgentToolError> {
+    |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:269:73
+    |
+269 |     pub async fn assert_many_remote_in_scope(&self, fids: &[String]) -> Result<(), AgentToolError> {
+    |                                                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:277:49
+    |
+277 |     pub async fn safe_info(&self, fid: &str) -> Result<Value, AgentToolError> {
+    |                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:334:95
+    |
+334 |     pub async fn list_dir_page(&self, parent: &str, page: i64, size: i64, use_cache: bool) -> Result<Value, AgentToolError> {
+    |                                                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:420:89
+    |
+420 |     pub async fn assert_not_moving_into_itself(&self, fids: &[String], to_fid: &str) -> Result<(), AgentToolError> {
+    |                                                                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:720:10
+    |
+720 |     ) -> ToolResult {
+    |          ^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:739:74
+    |
+739 |     async fn dispatch(&self, env: &ToolEnv, name: &str, args: &Value) -> Result<Value, AgentToolError> {
+    |                                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:785:57
+    |
+785 |     async fn tool_drive_status(&self, env: &ToolEnv) -> Result<Value, AgentToolError> {
+    |                                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:817:44
+    |
+817 |     fn first_remote_root(env: &ToolEnv) -> Result<String, AgentToolError> {
+    |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:826:104
+    |
+826 |     async fn tool_list_dir(&self, env: &ToolEnv, _args: &Value, a: &(dyn Fn(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+    |                                                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:855:108
+    |
+855 | ...n(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:901:90
+    |
+901 |     async fn tool_file_info(&self, env: &ToolEnv, a: &(dyn Fn(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+    |                                                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/tools.rs:908:104
+    |
+908 |     async fn tool_tree_dir(&self, env: &ToolEnv, _args: &Value, a: &(dyn Fn(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+    |                                                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1009:110
+     |
+1009 | ...n(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1054:110
+     |
+1054 | ...n(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1126:109
+     |
+1126 | ...n(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1136:90
+     |
+1136 |     async fn tool_get_plan(&self, _env: &ToolEnv, a: &(dyn Fn(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1144:94
+     |
+1144 |     async fn tool_create_folder(&self, env: &ToolEnv, a: &(dyn Fn(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1177:93
+     |
+1177 |     async fn tool_rename_entry(&self, env: &ToolEnv, a: &(dyn Fn(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1224:10
+     |
+1224 |     ) -> Result<(Vec<String>, String, Vec<Value>, Vec<Value>, bool), AgentToolError> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1258:108
+     |
+1258 | ...n(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1293:108
+     |
+1293 | ...n(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1321:110
+     |
+1321 | ...n(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1360:67
+     |
+1360 |     fn resolve_work_dir(env: &ToolEnv, explicit: Option<&str>) -> Result<std::path::PathBuf, AgentToolError> {
+     |                                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1378:44
+     |
+1378 |     fn sanitize_upload_name(name: &str) -> Result<(), AgentToolError> {
+     |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1389:107
+     |
+1389 | ...n(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1494:110
+     |
+1494 | ...n(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1605:97
+     |
+1605 |     async fn tool_transfer_control(&self, env: &ToolEnv, a: &(dyn Fn(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                                                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: unnecessary closure used to substitute value for `Option::None`
+    --> crates/quark-agent/src/tools.rs:1685:37
+     |
+1685 |                   if let Some(list) = groups.get("__custom")
+     |  _____________________________________^
+1686 | |                     .or_else(|| None)
+     | |_____________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_lazy_evaluations
+     = note: `#[warn(clippy::unnecessary_lazy_evaluations)]` on by default
+help: use `or` instead
+     |
+1686 -                     .or_else(|| None)
+1686 +                     .or(None)
+     |
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1777:107
+     |
+1777 | ...n(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:1960:93
+     |
+1960 |     async fn tool_plan_execute(&self, env: &ToolEnv, a: &(dyn Fn(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:2134:110
+     |
+2134 | ...n(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+     |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+    --> crates/quark-agent/src/tools.rs:2260:66
+     |
+2260 | pub fn read_text_at(path: &std::path::Path, max_bytes: usize) -> Result<Value, AgentToolError> {
+     |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+  --> crates/quark-agent/src/runtime.rs:93:10
+   |
+93 |     ) -> Result<Arc<Self>, AgentToolError> {
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+   |
+   = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/runtime.rs:157:38
+    |
+157 |     async fn start_gateway(&self) -> Result<(), AgentToolError> {
+    |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/runtime.rs:172:50
+    |
+172 |     pub async fn enable(&self, patch: &Value) -> Result<Value, AgentToolError> {
+    |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/runtime.rs:199:36
+    |
+199 |     pub async fn disable(&self) -> Result<Value, AgentToolError> {
+    |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/runtime.rs:211:50
+    |
+211 |     pub fn update_scope(&self, patch: &Value) -> Result<Value, AgentToolError> {
+    |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/runtime.rs:244:35
+    |
+244 |     pub async fn rotate(&self) -> Result<Value, AgentToolError> {
+    |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/runtime.rs:312:33
+    |
+312 |     pub fn mcp_config(&self) -> Result<Value,AgentToolError> {
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/runtime.rs:337:41
+    |
+337 |     pub fn bridge_credentials(&self) -> Result<(String, String), AgentToolError> {
+    |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/quark-agent/src/runtime.rs:349:10
+    |
+349 |     ) -> Result<Value, AgentToolError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this closure is very large
+   --> crates/quark-agent/src/runtime.rs:368:54
+    |
+368 |             "chat.saveConfig" => self.chat.with_idle(||self.chat_config.update(&params)),
+    |                                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this closure is very large
+   --> crates/quark-agent/src/runtime.rs:369:55
+    |
+369 |             "chat.clearConfig" => self.chat.with_idle(||self.chat_config.clear()),
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: `quark-agent` (lib) generated 88 warnings (run `cargo clippy --fix --lib -p quark-agent -- ` to apply 5 suggestions)
+    Checking quark-drive-lite-tauri v0.3.0-alpha.1 (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/src-tauri)
+warning: this assertion has a constant value
+    --> crates/quark-agent/src/gateway.rs:1591:9
+     |
+1591 | /         assert!(
+1592 | |             MAX_MESSAGE_BYTES > crate::tools::MAX_TEXT_BYTES,
+1593 | |             "MAX_MESSAGE_BYTES 必须大于 tools::MAX_TEXT_BYTES"
+1594 | |         );
+     | |_________^
+     |
+     = help: consider moving this into a const block: `const { assert!(..) }`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#assertions_on_constants
+     = note: `#[warn(clippy::assertions_on_constants)]` on by default
+
+warning: this assertion has a constant value
+    --> crates/quark-agent/src/gateway.rs:1595:9
+     |
+1595 |         assert!(MAX_UNAUTHENTICATED_CONNECTIONS < MAX_CONNECTIONS);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: consider moving this into a const block: `const { assert!(..) }`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#assertions_on_constants
+
+warning: used `assert_eq!` with a literal bool
+    --> crates/quark-agent/src/gateway.rs:2014:9
+     |
+2014 |         assert_eq!(r.close, false);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#bool_assert_comparison
+     = note: `#[warn(clippy::bool_assert_comparison)]` on by default
+help: replace it with `assert!(..)`
+     |
+2014 -         assert_eq!(r.close, false);
+2014 +         assert!(!r.close);
+     |
+
+warning: the `Err`-variant returned from this closure is very large
+    --> crates/quark-agent/src/chat.rs:1964:34
+     |
+1964 |         assert!(f.chat.with_idle(||f.config.clear()).is_err());
+     |                                  ^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 136 bytes
+     |
+     = help: try reducing the size of `policy::AgentToolError`, for example by boxing large elements or replacing it with `Box<policy::AgentToolError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: `quark-agent` (lib test) generated 92 warnings (88 duplicates) (run `cargo clippy --fix --lib -p quark-agent --tests -- ` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.28s

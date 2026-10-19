@@ -76,6 +76,8 @@ pub(crate) struct Task {
     pub checkpoint: Value,
     #[serde(default)]
     pub account_key: Option<String>,
+    #[serde(default)]
+    pub rate_limit_bps: u64,
     #[serde(skip)]
     pub sample: Option<(u64, u64)>,
 }
@@ -97,10 +99,12 @@ pub(crate) struct Inner {
     started: AtomicBool,
     pub(crate) download_slots: Semaphore,
     pub(crate) upload_buffers: Semaphore,
+    pub(crate) upload_rate_next: Arc<AsyncMutex<tokio::time::Instant>>,
 }
 #[derive(Clone)]
 pub struct TransferManager {
     pub(crate) inner: Arc<Inner>,
+    expected_generation: Option<u64>,
 }
 
 pub(crate) fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -154,6 +158,7 @@ impl TransferManager {
             t.eta = -1;
         }
         let result = Self {
+            expected_generation: None,
             inner: Arc::new(Inner {
                 core,
                 tasks: Mutex::new(tasks),
@@ -164,6 +169,7 @@ impl TransferManager {
                 started: AtomicBool::new(false),
                 download_slots: Semaphore::new(32),
                 upload_buffers: Semaphore::new(64 * 1024),
+                upload_rate_next: Arc::new(AsyncMutex::new(tokio::time::Instant::now())),
             }),
         };
         result.persist()?;
@@ -180,10 +186,23 @@ impl TransferManager {
                 let Some(inner) = weak.upgrade() else {
                     break;
                 };
-                let manager = Self { inner };
+                let manager = Self {
+                    inner,
+                    expected_generation: None,
+                };
                 manager.pump();
             }
         });
+    }
+    pub(crate) fn bound_generation(&self) -> Result<u64> {
+        let generation = self
+            .expected_generation
+            .unwrap_or_else(|| self.inner.core.session_generation());
+        self.inner.core.ensure_session(generation)?;
+        Ok(generation)
+    }
+    pub(crate) fn check_session(&self) -> Result<()> {
+        self.bound_generation().map(|_| ())
     }
     pub fn snapshot(&self) -> Value {
         let tasks = self.inner.tasks.lock().unwrap();
@@ -194,11 +213,68 @@ impl TransferManager {
                     let mut v = serde_json::to_value(t).unwrap_or(Value::Null);
                     if let Some(o) = v.as_object_mut() {
                         o.remove("checkpoint");
+                        o.remove("accountKey");
                     }
                     v
                 })
                 .collect(),
         )
+    }
+    /// Single-task snapshots avoid serializing the entire GUI queue for every backup poll.
+    pub fn task_status(&self, id: &str) -> Result<Value> {
+        let task = self.task(id)?;
+        let mut value =
+            serde_json::to_value(task).map_err(|_| err("LOCAL_IO", "任务序列化失败"))?;
+        if let Some(o) = value.as_object_mut() {
+            o.remove("checkpoint");
+            o.remove("accountKey");
+        }
+        Ok(value)
+    }
+    pub fn resumable_upload(&self, path: &str, parent: &str) -> Option<String> {
+        let account = self.inner.core.account_key();
+        self.inner
+            .tasks
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|t| {
+                t.kind == "upload"
+                    && t.local_path.as_deref() == Some(path)
+                    && t.pdir_fid.as_deref() == Some(parent)
+                    && t.account_key == account
+                    && matches!(t.status.as_str(), "paused" | "error")
+            })
+            .map(|t| t.id.clone())
+    }
+    pub fn attributable_upload(&self, path: &str, parent: &str, fid: &str) -> Option<String> {
+        let metadata = std::fs::metadata(path).ok()?;
+        let modified = metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        let account = self.inner.core.account_key();
+        self.inner
+            .tasks
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|t| {
+                t.kind == "upload"
+                    && t.local_path.as_deref() == Some(path)
+                    && t.pdir_fid.as_deref() == Some(parent)
+                    && t.fid.as_deref() == Some(fid)
+                    && t.account_key == account
+                    && t.checkpoint["size"].as_u64() == Some(metadata.len())
+                    && t.checkpoint["modified"].as_u64().map(u128::from) == Some(modified)
+                    && matches!(t.status.as_str(), "done" | "paused" | "error")
+            })
+            .map(|t| t.id.clone())
+    }
+    pub fn active_uploads(&self, paths: &[String]) -> Vec<Value> {
+        self.inner.tasks.lock().unwrap().iter().filter(|t|t.kind=="upload" && matches!(t.status.as_str(),"pending"|"running") && t.local_path.as_ref().is_some_and(|p|paths.contains(p))).map(|t|serde_json::json!({"name":t.name,"size":t.size,"transferred":t.transferred,"speed":t.speed})).collect()
     }
     pub(crate) fn task(&self, id: &str) -> Result<Task> {
         self.inner
@@ -296,7 +372,10 @@ impl TransferManager {
                     kind: task.kind.clone(),
                 },
             );
-            let manager = self.clone();
+            let manager = Self {
+                inner: self.inner.clone(),
+                expected_generation: Some(self.inner.core.session_generation()),
+            };
             let id = task.id.clone();
             let kind = task.kind.clone();
             tokio::spawn(async move {
@@ -345,11 +424,17 @@ impl TransferManager {
                         .call("auth.getUserInfo", Value::Null)
                         .await?;
                 }
+                if let Some(g) = params["_expectedSessionGeneration"].as_u64() {
+                    self.inner.core.ensure_session(g)?;
+                }
                 let account_key = self
                     .inner
                     .core
                     .account_key()
                     .ok_or_else(|| err("NEED_LOGIN", "请先登录并验证账号，再创建传输任务"))?;
+                if let Some(g) = params["_expectedSessionGeneration"].as_u64() {
+                    self.inner.core.ensure_session(g)?;
+                }
                 let upload = method == "transfer.upload";
                 let key = if upload { "localPaths" } else { "fids" };
                 let items = params[key]
@@ -411,6 +496,10 @@ impl TransferManager {
                         eta: -1,
                         checkpoint: json!({}),
                         account_key: Some(account_key.clone()),
+                        rate_limit_bps: params["rateLimitBps"]
+                            .as_u64()
+                            .unwrap_or(0)
+                            .min(1_099_511_627_776),
                         sample: None,
                     });
                 }
@@ -470,6 +559,9 @@ impl TransferManager {
                         if t.status == "canceled" && t.kind == "download" {
                             t.checkpoint = json!({});
                             t.local_path = None;
+                        }
+                        if let Some(rate) = params["rateLimitBps"].as_u64() {
+                            t.rate_limit_bps = rate.min(1_099_511_627_776);
                         }
                         t.status = "pending".into();
                         t.error = None;
@@ -624,5 +716,31 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.code, "NEED_LOGIN");
         assert_eq!(m.snapshot(), json!([]));
+    }
+    #[tokio::test]
+    async fn login_replaced_while_enqueue_waits_for_control_cannot_bind_to_the_new_account() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = Core::open(temp.path()).unwrap();
+        core.replace_cookies(
+            json!([{"name":"fixture","value":"first-test-only","domain":"quark.cn"}]),
+        )
+        .unwrap();
+        let generation = core.session_generation();
+        let manager = TransferManager::open(core.clone()).unwrap();
+        let control = manager.inner.controls.lock().await;
+        let pending = manager.clone();
+        let path = temp.path().join("test-file");
+        std::fs::write(&path, b"safe").unwrap();
+        let enqueue = tokio::spawn(async move {
+            pending.call("transfer.upload",json!({"localPaths":[path],"pdirFid":"0","_expectedSessionGeneration":generation})).await
+        });
+        tokio::task::yield_now().await;
+        core.replace_cookies(
+            json!([{"name":"fixture","value":"second-test-only","domain":"quark.cn"}]),
+        )
+        .unwrap();
+        drop(control);
+        assert_eq!(enqueue.await.unwrap().unwrap_err().code, "ABORTED");
+        assert!(manager.snapshot().as_array().unwrap().is_empty());
     }
 }

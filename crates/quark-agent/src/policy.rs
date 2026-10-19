@@ -207,14 +207,9 @@ pub fn normalize_for_compare(p: &str) -> String {
 /// `target` 是否等于 `root` 或位于其内部（均为已解析的绝对路径）。
 /// 用组件级包含关系，等价于 qck 的 `path.relative` + 前缀判定。
 pub fn is_inside(root: &Path, target: &Path) -> bool {
-    let root_n = normalize_for_compare(&root.to_string_lossy());
-    let target_n = normalize_for_compare(&target.to_string_lossy());
-    let root_p = Path::new(&root_n);
-    let target_p = Path::new(&target_n);
-    if root_p == target_p {
-        return true;
-    }
-    target_p.starts_with(root_p)
+    // Both paths were canonicalized by the OS. Case-folding here can authorize
+    // a different sibling on case-sensitive APFS/Windows directories.
+    target.starts_with(root)
 }
 
 /// 本地路径授权根：`access` 为 `r`（只读）或 `rw`（可读写）。
@@ -424,6 +419,7 @@ mod tests {
         assert!(assert_local_path("/tmp/../etc", &roots, false, "本地路径").is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolve_real_resolves_symlink_escape() {
         let base = std::env::temp_dir().join(format!("qk-agent-symlink-{}", std::process::id()));
@@ -478,4 +474,11 @@ mod tests {
         let other = AgentToolError::from_upstream("WEIRD_CODE", "其他", None);
         assert_eq!(other.to_json()["code"], "AGENT_UPSTREAM");
     }
+    #[test]
+    fn canonical_scope_does_not_case_fold_distinct_siblings() {
+        assert!(!is_inside(Path::new("/volume/Allowed"),Path::new("/volume/allowed/private")));
+        assert!(is_inside(Path::new("/volume/Allowed"),Path::new("/volume/Allowed/file")));
+        assert!(!is_inside(Path::new("/volume/Allowed"),Path::new("/volume/AllowedSibling/file")));
+    }
+
 }

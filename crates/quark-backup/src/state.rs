@@ -60,7 +60,10 @@ impl TaskState {
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(self, TaskState::Success | TaskState::Failed | TaskState::Skipped | TaskState::Canceled)
+        matches!(
+            self,
+            TaskState::Success | TaskState::Failed | TaskState::Skipped | TaskState::Canceled
+        )
     }
 
     pub fn is_active(&self) -> bool {
@@ -74,6 +77,7 @@ impl TaskState {
             // 正向流水线
             (Discovered, Pending) => true,
             (Pending, Uploading) => true,
+            (Pending, Pending) => true, // release a claim / persist a pre-upload retry window
             (Uploading, Verifying) => true,
             (Verifying, Success) => true,
             // 失败/跳过/取消：从任何非终态
@@ -93,7 +97,11 @@ impl TaskState {
         if ok {
             Ok(())
         } else {
-            Err(format!("非法状态迁移：{} → {}", self.as_str(), next.as_str()))
+            Err(format!(
+                "非法状态迁移：{} → {}",
+                self.as_str(),
+                next.as_str()
+            ))
         }
     }
 }
@@ -116,19 +124,37 @@ mod tests {
 
     #[test]
     fn forward_pipeline_is_legal() {
-        assert!(TaskState::Discovered.can_transition_to(TaskState::Pending).is_ok());
-        assert!(TaskState::Pending.can_transition_to(TaskState::Uploading).is_ok());
-        assert!(TaskState::Uploading.can_transition_to(TaskState::Verifying).is_ok());
-        assert!(TaskState::Verifying.can_transition_to(TaskState::Success).is_ok());
+        assert!(TaskState::Discovered
+            .can_transition_to(TaskState::Pending)
+            .is_ok());
+        assert!(TaskState::Pending
+            .can_transition_to(TaskState::Uploading)
+            .is_ok());
+        assert!(TaskState::Uploading
+            .can_transition_to(TaskState::Verifying)
+            .is_ok());
+        assert!(TaskState::Verifying
+            .can_transition_to(TaskState::Success)
+            .is_ok());
     }
 
     #[test]
     fn illegal_jumps_are_rejected() {
-        assert!(TaskState::Discovered.can_transition_to(TaskState::Success).is_err());
-        assert!(TaskState::Discovered.can_transition_to(TaskState::Uploading).is_err());
-        assert!(TaskState::Pending.can_transition_to(TaskState::Verifying).is_err());
-        assert!(TaskState::Success.can_transition_to(TaskState::Pending).is_err());
-        assert!(TaskState::Success.can_transition_to(TaskState::Uploading).is_err());
+        assert!(TaskState::Discovered
+            .can_transition_to(TaskState::Success)
+            .is_err());
+        assert!(TaskState::Discovered
+            .can_transition_to(TaskState::Uploading)
+            .is_err());
+        assert!(TaskState::Pending
+            .can_transition_to(TaskState::Verifying)
+            .is_err());
+        assert!(TaskState::Success
+            .can_transition_to(TaskState::Pending)
+            .is_err());
+        assert!(TaskState::Success
+            .can_transition_to(TaskState::Uploading)
+            .is_err());
     }
 
     #[test]
@@ -141,15 +167,24 @@ mod tests {
 
     #[test]
     fn cancel_allowed_from_any_active_state() {
-        for st in [TaskState::Discovered, TaskState::Pending, TaskState::Uploading, TaskState::Verifying] {
+        for st in [
+            TaskState::Discovered,
+            TaskState::Pending,
+            TaskState::Uploading,
+            TaskState::Verifying,
+        ] {
             assert!(st.can_transition_to(TaskState::Canceled).is_ok());
         }
     }
 
     #[test]
     fn crash_recovery_maps_to_pending() {
-        assert!(TaskState::Uploading.can_transition_to(TaskState::Pending).is_ok());
-        assert!(TaskState::Verifying.can_transition_to(TaskState::Pending).is_ok());
+        assert!(TaskState::Uploading
+            .can_transition_to(TaskState::Pending)
+            .is_ok());
+        assert!(TaskState::Verifying
+            .can_transition_to(TaskState::Pending)
+            .is_ok());
     }
 
     #[test]
@@ -165,9 +200,14 @@ mod tests {
     #[test]
     fn state_round_trip() {
         for st in [
-            TaskState::Discovered, TaskState::Pending, TaskState::Uploading,
-            TaskState::Verifying, TaskState::Success, TaskState::Failed,
-            TaskState::Skipped, TaskState::Canceled,
+            TaskState::Discovered,
+            TaskState::Pending,
+            TaskState::Uploading,
+            TaskState::Verifying,
+            TaskState::Success,
+            TaskState::Failed,
+            TaskState::Skipped,
+            TaskState::Canceled,
         ] {
             assert_eq!(TaskState::parse(st.as_str()), Some(st));
         }

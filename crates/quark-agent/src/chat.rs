@@ -129,6 +129,7 @@ impl AgentChat {
             // 不需要显式代理变量；需要显式代理的场景由宿主提供，不在此处隐式继承。
             client: reqwest::Client::builder()
                 .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             state: StdMutex::new(ChatState::default()),
@@ -177,7 +178,8 @@ impl AgentChat {
         }
         let started = Instant::now();
         let mut tool_calls: Vec<Value> = Vec::new();
-        match self.run_loop(&cfg, started, &mut tool_calls, on_event.as_ref()).await {
+        let generation=self.source.generation();
+        match self.run_loop(&cfg, started, &mut tool_calls, on_event.as_ref(),generation).await {
             Ok(outcome) => Ok(outcome),
             Err(e) => {
                 {
@@ -212,9 +214,11 @@ impl AgentChat {
         started: Instant,
         tool_calls: &mut Vec<Value>,
         on_event: Option<&EventCallback>,
+        generation:u64,
     ) -> Result<SendOutcome, AgentToolError> {
         let mut round: u32 = 0;
         loop {
+            self.ensure_generation(generation)?;
             round += 1;
             if round > cfg.max_rounds {
                 break;
@@ -227,6 +231,7 @@ impl AgentChat {
             }
             let remaining = TOTAL_TIMEOUT_MS - elapsed;
             let message = self.call_model(cfg, remaining).await?;
+            self.ensure_generation(generation)?;
             let calls = message
                 .get("tool_calls")
                 .and_then(|v| v.as_array())
@@ -365,7 +370,9 @@ impl AgentChat {
                     }),
                 );
                 let t0 = Instant::now();
-                let outcome = self.run_tool(&name, &args_raw).await;
+                self.ensure_generation(generation)?;
+                let outcome = self.run_tool(&name, &args_raw,generation).await;
+                self.ensure_generation(generation)?;
                 let ms = t0.elapsed().as_millis() as u64;
                 let (ok, packed, summary) = match outcome {
                     Ok(payload) => {
@@ -518,7 +525,7 @@ impl AgentChat {
         let status = response.status();
         if !status.is_success() {
             // 错误响应里通常含服务端说明（例如 key 无效、模型名不存在），带给用户便于排查。
-            let detail = response.text().await.unwrap_or_default();
+            let detail = String::from_utf8_lossy(&read_model_body(response,64*1024).await?).replace(&cfg.api_key,"[已脱敏]");
             let detail: String = detail.chars().take(500).collect();
             let code = if status == reqwest::StatusCode::UNAUTHORIZED
                 || status == reqwest::StatusCode::FORBIDDEN
@@ -537,9 +544,11 @@ impl AgentChat {
                     .with_hint(hint),
             );
         }
-        let json: Value = response.json().await.map_err(|_| {
+        let bytes=read_model_body(response,4*1024*1024).await?;
+        let mut json: Value = serde_json::from_slice(&bytes).map_err(|_| {
             AgentToolError::new(AgentError::Upstream, "大模型返回的内容不是合法 JSON")
         })?;
+        redact_known_secret(&mut json,&cfg.api_key);
         let message = json
             .get("choices")
             .and_then(|c| c.as_array())
@@ -568,7 +577,7 @@ impl AgentChat {
     ///
     /// 早退分支返回 `Err(AgentToolError)`（而不是把错误塞进 payload）：
     /// 上层统一用 [`pack_tool_error`] 打包，这样 code/hint 才不会丢。
-    async fn run_tool(&self, name: &str, raw_args: &Value) -> Result<Value, AgentToolError> {
+    async fn run_tool(&self, name: &str, raw_args: &Value,generation:u64) -> Result<Value, AgentToolError> {
         let tools = self.registry.tools();
         let tool_name = match tools.iter().find(|t| t.name == name) {
             Some(t) => t.name,
@@ -599,7 +608,7 @@ impl AgentChat {
         let ctx = ToolContext {
             // 对话路径的 actor 固定 'chat'（qck `tool.handler(args, {signal, source:'chat'})` + 审计 actor:'chat'）。
             actor: "chat".to_string(),
-            generation: self.source.generation(),
+            generation,
             scope: self.source.scope(),
         };
         let result = self.registry.call_tool(&ctx, tool_name, &args).await;
@@ -744,7 +753,7 @@ impl AgentChat {
             })?;
         let status = response.status();
         if !status.is_success() {
-            let detail = response.text().await.unwrap_or_default();
+            let detail = String::from_utf8_lossy(&read_model_body(response,64*1024).await?).replace(&cfg.api_key,"[已脱敏]");
             let detail: String = detail.chars().take(300).collect();
             let code = if status == reqwest::StatusCode::UNAUTHORIZED
                 || status == reqwest::StatusCode::FORBIDDEN
@@ -763,9 +772,11 @@ impl AgentChat {
                     .with_hint(hint),
             );
         }
-        let json: Value = response.json().await.map_err(|_| {
+        let bytes=read_model_body(response,4*1024*1024).await?;
+        let mut json: Value = serde_json::from_slice(&bytes).map_err(|_| {
             AgentToolError::new(AgentError::Upstream, "模型列表响应不是合法 JSON")
         })?;
+        redact_known_secret(&mut json,&cfg.api_key);
         let arr = if let Some(a) = json.as_array() {
             a.clone()
         } else {
@@ -823,14 +834,32 @@ impl AgentChat {
         st.transcript[start..].to_vec()
     }
 
-    /// 清空对话（内部消息 + 界面历史 + 最近错误）。
-    pub fn clear(&self) -> Value {
-        let mut st = self.state.lock().unwrap();
-        st.messages.clear();
-        st.transcript.clear();
-        st.last_error.clear();
-        json!({ "ok": true })
+    fn ensure_generation(&self,generation:u64)->Result<(),AgentToolError> {
+        if self.source.generation()!=generation {return Err(AgentToolError::new(AgentError::Conflict,"账号已切换，本轮对话已停止，请重新发送"));}
+        Ok(())
     }
+    pub fn with_idle<T>(&self,action:impl FnOnce()->Result<T,AgentToolError>)->Result<T,AgentToolError> {
+        self.busy.compare_exchange(false,true,Ordering::SeqCst,Ordering::SeqCst).map_err(|_|AgentToolError::new(AgentError::Conflict,"对话正在处理中，请等待结束后再修改或清空"))?;
+        let _guard=BusyGuard(&self.busy);action()
+    }
+    pub fn clear(&self)->Result<Value,AgentToolError> {
+        self.with_idle(||{let mut st=self.state.lock().unwrap();st.messages.clear();st.transcript.clear();st.last_error.clear();Ok(json!({"ok":true}))})
+    }
+
+}
+
+fn redact_known_secret(value:&mut Value,key:&str) {
+    if key.is_empty(){return;}
+    match value {Value::String(s)=>*s=s.replace(key,"[已脱敏]"),Value::Array(a)=>for v in a{redact_known_secret(v,key)},Value::Object(o)=>for v in o.values_mut(){redact_known_secret(v,key)},_=>{}}
+}
+async fn read_model_body(mut response:reqwest::Response,limit:usize)->Result<Vec<u8>,AgentToolError> {
+    if response.content_length().is_some_and(|n|n>limit as u64){return Err(AgentToolError::new(AgentError::Upstream,"大模型响应超过大小限制"));}
+    let mut body=Vec::new();
+    while let Some(chunk)=response.chunk().await.map_err(|_|AgentToolError::new(AgentError::Upstream,"读取大模型响应失败"))? {
+        if body.len()+chunk.len()>limit{return Err(AgentToolError::new(AgentError::Upstream,"大模型响应超过大小限制"));}
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 // ---------------------------------------------------------------------------
@@ -1007,10 +1036,7 @@ fn emit(cb: Option<&EventCallback>, event: Value) {
     if let Some(cb) = cb {
         // 回调（宿主 emit_to 包装）panic 不应炸掉整次对话/调用：
         // 隔离在 catch_unwind 内，事件丢失优于整个 qk_call 失败。
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(std::boxed::Box::new(|_| {}));
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cb(event)));
-        std::panic::set_hook(prev);
         if result.is_err() {
             eprintln!("[agent] 对话事件回调 panic（已隔离）");
         }
@@ -1841,7 +1867,7 @@ mod tests {
         f.llm.push(final_round("好的"));
         f.chat.send("hi", None).await.unwrap();
         assert!(!f.chat.history(None).is_empty());
-        assert_eq!(f.chat.clear()["ok"], true);
+        assert_eq!(f.chat.clear().unwrap()["ok"], true);
         assert!(f.chat.history(None).is_empty());
         assert_eq!(f.chat.status()["historyCount"], 0);
     }
@@ -1929,4 +1955,41 @@ mod tests {
         assert_eq!(parsed["error"]["message"], "不在授权目录内");
         assert_eq!(parsed["error"]["hint"], "请在设置中添加该目录");
     }
+    #[tokio::test]
+    async fn clear_and_config_changes_are_rejected_during_a_running_turn() {
+        let f=new_fixture("clear-busy");
+        f.chat.state.lock().unwrap().transcript.push(json!({"role":"user","text":"keep"}));
+        f.chat.busy.store(true,Ordering::SeqCst);
+        assert_eq!(f.chat.clear().unwrap_err().code,AgentError::Conflict);
+        assert!(f.chat.with_idle(||f.config.clear()).is_err());
+        assert_eq!(f.chat.history(None).len(),1);
+        f.chat.busy.store(false,Ordering::SeqCst);
+        f.chat.clear().unwrap();assert!(f.chat.history(None).is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_echoed_api_key_is_never_returned_in_error_or_reply() {
+        let f=new_fixture("key-echo");f.configure(2);let key=f.config.internal().api_key;
+        f.llm.push(Scripted::Http{status:401,body:format!("invalid credential {key}")});
+        let error=f.chat.send("test",None).await.unwrap_err();assert!(!error.to_json().to_string().contains(&key));
+        f.llm.push(final_round(&format!("echo {key}")));let reply=f.chat.send("test",None).await.unwrap();assert!(!reply.reply.contains(&key));
+    }
+
+    #[tokio::test]
+    async fn changing_login_during_model_wait_stops_the_turn_before_tools_execute() {
+        struct Source(std::sync::Arc<std::sync::atomic::AtomicU64>);
+        impl ConfigSource for Source {
+            fn access(&self)->crate::gateway::AccessSnapshot{crate::gateway::AccessSnapshot{enabled:true,token:"test-only".into()}}
+            fn scope(&self)->ScopeSnapshot{ScopeSnapshot::default()}
+            fn generation(&self)->u64{self.0.load(Ordering::SeqCst)}
+        }
+        let mut f=new_fixture("generation-change");f.configure(2);
+        let generation=Arc::new(std::sync::atomic::AtomicU64::new(0));f.chat.source=Arc::new(Source(generation.clone()));
+        f.llm.push(tool_calls_round(json!([one_call("call-1","list_dir","{}")])));
+        let events=Arc::new(Mutex::new(Vec::new()));let captured=events.clone();
+        let callback:EventCallback=Arc::new(move|event|{if event["type"]=="round"{generation.store(1,Ordering::SeqCst);}captured.lock().unwrap().push(event);});
+        assert_eq!(f.chat.send("test",Some(callback)).await.unwrap_err().code,AgentError::Conflict);
+        assert!(!events.lock().unwrap().iter().any(|event|event["type"]=="tool_start"));
+    }
+
 }

@@ -3015,6 +3015,7 @@ dependencies = [
  "aes-gcm",
  "base64 0.22.1",
  "dirs 6.0.0",
+ "fs2",
  "libc",
  "quark-core",
  "quark-transfer",
@@ -3032,6 +3033,7 @@ dependencies = [
 name = "quark-backup"
 version = "0.1.0"
 dependencies = [
+ "fs2",
  "quark-core",
  "quark-transfer",
  "rusqlite",
