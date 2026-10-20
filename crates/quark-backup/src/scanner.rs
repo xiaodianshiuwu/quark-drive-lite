@@ -404,6 +404,8 @@ mod tests {
                 })
         };
         let (st, saw_cjk, saw_locked) = stats;
+        #[cfg(not(unix))]
+        let _ = saw_locked;
         assert_eq!(st.files, 9, "7 + sub1/d.txt + 中文文件");
         assert!(
             st.dirs >= 3,

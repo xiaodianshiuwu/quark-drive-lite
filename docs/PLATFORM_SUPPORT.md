@@ -5,7 +5,7 @@
 | 平台 | 产品目标 | 本轮证据 |
 |---|---|---|
 | macOS Apple Silicon | 原生桌面、系统 WebView、应用包 | 以本轮独立审计报告为准：自动化、隐藏原生 WebView 与受控云端测试分别记录 |
-| Windows 10/11 x64 | 主要重装备份目标、WebView2、本机 Agent 命名管道 | 命名管道已补实现并与 Unix 复用认证/帧处理；本机非 Windows，未完成原生构建/运行验收 |
+| Windows 10/11 x64 | 主要重装备份目标、WebView2、本机 Agent 命名管道 | 2026-10-20 已交叉编译 x64 主程序/NSIS安装包，并通过Windows全目标编译检查；命名管道已编译，Windows安装/运行与真实文件系统验收仍未完成 |
 | Linux x64 | Tauri 桌面与 Unix socket | 本轮未原生构建或运行 |
 | macOS Intel / Windows ARM64 | 非本轮实际验收平台 | 未验证 |
 
@@ -34,3 +34,5 @@ macOS 构建默认只生成 `.app`，脚本验证完整 bundle 的本地签名�
 资料目录：macOS `~/Library/Application Support/cn.quarkdrive.lite.tauri`，Windows `%APPDATA%\cn.quarkdrive.lite.tauri`，Linux `$XDG_CONFIG_HOME/cn.quarkdrive.lite.tauri` 或 `~/.config/cn.quarkdrive.lite.tauri`。`QK_PROFILE_DIR` 可覆盖开发/验收 profile；备份库必须跟随实际 Core profile。
 
 会话、Agent 和对话配置均含敏感资料，不能放入代码、交付包或备份清单。配置损坏时写入会拒绝覆盖原文件；对话配置可通过明确的清除操作重设。Windows 备份验收见 [BACKUP.md](BACKUP.md)。
+
+Windows x64安装版、免安装版和可复现命令见 [Windows构建交付（2026-10-20）](WINDOWS_BUILD_2026-10-20.md)。交叉编译和解包校验不等于Windows真机验收。

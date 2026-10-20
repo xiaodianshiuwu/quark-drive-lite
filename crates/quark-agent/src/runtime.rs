@@ -29,6 +29,7 @@ use std::sync::{Arc, Mutex};
 pub fn resolve_bridge_endpoint(profile_dir: &Path, token: &str) -> String {
     #[cfg(windows)]
     {
+        let _ = profile_dir;
         format!("\\\\.\\pipe\\quark-mini-agent-{}", &token[..token.len().min(12)])
     }
     #[cfg(not(windows))]

@@ -548,6 +548,7 @@ fn device_model() -> String {
     static MODEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     MODEL
         .get_or_init(|| {
+            #[cfg(not(target_os = "windows"))]
             let arch = match std::env::consts::ARCH {
                 "aarch64" => "arm64",
                 "x86_64" => "x64",

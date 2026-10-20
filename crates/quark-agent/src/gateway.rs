@@ -2029,6 +2029,7 @@ mod tests {
         let mut c = connect(&h.endpoint).await;
         c.authed(&h.source.token).await;
         h.gateway.stop().await;
+        #[cfg(unix)]
         assert!(!Path::new(&h.endpoint).exists(), "stop 后 socket 文件应被删除");
         assert_eq!(h.gateway.status()["running"], false);
         // 重复 stop 安全
