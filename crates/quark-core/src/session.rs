@@ -155,7 +155,8 @@ pub(crate) fn normalize_external(value: Value) -> Result<Value> {
     }
     Ok(Value::Array(out))
 }
-pub(crate) fn merge_set_cookie(doc: &mut Value, headers: &[String], response_path: &str) {
+pub(crate) fn merge_set_cookie(doc: &mut Value, headers: &[String], response_path: &str) -> bool {
+    let original = doc["cookies"].clone();
     let mut cookies = doc["cookies"].as_array().cloned().unwrap_or_default();
     let now = now_ms();
     for raw in headers {
@@ -204,11 +205,27 @@ pub(crate) fn merge_set_cookie(doc: &mut Value, headers: &[String], response_pat
             cookies.push(record);
         }
     }
-    doc["cookies"] = Value::Array(cookies);
+    let next = Value::Array(cookies);
+    if next == original {
+        return false;
+    }
+    doc["cookies"] = next;
+    true
 }
 pub(crate) fn settings(doc: &Value) -> Value {
     merge_settings(
-        json!({"downloadDir":dirs::download_dir().unwrap_or_else(std::env::temp_dir).to_string_lossy(),"uploadConcurrency":2,"downloadConcurrency":2,"downloadParallel":16,"downloadStrategy":"auto","uploadPartConcurrency":3,"theme":"light"}),
+        json!({
+            "downloadDir":dirs::download_dir().unwrap_or_else(std::env::temp_dir).to_string_lossy(),
+            "uploadConcurrency":2,
+            "downloadConcurrency":2,
+            "downloadParallel":16,
+            "downloadStrategy":"auto",
+            "uploadPartConcurrency":3,
+            "theme":"light",
+            "aiBetaEnabled":false,
+            "viewMode":"list",
+            "sortBy":"file_type:asc,updated_at:desc"
+        }),
         doc["settings"].clone(),
     )
 }
@@ -249,6 +266,29 @@ pub(crate) fn merge_settings(mut base: Value, patch: Value) -> Value {
     }
     if let Some(theme) = p.get("theme") {
         base["theme"] = json!(if theme == "dark" { "dark" } else { "light" });
+    }
+    if let Some(ai_beta) = p.get("aiBetaEnabled").and_then(Value::as_bool) {
+        base["aiBetaEnabled"] = json!(ai_beta);
+    }
+    if let Some(view_mode) = p
+        .get("viewMode")
+        .and_then(Value::as_str)
+        .filter(|s| ["list", "grid"].contains(s))
+    {
+        base["viewMode"] = json!(view_mode);
+    }
+    if let Some(sort_by) = p.get("sortBy").and_then(Value::as_str).filter(|s| {
+        [
+            "file_type:asc,updated_at:desc",
+            "file_type:asc,updated_at:asc",
+            "file_type:asc,file_name:asc",
+            "file_type:asc,file_name:desc",
+            "file_type:asc,size:desc",
+            "file_type:asc,size:asc",
+        ]
+        .contains(s)
+    }) {
+        base["sortBy"] = json!(sort_by);
     }
     base
 }
@@ -518,5 +558,51 @@ mod tests {
             {"name":"valid","value":"3","domain":"quark.cn","path":"/","expires":null}
         ]});
         assert_eq!(cookie_header(&stored), "valid=3");
+    }
+    #[test]
+    fn ai_beta_defaults_off_and_view_sort_settings_are_whitelisted() {
+        let defaults = settings(&json!({}));
+        assert_eq!(defaults["aiBetaEnabled"], false);
+        assert_eq!(defaults["viewMode"], "list");
+        assert_eq!(defaults["sortBy"], "file_type:asc,updated_at:desc");
+        let patched = merge_settings(
+            defaults.clone(),
+            json!({
+                "aiBetaEnabled": true,
+                "viewMode": "grid",
+                "sortBy": "file_type:asc,file_name:asc"
+            }),
+        );
+        assert_eq!(patched["aiBetaEnabled"], true);
+        assert_eq!(patched["viewMode"], "grid");
+        assert_eq!(patched["sortBy"], "file_type:asc,file_name:asc");
+        let rejected = merge_settings(
+            patched.clone(),
+            json!({
+                "aiBetaEnabled": "yes",
+                "viewMode": "evil",
+                "sortBy": "invalid:desc"
+            }),
+        );
+        assert_eq!(rejected, patched);
+    }
+    #[test]
+    fn merge_set_cookie_reports_unchanged_without_rewriting() {
+        let mut doc = json!({"cookies":[]});
+        assert!(merge_set_cookie(
+            &mut doc,
+            &["a=one; Domain=.quark.cn; Path=/".into()],
+            "/1/clouddrive/config",
+        ));
+        assert!(!merge_set_cookie(
+            &mut doc,
+            &["a=one; Domain=.quark.cn; Path=/".into()],
+            "/1/clouddrive/config",
+        ));
+        assert!(merge_set_cookie(
+            &mut doc,
+            &["a=two; Domain=.quark.cn; Path=/".into()],
+            "/1/clouddrive/config",
+        ));
     }
 }

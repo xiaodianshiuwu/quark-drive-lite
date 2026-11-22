@@ -196,6 +196,12 @@ impl AgentRuntime {
         }
     }
 
+    /// 挂起网关监听但不清除已保存配置（供关闭 AI Beta 时停用后台监听）。
+    pub async fn suspend_gateway(&self) {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.gateway.stop().await;
+    }
+
     async fn start_gateway(&self) -> Result<(), AgentToolError> {
         let endpoint = {
             let mut mgr = self.config.lock().unwrap();

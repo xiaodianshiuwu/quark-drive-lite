@@ -6,10 +6,10 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -97,6 +97,9 @@ pub(crate) struct Inner {
     disk: Mutex<()>,
     path: PathBuf,
     started: AtomicBool,
+    wake: Arc<Notify>,
+    changed: Arc<Notify>,
+    revision: AtomicU64,
     pub(crate) download_slots: Semaphore,
     pub(crate) upload_buffers: Semaphore,
     pub(crate) upload_rate_next: Arc<AsyncMutex<tokio::time::Instant>>,
@@ -167,6 +170,9 @@ impl TransferManager {
                 disk: Mutex::new(()),
                 path,
                 started: AtomicBool::new(false),
+                wake: Arc::new(Notify::new()),
+                changed: Arc::new(Notify::new()),
+                revision: AtomicU64::new(0),
                 download_slots: Semaphore::new(32),
                 upload_buffers: Semaphore::new(64 * 1024),
                 upload_rate_next: Arc::new(AsyncMutex::new(tokio::time::Instant::now())),
@@ -182,17 +188,47 @@ impl TransferManager {
         let weak = Arc::downgrade(&self.inner);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_millis(100)).await;
                 let Some(inner) = weak.upgrade() else {
                     break;
                 };
+                let wake = inner.wake.clone();
+                let notified = wake.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
                 let manager = Self {
                     inner,
                     expected_generation: None,
                 };
                 manager.pump();
+                drop(manager);
+                notified.await;
             }
         });
+    }
+    pub fn notify_scheduler(&self) {
+        self.inner.wake.notify_one();
+    }
+    pub fn notify_change(&self) {
+        self.mark_changed();
+    }
+    fn mark_changed(&self) {
+        self.inner.revision.fetch_add(1, Ordering::AcqRel);
+        self.inner.changed.notify_waiters();
+    }
+    pub fn revision(&self) -> u64 {
+        self.inner.revision.load(Ordering::Acquire)
+    }
+    pub async fn wait_change(&self, seen: u64) -> u64 {
+        loop {
+            let notified = self.inner.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let current = self.revision();
+            if current != seen {
+                return current;
+            }
+            notified.await;
+        }
     }
     pub(crate) fn bound_generation(&self) -> Result<u64> {
         let generation = self
@@ -317,6 +353,7 @@ impl TransferManager {
         if persist {
             self.persist()?;
         }
+        self.mark_changed();
         Ok(())
     }
     pub(crate) fn progress(&self, id: &str, bytes: u64, total: u64) -> Result<()> {
@@ -346,21 +383,31 @@ impl TransferManager {
     pub(crate) fn checkpoint(&self, id: &str, checkpoint: Value) -> Result<()> {
         self.update(id, |t| t.checkpoint = checkpoint, true)
     }
+    pub(crate) fn checkpoint_batched(
+        &self,
+        id: &str,
+        checkpoint: Value,
+        persist: bool,
+    ) -> Result<()> {
+        self.update(id, |t| t.checkpoint = checkpoint, persist)
+    }
     fn persist(&self) -> Result<()> {
         let _disk = self.inner.disk.lock().unwrap();
-        let tasks = self.inner.tasks.lock().unwrap();
-        atomic_json(&self.inner.path, &*tasks)
+        let snapshot = self.inner.tasks.lock().unwrap().clone();
+        atomic_json(&self.inner.path, &snapshot)
     }
     fn pump(&self) {
         let settings = self.inner.core.settings();
         let account = self.inner.core.account_key();
         let mut active = self.inner.active.lock().unwrap();
         let mut tasks = self.inner.tasks.lock().unwrap();
+        let mut mutated = false;
         for task in tasks.iter_mut().filter(|t| t.status == "pending") {
             if account.is_none() || task.account_key != account {
                 task.status = "paused".into();
                 task.error_code = Some("ACCOUNT_MISMATCH".into());
                 task.error = Some("请登录创建此任务的账号后继续；旧版未绑定任务请重新创建".into());
+                mutated = true;
                 continue;
             }
             if active.contains_key(&task.id) {
@@ -380,6 +427,7 @@ impl TransferManager {
             task.error_code = None;
             task.attempts += 1;
             task.sample = None;
+            mutated = true;
             let token = CancellationToken::new();
             let done = Arc::new(Notify::new());
             active.insert(
@@ -425,7 +473,13 @@ impl TransferManager {
                 );
                 manager.inner.active.lock().unwrap().remove(&id);
                 done.notify_waiters();
+                manager.notify_scheduler();
             });
+        }
+        drop(tasks);
+        drop(active);
+        if mutated {
+            self.mark_changed();
         }
     }
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
@@ -526,68 +580,66 @@ impl TransferManager {
                     self.inner.tasks.lock().unwrap().extend(additions);
                 }
                 self.persist()?;
+                self.mark_changed();
+                self.notify_scheduler();
                 Ok(json!(ids))
             }
             "transfer.pause" | "transfer.cancel" => {
-                let _control = self.inner.controls.lock().await;
                 let id = param_id(&params)?;
-                let task = match self.task(&id) {
-                    Ok(t) => t,
-                    Err(_) => return Ok(Value::Null),
-                };
-                if task.status == "done" || task.status == "canceled" {
-                    return Ok(Value::Null);
-                }
-                let cancel = method == "transfer.cancel";
-                self.update(
-                    &id,
-                    |t| {
-                        t.status = if cancel { "canceled" } else { "paused" }.into();
-                        t.speed = 0;
-                        t.eta = -1;
-                    },
-                    true,
-                )?;
-                self.wait_stop(&id).await;
-                if cancel && task.kind == "download" {
-                    crate::download::cleanup(&self.task(&id)?).await?;
-                }
+                self.stop_task(&id, method == "transfer.cancel").await?;
                 Ok(Value::Null)
             }
             "transfer.resume" | "transfer.retry" => {
-                let _control = self.inner.controls.lock().await;
                 let id = param_id(&params)?;
-                let t = self.task(&id)?;
-                if t.account_key.is_none() || t.account_key != self.inner.core.account_key() {
-                    return Err(err(
-                        "ACCOUNT_MISMATCH",
-                        "请登录创建此任务的账号后继续；旧版未绑定任务请重新创建",
-                    ));
-                }
-                if t.status != "paused"
-                    && t.status != "error"
-                    && !(method == "transfer.retry" && t.status == "canceled")
-                {
-                    return Ok(Value::Null);
-                }
-                self.wait_stop(&id).await;
-                self.update(
-                    &id,
-                    |t| {
-                        if t.status == "canceled" && t.kind == "download" {
-                            t.checkpoint = json!({});
-                            t.local_path = None;
-                        }
-                        if let Some(rate) = params["rateLimitBps"].as_u64() {
-                            t.rate_limit_bps = rate.min(1_099_511_627_776);
-                        }
-                        t.status = "pending".into();
-                        t.error = None;
-                        t.error_code = None;
-                    },
-                    true,
-                )?;
+                self.requeue_task(&id, method == "transfer.retry", params["rateLimitBps"].as_u64())
+                    .await?;
                 Ok(Value::Null)
+            }
+            "transfer.pauseAll" => {
+                self.pause_all().await?;
+                Ok(Value::Null)
+            }
+            "transfer.resumeAll" => {
+                let account = self.inner.core.account_key();
+                let ids: Vec<String> = self
+                    .inner
+                    .tasks
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|t| {
+                        t.status == "paused" && account.is_some() && t.account_key == account
+                    })
+                    .map(|t| t.id.clone())
+                    .collect();
+                let mut count = 0usize;
+                for id in ids {
+                    if self.requeue_task(&id, false, None).await.is_ok() {
+                        count += 1;
+                    }
+                }
+                Ok(json!({ "resumed": count }))
+            }
+            "transfer.retryFailed" => {
+                let account = self.inner.core.account_key();
+                let ids: Vec<String> = self
+                    .inner
+                    .tasks
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|t| {
+                        t.status == "error" && account.is_some() && t.account_key == account
+                    })
+                    .map(|t| t.id.clone())
+                    .collect();
+                let mut count = 0usize;
+                for id in ids {
+                    if self.requeue_task(&id, true, None).await.is_ok() {
+                        count += 1;
+                    }
+                }
+                Ok(json!({ "retried": count }))
             }
             "transfer.clear" => {
                 let _control = self.inner.controls.lock().await;
@@ -620,6 +672,7 @@ impl TransferManager {
                 });
                 drop(active);
                 self.persist()?;
+                self.mark_changed();
                 Ok(Value::Null)
             }
             _ => Err(err("INVALID_ARG", "未知的传输命令")),
@@ -646,6 +699,65 @@ impl TransferManager {
             notified.await;
         }
     }
+    async fn stop_task(&self, id: &str, cancel: bool) -> Result<()> {
+        let _control = self.inner.controls.lock().await;
+        let task = match self.task(id) {
+            Ok(t) => t,
+            Err(_) => return Ok(()),
+        };
+        if task.status == "done" || task.status == "canceled" {
+            return Ok(());
+        }
+        self.update(
+            id,
+            |t| {
+                t.status = if cancel { "canceled" } else { "paused" }.into();
+                t.speed = 0;
+                t.eta = -1;
+            },
+            true,
+        )?;
+        self.wait_stop(id).await;
+        if cancel && task.kind == "download" {
+            crate::download::cleanup(&self.task(id)?).await?;
+        }
+        Ok(())
+    }
+    async fn requeue_task(&self, id: &str, retry: bool, rate_limit_bps: Option<u64>) -> Result<()> {
+        let _control = self.inner.controls.lock().await;
+        let t = self.task(id)?;
+        if t.account_key.is_none() || t.account_key != self.inner.core.account_key() {
+            return Err(err(
+                "ACCOUNT_MISMATCH",
+                "请登录创建此任务的账号后继续；旧版未绑定任务请重新创建",
+            ));
+        }
+        if t.status != "paused"
+            && t.status != "error"
+            && !(retry && t.status == "canceled")
+        {
+            return Ok(());
+        }
+        self.wait_stop(id).await;
+        self.update(
+            id,
+            |t| {
+                if t.status == "canceled" && t.kind == "download" {
+                    t.checkpoint = json!({});
+                    t.local_path = None;
+                }
+                if let Some(rate) = rate_limit_bps {
+                    t.rate_limit_bps = rate.min(1_099_511_627_776);
+                }
+                t.status = "pending".into();
+                t.error = None;
+                t.error_code = None;
+            },
+            true,
+        )?;
+        self.notify_scheduler();
+        Ok(())
+    }
     pub async fn pause_all(&self) -> Result<()> {
         let ids: Vec<String> = self
             .inner
@@ -657,7 +769,7 @@ impl TransferManager {
             .map(|t| t.id.clone())
             .collect();
         for id in ids {
-            self.call("transfer.pause", json!(id)).await?;
+            self.stop_task(&id, false).await?;
         }
         Ok(())
     }
@@ -882,5 +994,67 @@ mod tests {
             manager.task("t-conflict").is_err(),
             "CONFLICT task should be removed"
         );
+    }
+
+    #[tokio::test]
+    async fn batch_transfer_controls_and_change_notifications() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = Core::open_no_proxy(temp.path().join("profile")).unwrap();
+        core.replace_cookies(json!([{"name":"fixture","value":"synthetic","domain":"quark.cn"}]))
+            .unwrap();
+        let manager = TransferManager::open(core.clone()).unwrap();
+        let account = core.account_key();
+
+        let mk = |id: &str, status: &str| Task {
+            id: id.into(),
+            kind: "download".into(),
+            name: format!("{id}.bin"),
+            size: 100,
+            transferred: 10,
+            status: status.into(),
+            attempts: 1,
+            created_at: now(),
+            updated_at: now(),
+            local_path: None,
+            local_dir: Some(temp.path().to_string_lossy().into()),
+            fid: Some(id.into()),
+            pdir_fid: None,
+            error: if status == "error" { Some("net".into()) } else { None },
+            error_code: if status == "error" { Some("NETWORK".into()) } else { None },
+            speed: 0,
+            eta: -1,
+            checkpoint: json!({}),
+            account_key: account.clone(),
+            rate_limit_bps: 0,
+            sample: None,
+        };
+
+        {
+            let mut list = manager.inner.tasks.lock().unwrap();
+            list.push(mk("t-pending", "pending"));
+            list.push(mk("t-error", "error"));
+        }
+
+        let rev0 = manager.revision();
+        manager.call("transfer.pauseAll", json!({})).await.unwrap();
+        assert!(manager.revision() > rev0, "pauseAll must advance revision");
+        assert_eq!(manager.task("t-pending").unwrap().status, "paused");
+        assert_eq!(manager.task("t-error").unwrap().status, "error");
+
+        let rev1 = manager.revision();
+        let res = manager.call("transfer.resumeAll", json!({})).await.unwrap();
+        assert_eq!(res["resumed"], 1);
+        assert!(manager.revision() > rev1);
+        assert_eq!(manager.task("t-pending").unwrap().status, "pending");
+
+        let rev2 = manager.revision();
+        let retried = manager.call("transfer.retryFailed", json!({})).await.unwrap();
+        assert_eq!(retried["retried"], 1);
+        assert!(manager.revision() > rev2);
+        assert_eq!(manager.task("t-error").unwrap().status, "pending");
+        assert!(manager.task("t-error").unwrap().error.is_none());
+
+        // wait_change returns immediately when seen revision is behind current revision
+        assert_eq!(manager.wait_change(rev0).await, manager.revision());
     }
 }

@@ -63,6 +63,13 @@ fn store(m: &TransferManager, id: &str, cp: &Checkpoint) -> Result<()> {
         serde_json::to_value(cp).map_err(|_| err("LOCAL_IO", "下载进度无法序列化"))?,
     )
 }
+fn store_batched(m: &TransferManager, id: &str, cp: &Checkpoint, persist: bool) -> Result<()> {
+    m.checkpoint_batched(
+        id,
+        serde_json::to_value(cp).map_err(|_| err("LOCAL_IO", "下载进度无法序列化"))?,
+        persist,
+    )
+}
 fn path_key(path: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     if cfg!(any(target_os = "macos", target_os = "windows")) {
@@ -232,6 +239,15 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
     if metadata.len() != total {
         return Err(err("CONTENT_MISMATCH", "下载文件长度不符"));
     }
+    // Ensure all buffered multipart writes are durable before full-file hash & atomic publication.
+    OpenOptions::new()
+        .write(true)
+        .open(&temp)
+        .await
+        .map_err(io_err)?
+        .sync_all()
+        .await
+        .map_err(io_err)?;
     // Hash entire finalized local file before publication. If API exposes a server digest, verify it too.
     let (md5, sha1, sha256) = hash_file(&temp, token).await?;
     for (key, value) in [("md5", &md5), ("sha1", &sha1), ("sha256", &sha256)] {
@@ -255,6 +271,11 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
     m.progress(id, total, total)
 }
 async fn verify_parts(temp: &Path, cp: &mut Checkpoint, token: &CancellationToken) -> Result<()> {
+    if cp.parts.is_empty() {
+        return Ok(());
+    }
+    let mut file = fs::File::open(temp).await.map_err(io_err)?;
+    let mut buf = vec![0u8; 1024 * 1024];
     for (index, done) in cp.parts.clone() {
         let start = index
             .checked_mul(PART)
@@ -262,7 +283,7 @@ async fn verify_parts(temp: &Path, cp: &mut Checkpoint, token: &CancellationToke
         let len = PART.min(cp.total.saturating_sub(start));
         if start >= cp.total
             || done.len != len
-            || hash_range(&temp, start, len, token).await? != done.sha256
+            || hash_range_file(&mut file, &mut buf, start, len, token).await? != done.sha256
         {
             cp.parts.remove(&index);
         }
@@ -472,6 +493,8 @@ async fn multipart(
     let workers_token = token.child_token();
     let mut failure = None;
     let mut complete = cp.parts.values().map(|p| p.len).sum::<u64>();
+    let mut unsaved_parts: u32 = 0;
+    let mut last_flush = tokio::time::Instant::now();
     m.progress(id, complete, cp.total)?;
     let live = Arc::new(Mutex::new((complete, BTreeMap::<u64, u64>::new())));
     loop {
@@ -515,7 +538,15 @@ async fn multipart(
                     live.1.remove(&index);
                 }
                 cp.parts.insert(index, done);
-                store(m, id, cp)?;
+                unsaved_parts += 1;
+                let should_flush = unsaved_parts >= 16
+                    || last_flush.elapsed() >= Duration::from_millis(1500)
+                    || cp.parts.len() as u64 == count;
+                store_batched(m, id, cp, should_flush)?;
+                if should_flush {
+                    unsaved_parts = 0;
+                    last_flush = tokio::time::Instant::now();
+                }
                 m.progress(id, complete, cp.total)?;
             }
             Err(e) => {
@@ -525,6 +556,9 @@ async fn multipart(
                 }
             }
         }
+    }
+    if unsaved_parts > 0 {
+        let _ = store(m, id, cp);
     }
     if let Some(e) = failure {
         return Err(e);
@@ -632,7 +666,7 @@ async fn fetch_part(
             if received != length {
                 return Err(err("CONTENT_MISMATCH", "分片响应长度不足"));
             }
-            file.sync_data().await.map_err(io_err)?;
+            file.flush().await.map_err(io_err)?;
             Ok((
                 index,
                 DonePart {
@@ -754,25 +788,22 @@ async fn single(
     }
     unreachable!()
 }
-async fn hash_range(
-    path: &Path,
+async fn hash_range_file(
+    file: &mut fs::File,
+    buf: &mut [u8],
     start: u64,
     len: u64,
     token: &CancellationToken,
 ) -> Result<String> {
-    let mut file = fs::File::open(path).await.map_err(io_err)?;
     file.seek(std::io::SeekFrom::Start(start))
         .await
         .map_err(io_err)?;
     let mut hash = Sha256::new();
     let mut left = len;
-    let mut buf = vec![0; 1024 * 1024];
     while left > 0 {
         check(token)?;
-        let n = file
-            .read(&mut buf[..(left as usize).min(1024 * 1024)])
-            .await
-            .map_err(io_err)?;
+        let cap = (left as usize).min(buf.len());
+        let n = file.read(&mut buf[..cap]).await.map_err(io_err)?;
         if n == 0 {
             return Ok(String::new());
         }
@@ -780,6 +811,17 @@ async fn hash_range(
         left -= n as u64;
     }
     Ok(format!("{:x}", hash.finalize()))
+}
+#[cfg(test)]
+async fn hash_range(
+    path: &Path,
+    start: u64,
+    len: u64,
+    token: &CancellationToken,
+) -> Result<String> {
+    let mut file = fs::File::open(path).await.map_err(io_err)?;
+    let mut buf = vec![0u8; 1024 * 1024];
+    hash_range_file(&mut file, &mut buf, start, len, token).await
 }
 async fn hash_file(path: &Path, token: &CancellationToken) -> Result<(String, String, String)> {
     let mut file = fs::File::open(path).await.map_err(io_err)?;

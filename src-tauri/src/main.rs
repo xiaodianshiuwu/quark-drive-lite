@@ -60,13 +60,32 @@ async fn qk_call(
         app.exit(0);
         return Ok(Value::Null);
     }
+    if method == "app.info" {
+        return Ok(json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "runtime": "Tauri 2 + Rust",
+            "platform": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+        }));
+    }
     if method == "auth.login" {
-        return login(app, state.inner().clone()).await;
+        let res = login(app, state.inner().clone()).await;
+        if res.is_ok() {
+            state.transfers.notify_change();
+        }
+        return res;
     }
     if state.login.load(Ordering::SeqCst)
         && matches!(
             method.as_str(),
-            "transfer.upload" | "transfer.download" | "transfer.resume" | "transfer.retry" | "backup.start" | "backup.resume"
+            "transfer.upload"
+                | "transfer.download"
+                | "transfer.resume"
+                | "transfer.retry"
+                | "transfer.resumeAll"
+                | "transfer.retryFailed"
+                | "backup.start"
+                | "backup.resume"
         )
     {
         return Err(Error::new("CONFLICT", "请完成或关闭登录窗口后再启动传输"));
@@ -116,6 +135,7 @@ async fn qk_call(
             let _ = login.close();
         }
     }
+    let ai_beta_patched = method == "settings.set" && params.get("aiBetaEnabled").is_some();
     let result = if method.starts_with("backup.") {
         let core = state.core.clone();
         let profile = state.core.profile_dir().to_path_buf();
@@ -191,6 +211,19 @@ async fn qk_call(
         // 必须在 state.core.call("auth.logout") 递增 session_generation 之后再清空 Agent 内存态，
         // 消除在途 chat.send() 在登出窗口内回写旧账号消息的竞态。
         state.agent.reset_for_account_change();
+        state.transfers.notify_change();
+    }
+    if method == "settings.set" {
+        if let Ok(ref saved) = result {
+            state.transfers.notify_scheduler();
+            if ai_beta_patched {
+                if saved.get("aiBetaEnabled").and_then(|v| v.as_bool()) == Some(true) {
+                    state.agent.boot().await;
+                } else {
+                    state.agent.suspend_gateway().await;
+                }
+            }
+        }
     }
     if method.starts_with("auth.")
         || result
@@ -512,9 +545,17 @@ fn main() {
             app.manage(state.clone());
             {
                 let agent_boot = state.agent.clone();
-                tauri::async_runtime::spawn(async move {
-                    agent_boot.boot().await;
-                });
+                let ai_beta_on = state
+                    .core
+                    .settings()
+                    .get("aiBetaEnabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if ai_beta_on {
+                    tauri::async_runtime::spawn(async move {
+                        agent_boot.boot().await;
+                    });
+                }
             }
             #[cfg(debug_assertions)]
             if std::env::var_os("QK_LOGIN_ON_START").is_some() {
@@ -532,14 +573,20 @@ fn main() {
             }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let mut previous = Value::Null;
+                let mut last_rev = transfers.revision();
+                let mut last_emit = tokio::time::Instant::now()
+                    .checked_sub(Duration::from_secs(1))
+                    .unwrap_or_else(tokio::time::Instant::now);
                 loop {
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                    let tasks = transfers.snapshot();
-                    if tasks != previous {
-                        let _ = handle.emit_to("main", "qk:transfer-update", &tasks);
-                        previous = tasks;
+                    let next_rev = transfers.wait_change(last_rev).await;
+                    let elapsed = last_emit.elapsed();
+                    if elapsed < Duration::from_millis(150) {
+                        tokio::time::sleep(Duration::from_millis(150) - elapsed).await;
                     }
+                    last_rev = transfers.revision().max(next_rev);
+                    let tasks = transfers.snapshot();
+                    let _ = handle.emit_to("main", "qk:transfer-update", &tasks);
+                    last_emit = tokio::time::Instant::now();
                 }
             });
             #[cfg(debug_assertions)]

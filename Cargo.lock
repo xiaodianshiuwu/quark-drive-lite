@@ -3066,7 +3066,7 @@ dependencies = [
 
 [[package]]
 name = "quark-drive-lite-tauri"
-version = "0.3.0-alpha.1"
+version = "0.3.0-beta.1"
 dependencies = [
  "fs2",
  "open",

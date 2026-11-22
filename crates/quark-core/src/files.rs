@@ -163,6 +163,38 @@ fn parse_crumbs(env: &Value) -> Vec<Value> {
         })
         .collect()
 }
+
+fn parse_crumbs_from_info(env: &Value, requested_fid: &str) -> Vec<Value> {
+    let Some(rec) = record(env) else {
+        return Vec::new();
+    };
+    for key in ["full_path", "fullPath", "path_list", "pathList"] {
+        if let Some(arr) = rec[key].as_array() {
+            let parsed = parse_crumbs(&json!({"data": arr}));
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+    }
+    let item = file_item(rec);
+    let fid = text(&item["fid"]);
+    let fid = if fid.is_empty() {
+        requested_fid.to_owned()
+    } else {
+        fid
+    };
+    let name = text(&item["name"]);
+    let pdir = text(&item["pdirFid"]);
+    if fid.is_empty() || fid == "0" {
+        return Vec::new();
+    }
+    let mut out = vec![json!({"fid": "0", "name": "全部文件"})];
+    if !pdir.is_empty() && pdir != "0" && pdir != fid {
+        out.push(json!({"fid": pdir, "name": "上级目录"}));
+    }
+    out.push(json!({"fid": fid, "name": if name.is_empty() { "未命名" } else { name.as_str() }}));
+    out
+}
 fn page_result(env: &Value, page: i64, size: i64) -> Value {
     let entries = list(env)
         .into_iter()
@@ -277,9 +309,21 @@ impl Core {
             "fs.crumbs"=>{
                 let fid=if params.is_string(){text(&params)}else{text(&params["fid"])};
                 let root=json!([{"fid":"0","name":"全部文件"}]);if fid.is_empty()||fid=="0"{return Ok(root);}
-                match self.get_in_session(generation,"/1/clouddrive/file/info/path_list",&[("fid",fid)]).await {
-                    Ok(env)=>{let out=parse_crumbs(&env);Ok(if out.is_empty(){root}else{json!(out)})}
-                    Err(e) if e.code=="NEED_LOGIN"||e.code=="ABORTED"=>Err(e),Err(_)=>Ok(root)
+                let primary = match self.get_in_session(generation,"/1/clouddrive/file/info/path_list",&[("fid",fid.clone())]).await {
+                    Ok(env)=>parse_crumbs(&env),
+                    Err(e) if e.code=="NEED_LOGIN"||e.code=="ABORTED"=>return Err(e),
+                    Err(_)=>Vec::new(),
+                };
+                if primary.len() > 1 {
+                    return Ok(json!(primary));
+                }
+                match self.get_in_session(generation,"/1/clouddrive/file/info",&[("fid",fid.clone()),("_fetch_full_path","1".into()),("need_profile_tags","1".into()),("kkkk","1".into())]).await {
+                    Ok(env)=>{
+                        let fallback = parse_crumbs_from_info(&env, &fid);
+                        Ok(if fallback.is_empty(){root}else{json!(fallback)})
+                    }
+                    Err(e) if e.code=="NEED_LOGIN"||e.code=="ABORTED"=>Err(e),
+                    Err(_)=>Ok(if primary.is_empty(){root}else{json!(primary)})
                 }
             }
             "fs.mkdir"=>Ok(accepted(&self.post_in_session(generation,"/1/clouddrive/file",json!({"pdir_fid":params["pdirFid"].as_str().filter(|s|!s.is_empty()).unwrap_or("0"),"file_name":required(&params["name"],"文件夹名称")?,"dir_path":"","dir_init_lock":false})).await?)),
@@ -391,5 +435,38 @@ mod tests {
         assert_eq!(crumbs[1]["fid"], "d1");
         assert_eq!(crumbs[1]["name"], "R&D <2026> \"Alpha\"");
         assert_eq!(required(&json!("  trimmed.txt  "), "新名称").unwrap(), "trimmed.txt");
+    }
+    #[test]
+    fn crumbs_fallback_reconstructs_full_path_and_parent_from_file_info() {
+        let with_full = json!({
+            "data": {
+                "fid": "d2",
+                "file_name": "子目录",
+                "pdir_fid": "d1",
+                "full_path": [
+                    {"fid": "0", "file_name": "全部文件"},
+                    {"fid": "d1", "file_name": "父目录"},
+                    {"fid": "d2", "file_name": "子目录"}
+                ]
+            }
+        });
+        let parsed = parse_crumbs_from_info(&with_full, "d2");
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[1]["fid"], "d1");
+        assert_eq!(parsed[1]["name"], "父目录");
+
+        let only_pdir = json!({
+            "data": {
+                "fid": "d2",
+                "file_name": "子目录",
+                "pdir_fid": "d1"
+            }
+        });
+        let reconstructed = parse_crumbs_from_info(&only_pdir, "d2");
+        assert_eq!(reconstructed.len(), 3);
+        assert_eq!(reconstructed[0]["fid"], "0");
+        assert_eq!(reconstructed[1]["fid"], "d1");
+        assert_eq!(reconstructed[2]["fid"], "d2");
+        assert_eq!(reconstructed[2]["name"], "子目录");
     }
 }

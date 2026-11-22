@@ -83,8 +83,10 @@ impl Core {
             .redirect(Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .retry(reqwest::retry::never())
+            .tcp_nodelay(true)
             .tcp_keepalive(Duration::from_secs(30))
-            .pool_max_idle_per_host(16);
+            .pool_idle_timeout(Duration::from_secs(60))
+            .pool_max_idle_per_host(24);
         if no_proxy {
             builder = builder.no_proxy();
         }
@@ -176,6 +178,24 @@ impl Core {
     }
     fn update_in_session(&self, generation: u64, change: impl FnOnce(&mut Value)) -> Result<()> {
         self.update_state(Some(generation), false, change)
+    }
+    fn update_in_session_if_changed(
+        &self,
+        generation: u64,
+        change: impl FnOnce(&mut Value) -> bool,
+    ) -> Result<bool> {
+        let mut state = self.inner.state.lock().unwrap();
+        if generation != state.session_generation {
+            return Err(Error::new("ABORTED", "账号已切换，请重新执行操作"));
+        }
+        let mut next = state.document.clone();
+        if !change(&mut next) {
+            return Ok(false);
+        }
+        next["savedAt"] = json!(session::now_ms());
+        state.store.write(&next)?;
+        state.document = next;
+        Ok(true)
     }
     fn update_state(
         &self,
@@ -327,7 +347,7 @@ impl Core {
             .filter_map(|h| h.to_str().ok().map(str::to_owned))
             .collect::<Vec<_>>();
         if !set_cookies.is_empty() {
-            self.update_in_session(generation, |doc| {
+            self.update_in_session_if_changed(generation, |doc| {
                 session::merge_set_cookie(doc, &set_cookies, &response_path)
             })?;
         }
@@ -374,11 +394,17 @@ impl Core {
                     .await
                 {
                     Ok(_) => {
-                        self.update_in_session(generation, |doc| {
-                            doc["expired"] = json!(false);
+                        self.update_in_session_if_changed(generation, |doc| {
+                            let mut dirty = false;
+                            if doc["expired"] != false {
+                                doc["expired"] = json!(false);
+                                dirty = true;
+                            }
                             if doc["accountBinding"].as_str().is_none_or(str::is_empty) {
                                 doc["accountBinding"] = json!(fresh_binding());
+                                dirty = true;
                             }
+                            dirty
                         })?;
                         Ok(self.call_status())
                     }
@@ -417,8 +443,12 @@ impl Core {
                 let mut info = json!({"nickname":"","avatar":"","memberLabel":"","userId":""});
                 let mut received = false;
                 let mut last_error = None;
-                for path in ["/1/clouddrive/member", "/1/clouddrive/config"] {
-                    match self.get_in_session(generation, path, &[]).await {
+                let (member_res, config_res) = tokio::join!(
+                    self.get_in_session(generation, "/1/clouddrive/member", &[]),
+                    self.get_in_session(generation, "/1/clouddrive/config", &[]),
+                );
+                for res in [member_res, config_res] {
+                    match res {
                         Ok(env) => {
                             received = true;
                             session::merge_user_info(&mut info, &env);
@@ -444,9 +474,13 @@ impl Core {
                         last_error.unwrap_or_else(|| Error::new("SERVER", "无法读取账号资料"))
                     );
                 }
-                self.update_in_session(generation, |doc| {
+                self.update_in_session_if_changed(generation, |doc| {
                     session::merge_cached_user_info(&mut info, &doc["account"]);
+                    if doc["account"] == info {
+                        return false;
+                    }
                     doc["account"] = info.clone();
+                    true
                 })?;
                 Ok(info)
             }
@@ -612,11 +646,11 @@ mod tests {
         let first = core.account_key().unwrap();
         let generation = core.session_generation();
         core.update_in_session(generation, |doc| {
-            session::merge_set_cookie(
+            let _ = session::merge_set_cookie(
                 doc,
                 &["fixture=rotated; Domain=quark.cn; Path=/".into()],
                 "/1/clouddrive/config",
-            )
+            );
         })
         .unwrap();
         assert_eq!(

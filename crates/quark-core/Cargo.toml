@@ -13,7 +13,7 @@ rand = "0.8"
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots", "json", "stream", "socks", "system-proxy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "macros"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
