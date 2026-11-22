@@ -236,7 +236,7 @@ impl PlanStore {
             let victim = inner
                 .map
                 .values()
-                .filter(|p| p.status != "pending")
+                .filter(|p| p.status != "pending" && p.status != "executing")
                 .min_by_key(|p| p.created_at)
                 .map(|p| p.plan_id.clone());
             match victim {
@@ -345,6 +345,12 @@ impl PlanStore {
         plan.executed_at = Some(Self::now());
         plan.result = Some(json!({ "executed_at": plan.executed_at, "summary": summary, "results": results }));
         Ok(plan.snapshot())
+    }
+
+    /// 账号切换/退出时清空全部内存计划。
+    pub fn clear(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.map.clear();
     }
 
     /// 最近计划列表（createdAt 降序）。
@@ -458,4 +464,25 @@ mod tests {
         assert_eq!(workers.into_iter().map(|w|w.join().unwrap()).filter(|won|*won).count(),1);
     }
 
+    #[test]
+    fn executing_plans_are_never_evicted_when_store_is_full() {
+        let store = PlanStore::new();
+        let first = store
+            .create("organize", "r", &json!({}), &[entry("f0", "a", "r", "图片")], "")
+            .unwrap();
+        let first_id = first["plan_id"].as_str().unwrap().to_string();
+        store.mark_executing(&first_id).unwrap();
+        for i in 1..MAX_PLANS {
+            store
+                .create("organize", "r", &json!({}), &[entry(&format!("f{i}"), "a", "r", "图片")], "")
+                .unwrap();
+        }
+        let err = store
+            .create("organize", "r", &json!({}), &[entry("fx", "a", "r", "图片")], "")
+            .unwrap_err();
+        assert_eq!(err.code, AgentError::Limit);
+        assert_eq!(store.get(&first_id).unwrap()["status"], "executing");
+        store.clear();
+        assert!(store.list(10).is_empty());
+    }
 }

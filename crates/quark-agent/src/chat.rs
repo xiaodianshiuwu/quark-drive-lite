@@ -182,7 +182,8 @@ impl AgentChat {
         match self.run_loop(&cfg, started, &mut tool_calls, on_event.as_ref(),generation).await {
             Ok(outcome) => Ok(outcome),
             Err(e) => {
-                {
+                // 若期间账号已切换并被 reset_for_account_change 清空，不把旧账号错误回写进新账号记录。
+                if self.source.generation() == generation {
                     let mut st = self.state.lock().unwrap();
                     st.last_error = e.message.clone();
                     st.transcript.push(json!({
@@ -613,7 +614,7 @@ impl AgentChat {
         };
         let result = self.registry.call_tool(&ctx, tool_name, &args).await;
         let ms = started.elapsed().as_millis() as u64;
-        let args_summary = summarize_args_chat(&args);
+        let args_summary = crate::gateway::summarize_args(&args);
         match result {
             Ok(v) => {
                 self.audit(
@@ -816,6 +817,7 @@ impl AgentChat {
         out["toolCount"] = json!(self.registry.tools().len());
         out["scope"] = json!({
             "writeMode": scope.write_mode,
+            "allowDelete": scope.allow_delete,
             "remoteRootCount": scope.remote_roots.len(),
             "localWriteRootCount": scope.local_write_roots.len(),
         });
@@ -844,6 +846,15 @@ impl AgentChat {
     }
     pub fn clear(&self)->Result<Value,AgentToolError> {
         self.with_idle(||{let mut st=self.state.lock().unwrap();st.messages.clear();st.transcript.clear();st.last_error.clear();Ok(json!({"ok":true}))})
+    }
+
+    /// 账号登出或切换时无条件清空对话上下文与界面历史（不要求 busy=false，
+    /// 正在进行的回合会在 generation 校验点自动中止且不再回写 transcript）。
+    pub fn reset_for_account_change(&self) {
+        let mut st = self.state.lock().unwrap();
+        st.messages.clear();
+        st.transcript.clear();
+        st.last_error.clear();
     }
 
 }
@@ -1011,16 +1022,6 @@ fn summarize_payload(payload: &Value) -> String {
         format!("{}…", collapsed.chars().take(160).collect::<String>())
     } else {
         collapsed
-    }
-}
-
-/// 对话审计的 args 摘要：JSON 串截 300 字符（qck chat 版 summarizeArgs）。
-fn summarize_args_chat(args: &Value) -> Value {
-    let text = serde_json::to_string(args).unwrap_or_else(|_| "(无法序列化)".to_string());
-    if text.chars().count() > 300 {
-        json!(format!("{}…", text.chars().take(300).collect::<String>()))
-    } else {
-        json!(text)
     }
 }
 
@@ -1330,6 +1331,7 @@ mod tests {
             scope: ScopeSnapshot {
                 remote_roots: vec!["root1".into()],
                 write_mode: "read-only".into(),
+                allow_delete: false,
                 local_read_roots: vec![],
                 local_write_roots: vec![],
             },
@@ -1552,6 +1554,7 @@ mod tests {
                     scope: ScopeSnapshot {
                         remote_roots: vec!["root1".into()],
                         write_mode: "read-only".into(),
+                        allow_delete: false,
                         local_read_roots: vec![],
                         local_write_roots: vec![],
                     },
@@ -1990,6 +1993,32 @@ mod tests {
         let callback:EventCallback=Arc::new(move|event|{if event["type"]=="round"{generation.store(1,Ordering::SeqCst);}captured.lock().unwrap().push(event);});
         assert_eq!(f.chat.send("test",Some(callback)).await.unwrap_err().code,AgentError::Conflict);
         assert!(!events.lock().unwrap().iter().any(|event|event["type"]=="tool_start"));
+        // 账号切换期间出错不应往新账号 transcript 写残留错误
+        assert!(f.chat.history(None).iter().all(|m| m.get("error") != Some(&json!(true))));
+    }
+
+    #[tokio::test]
+    async fn chat_journal_redacts_save_text_file_body_to_text_bytes() {
+        let f = new_fixture("journal-redact");
+        f.configure(4);
+        f.llm.push(tool_calls_round(json!([one_call(
+            "c-save",
+            "list_dir",
+            r#"{"pdir_fid":"root1","name":"secret.txt","text":"TOP_SECRET_PRIVATE_BODY_999"}"#
+        )])));
+        f.llm.push(final_round("已处理"));
+        f.chat.send("保存文本", None).await.unwrap();
+        let records = f.journal.list(20, None);
+        assert_eq!(records.len(), 1);
+        let rec_str = records[0].to_string();
+        assert!(
+            !rec_str.contains("TOP_SECRET_PRIVATE_BODY_999"),
+            "正文绝不可写入审计日志: {rec_str}"
+        );
+        assert_eq!(
+            records[0]["detail"]["args"]["text_bytes"],
+            json!("TOP_SECRET_PRIVATE_BODY_999".len())
+        );
     }
 
 }

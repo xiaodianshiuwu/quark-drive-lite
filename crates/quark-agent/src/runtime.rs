@@ -23,23 +23,58 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// 本机桥接端点（Unix socket；超长回退 tmpdir）。
+/// 本机桥接端点（Unix socket；超长回退私有 0700 tmpdir）。
 ///
-/// 端点本身不是秘密（真正授权凭据是 token），但仍不适合出现在普通日志里。
+/// 端点只嵌入 sha256(token) 短前缀，绝不暴露原始 token 字节。
 pub fn resolve_bridge_endpoint(profile_dir: &Path, token: &str) -> String {
+    let tag = &crate::policy::sha256_hex(token)[..12];
     #[cfg(windows)]
     {
         let _ = profile_dir;
-        format!("\\\\.\\pipe\\quark-mini-agent-{}", &token[..token.len().min(12)])
+        format!("\\\\.\\pipe\\quark-mini-agent-{tag}")
     }
     #[cfg(not(windows))]
     {
         let candidate = profile_dir.join("agent").join("bridge.sock");
-        if candidate.to_string_lossy().chars().count() <= 100 {
+        #[cfg(unix)]
+        let candidate_bytes = {
+            use std::os::unix::ffi::OsStrExt;
+            candidate.as_os_str().as_bytes().len()
+        };
+        #[cfg(not(unix))]
+        let candidate_bytes = candidate.to_string_lossy().len();
+        if candidate_bytes <= 100 {
             return candidate.to_string_lossy().to_string();
         }
-        let tmp = std::env::temp_dir().join(format!("qk-agent-{}.sock", &token[..token.len().min(12)]));
-        tmp.to_string_lossy().to_string()
+        let base = {
+            let tmp = std::env::temp_dir();
+            #[cfg(unix)]
+            let too_long = {
+                use std::os::unix::ffi::OsStrExt;
+                tmp.as_os_str().as_bytes().len() > 60
+            };
+            #[cfg(not(unix))]
+            let too_long = tmp.to_string_lossy().len() > 60;
+            if too_long {
+                PathBuf::from("/tmp")
+            } else {
+                tmp
+            }
+        };
+        let dir = base.join(format!("qk-agent-{tag}"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true).mode(0o700);
+            let _ = builder.create(&dir);
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::fs::create_dir_all(&dir);
+        }
+        dir.join("bridge.sock").to_string_lossy().to_string()
     }
 }
 
@@ -220,6 +255,7 @@ impl AgentRuntime {
         };
         let changed = json!({
             "write_mode": before.write_mode != after.write_mode,
+            "allow_delete": before.allow_delete != after.allow_delete,
             "remote_roots": before.remote_roots.len() != after.remote_roots.len(),
             "local_read_roots": before.local_read_roots.len() != after.local_read_roots.len(),
             "local_write_roots": before.local_write_roots.len() != after.local_write_roots.len(),
@@ -232,6 +268,7 @@ impl AgentRuntime {
             &Value::Null,
             &json!({
                 "write_mode": after.write_mode,
+                "allow_delete": after.allow_delete,
                 "remote_roots": after.remote_roots.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>(),
                 "local_read_roots": after.local_read_roots.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
                 "local_write_roots": after.local_write_roots.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
@@ -291,6 +328,7 @@ impl AgentRuntime {
             "bridgeFile": self.profile_dir.join("agent").join("bridge.json").to_string_lossy(),
             "journalFile": self.journal.file().file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
             "writeMode": cfg.write_mode,
+            "allowDelete": cfg.allow_delete,
             "remoteRoots": cfg.remote_roots.iter().map(|(fid, name)| json!({"fid": fid, "name": name})).collect::<Vec<_>>(),
             "localReadRoots": scope.local_read_roots.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
             "localWriteRoots": scope.local_write_roots.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
@@ -301,6 +339,13 @@ impl AgentRuntime {
             "lastError": gw.get("lastError").cloned().unwrap_or(json!("")),
             "toolCount": gw.get("toolCount").cloned().unwrap_or(json!(0)),
         })
+    }
+
+    /// 账号退出或切换时清空跨会话内存态（对话上下文、批量计划、近期对象缓存）。
+    pub fn reset_for_account_change(&self) {
+        self.chat.reset_for_account_change();
+        self.plans.clear();
+        self.tools.shared.forget_all();
     }
 
     pub fn recent_journal(&self, limit: usize) -> Value {
@@ -420,5 +465,32 @@ mod adapter_tests {
         assert!(script.is_absolute());assert!(script.parent().unwrap().join("agent-bridge-client.js").is_file());
         assert_eq!(standalone_mcp_script_path(temp.path()).unwrap(),script);
         std::fs::write(&script,"modified").unwrap();assert!(standalone_mcp_script_path(temp.path()).is_err());
+    }
+
+    #[test]
+    fn bridge_endpoint_uses_utf8_byte_length_sha256_tag_and_private_dir() {
+        let token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let expected_tag = &crate::policy::sha256_hex(token)[..12];
+        // 35 个中文字符：字符数 < 100，但 UTF-8 字节数 > 105，Unix socket 必须走回退路径。
+        let chinese_dir = PathBuf::from(format!("/{}", "网".repeat(35)));
+        let ep = resolve_bridge_endpoint(&chinese_dir, token);
+        assert!(
+            !ep.contains(&token[..12]),
+            "端点不得暴露原始 token 前缀: {ep}"
+        );
+        assert!(
+            ep.contains(expected_tag),
+            "端点应使用 sha256(token) 短前缀: {ep}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ep_path = PathBuf::from(&ep);
+            assert!(ep.as_bytes().len() <= 100, "回退端点长度超限: {ep}");
+            let parent = ep_path.parent().unwrap();
+            let mode = std::fs::metadata(parent).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "回退目录必须为 0700");
+            let _ = std::fs::remove_dir_all(parent);
+        }
     }
 }

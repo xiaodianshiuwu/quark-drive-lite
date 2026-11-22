@@ -164,9 +164,13 @@ pub fn resolve_real(target: &Path) -> Result<PathBuf, AgentToolError> {
             }
             Err(e) => {
                 // 与 qck 一致：只有 ENOENT / ENOTDIR 继续向上找；其余按"无法确认"拒绝（fail-closed）。
-                let code = e.raw_os_error().unwrap_or(0);
                 let is_enoent = e.kind() == std::io::ErrorKind::NotFound;
-                let is_enotdir = code == libc::ENOTDIR;
+                #[cfg(unix)]
+                let is_enotdir = e.raw_os_error() == Some(libc::ENOTDIR);
+                #[cfg(windows)]
+                let is_enotdir = matches!(e.raw_os_error(), Some(267)); // ERROR_DIRECTORY
+                #[cfg(not(any(unix, windows)))]
+                let is_enotdir = false;
                 if !is_enoent && !is_enotdir {
                     return Err(AgentToolError::new(
                         AgentError::OutOfScope,
@@ -242,7 +246,10 @@ pub fn assert_local_path(
 
     let mut read_only_hit: Option<&LocalRoot> = None;
     for item in roots {
-        let root_real = resolve_real(&item.path)?;
+        // 单个不可达/无权限的授权根不能阻断其余合法授权根的匹配。
+        let Ok(root_real) = resolve_real(&item.path) else {
+            continue;
+        };
         if !is_inside(&root_real, &real) {
             continue;
         }
@@ -479,6 +486,30 @@ mod tests {
         assert!(!is_inside(Path::new("/volume/Allowed"),Path::new("/volume/allowed/private")));
         assert!(is_inside(Path::new("/volume/Allowed"),Path::new("/volume/Allowed/file")));
         assert!(!is_inside(Path::new("/volume/Allowed"),Path::new("/volume/AllowedSibling/file")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreachable_root_does_not_abort_checking_remaining_valid_roots() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = tempfile::tempdir().unwrap();
+        let locked_dir = base.path().join("locked");
+        let hidden_root = locked_dir.join("child");
+        std::fs::create_dir_all(&hidden_root).unwrap();
+        let valid_root = base.path().join("valid");
+        std::fs::create_dir_all(&valid_root).unwrap();
+        let target = valid_root.join("ok.txt");
+        std::fs::write(&target, b"ok").unwrap();
+        // 把 locked_dir 设为 0o000，使 hidden_root 的 canonicalize 返回 EACCES（非 root 用户）。
+        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let roots = vec![
+            LocalRoot { path: hidden_root, access: "rw" },
+            LocalRoot { path: valid_root, access: "rw" },
+        ];
+        let res = assert_local_path(&target.to_string_lossy(), &roots, true, "target");
+        // 先恢复权限以便 tempdir 清理
+        let _ = std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o700));
+        assert!(res.is_ok(), "不可达根不应阻断后续合法根校验: {res:?}");
     }
 
 }

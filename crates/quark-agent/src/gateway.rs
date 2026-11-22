@@ -461,6 +461,16 @@ impl AgentGateway {
         };
         if !endpoint.is_empty() && !endpoint.starts_with("\\\\") {
             let _ = std::fs::remove_file(&endpoint);
+            #[cfg(unix)]
+            if let Some(parent) = Path::new(&endpoint).parent() {
+                if parent
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("qk-agent-"))
+                {
+                    let _ = std::fs::remove_dir(parent);
+                }
+            }
         }
         if !endpoint.is_empty() {
             self.audit(
@@ -1122,7 +1132,7 @@ fn label_string(value: Option<&Value>) -> String {
 /// 审计里只留定位问题所需的参数摘要（正文内容不落盘）。
 ///
 /// 白名单与 qck `summarizeArgs` 一致；`text` 只记字节数（规格 §12.4 第 30 条）。
-fn summarize_args(args: &Value) -> Value {
+pub(crate) fn summarize_args(args: &Value) -> Value {
     const KEYS: [&str; 17] = [
         "fid",
         "fids",
@@ -1371,6 +1381,7 @@ mod tests {
                 scope: ScopeSnapshot {
                     remote_roots: vec!["root1".to_string()],
                     write_mode: "scoped-write".to_string(),
+                    allow_delete: false,
                     local_read_roots: Vec::new(),
                     local_write_roots: vec![std::path::PathBuf::from("/tmp/qk-gw-work")],
                 },

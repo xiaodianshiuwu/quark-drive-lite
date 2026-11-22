@@ -206,6 +206,7 @@ impl Harness {
         let token = "a".repeat(64);
         struct Src {
             token: String,
+            dir: PathBuf,
         }
         impl ConfigSource for Src {
             fn access(&self) -> AccessSnapshot {
@@ -215,16 +216,14 @@ impl Harness {
                 ScopeSnapshot {
                     remote_roots: vec!["root".into()],
                     write_mode: "scoped-write".into(),
+                    allow_delete: true,
                     local_read_roots: vec![],
-                    local_write_roots: vec![dir_scope()],
+                    local_write_roots: vec![self.dir.clone()],
                 }
             }
         }
-        fn dir_scope() -> std::path::PathBuf {
-            std::env::temp_dir()
-        }
         let gateway = Arc::new(AgentGateway::new(
-            Arc::new(Src { token: token.clone() }),
+            Arc::new(Src { token: token.clone(), dir: dir.clone() }),
             tools.clone() as Arc<dyn ToolRegistry>,
             journal,
         ));
@@ -238,17 +237,7 @@ impl Harness {
     }
 
     async fn call_tool(&self, name: &str, args: Value) -> Value {
-        let ctx = ToolContext {
-            actor: "loop-verify".into(),
-            generation: 1,
-            scope: ScopeSnapshot {
-                remote_roots: vec!["root".into()],
-                write_mode: "scoped-write".into(),
-                local_read_roots: vec![],
-                local_write_roots: vec![self.dir.clone()],
-            },
-        };
-        match self.tools.execute(&ctx, name, &args).await {
+        match self.gateway.call_tool(name, &args, "loop-verify").await {
             Ok(v) => v,
             Err(e) => json!({"error": e.to_json()}),
         }
@@ -341,6 +330,7 @@ async fn agent_loop_verify() {
         scope: ScopeSnapshot {
             remote_roots: vec!["root".into()],
             write_mode: "read-only".into(),
+            allow_delete: false,
             local_read_roots: vec![],
             local_write_roots: vec![],
         },

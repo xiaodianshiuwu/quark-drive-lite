@@ -24,6 +24,8 @@ pub const WRITE_MODES: [&str; 2] = ["read-only", "scoped-write"];
 pub struct AgentConfig {
     pub enabled: bool,
     pub write_mode: String,
+    /// 显式删除开关（默认关闭；即使处于 scoped-write 也需用户单独开启才允许移入回收站）。
+    pub allow_delete: bool,
     /// 授权网盘目录：[{fid, name}]（name 仅展示用）。
     pub remote_roots: Vec<(String, String)>,
     pub local_read_roots: Vec<PathBuf>,
@@ -39,6 +41,7 @@ impl Default for AgentConfig {
         Self {
             enabled: false,
             write_mode: "read-only".into(),
+            allow_delete: false,
             remote_roots: Vec::new(),
             local_read_roots: Vec::new(),
             local_write_roots: Vec::new(),
@@ -55,6 +58,7 @@ impl Default for AgentConfig {
 pub struct ScopeSnapshot {
     pub remote_roots: Vec<String>,
     pub write_mode: String,
+    pub allow_delete: bool,
     pub local_read_roots: Vec<PathBuf>,
     pub local_write_roots: Vec<PathBuf>,
 }
@@ -64,6 +68,7 @@ impl AgentConfig {
         json!({
             "enabled": self.enabled,
             "writeMode": self.write_mode,
+            "allowDelete": self.allow_delete,
             "remoteRoots": self.remote_roots.iter().map(|(fid, name)| json!({"fid": fid, "name": name})).collect::<Vec<_>>(),
             "localReadRoots": self.local_read_roots.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
             "localWriteRoots": self.local_write_roots.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
@@ -81,6 +86,7 @@ impl AgentConfig {
         if WRITE_MODES.contains(&wm) {
             c.write_mode = wm.to_string();
         }
+        c.allow_delete = v.get("allowDelete").and_then(|x| x.as_bool()).unwrap_or(false);
         if let Some(arr) = v.get("remoteRoots").and_then(|x| x.as_array()) {
             for item in arr {
                 let fid = item.get("fid").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
@@ -130,6 +136,7 @@ impl AgentConfig {
         ScopeSnapshot {
             remote_roots: remote,
             write_mode: self.write_mode.clone(),
+            allow_delete: self.allow_delete,
             local_read_roots: self
                 .local_read_roots
                 .iter()
@@ -299,6 +306,11 @@ impl AgentConfigManager {
             }
             cur.write_mode = wm.to_string();
         }
+        if let Some(v) = patch.get("allowDelete") {
+            if let Some(b) = v.as_bool() {
+                cur.allow_delete = b;
+            }
+        }
         if let Some(v) = patch.get("remoteRoots") {
             let roots = normalize_remote_root_entries(v);
             // 与 qck UI 语义一致：不允许把根目录（fid="0"）授权为 Agent 根——
@@ -393,28 +405,71 @@ impl AgentConfigManager {
             "transport": if cfg.endpoint.starts_with("\\\\") { "named-pipe" } else { "unix-socket" },
             "updatedAt": cfg.updated_at,
         });
-        let tmp = self.bridge_path.with_extension(format!("tmp.{}", std::process::id()));
-        {
-            let mut f = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&tmp)
-                .map_err(|e| AgentToolError::new(AgentError::Internal, format!("无法写入凭据文件：{e}")))?;
+        let tmp = self
+            .bridge_path
+            .with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let write_res = (|| -> Result<(), AgentToolError> {
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-                    .map_err(|e| AgentToolError::new(AgentError::Internal, format!("{e}")))?;
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
             }
+            let mut f = opts.open(&tmp).map_err(|e| {
+                AgentToolError::new(AgentError::Internal, format!("无法写入凭据文件：{e}"))
+            })?;
             serde_json::to_writer_pretty(&mut f, &payload)
                 .map_err(|e| AgentToolError::new(AgentError::Internal, format!("{e}")))?;
-            f.write_all(b"\n").ok();
-            f.flush().ok();
+            f.write_all(b"\n")
+                .map_err(|e| AgentToolError::new(AgentError::Internal, format!("{e}")))?;
+            f.flush()
+                .map_err(|e| AgentToolError::new(AgentError::Internal, format!("{e}")))?;
+            f.sync_all()
+                .map_err(|e| AgentToolError::new(AgentError::Internal, format!("{e}")))?;
+            drop(f);
+            #[cfg(windows)]
+            {
+                if let Err(e) = std::fs::rename(&tmp, &self.bridge_path) {
+                    if self.bridge_path.exists() {
+                        std::fs::remove_file(&self.bridge_path).map_err(|re| {
+                            AgentToolError::new(
+                                AgentError::Internal,
+                                format!("无法替换凭据文件：{re}"),
+                            )
+                        })?;
+                        std::fs::rename(&tmp, &self.bridge_path).map_err(|re| {
+                            AgentToolError::new(
+                                AgentError::Internal,
+                                format!("无法落地凭据文件：{re}"),
+                            )
+                        })?;
+                    } else {
+                        return Err(AgentToolError::new(
+                            AgentError::Internal,
+                            format!("无法落地凭据文件：{e}"),
+                        ));
+                    }
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                std::fs::rename(&tmp, &self.bridge_path).map_err(|e| {
+                    AgentToolError::new(AgentError::Internal, format!("无法落地凭据文件：{e}"))
+                })?;
+            }
+            #[cfg(unix)]
+            if let Some(parent) = self.bridge_path.parent() {
+                if let Ok(dir) = std::fs::File::open(parent) {
+                    let _ = dir.sync_all();
+                }
+            }
+            Ok(())
+        })();
+        if write_res.is_err() {
+            let _ = std::fs::remove_file(&tmp);
         }
-        std::fs::rename(&tmp, &self.bridge_path)
-            .map_err(|e| AgentToolError::new(AgentError::Internal, format!("无法落地凭据文件：{e}")))?;
-        Ok(())
+        write_res
     }
 
     pub fn remove_bridge_file(&self) {

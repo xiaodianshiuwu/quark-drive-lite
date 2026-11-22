@@ -145,6 +145,7 @@ async fn main() {
     let root_scope = ScopeSnapshot {
         remote_roots: vec!["0".into()],
         write_mode: "scoped-write".into(),
+        allow_delete: true,
         local_read_roots: vec![],
         local_write_roots: vec![dir.clone()],
     };
@@ -168,6 +169,7 @@ async fn main() {
     let scope = ScopeSnapshot {
         remote_roots: vec![dir_fid.clone()],
         write_mode: "scoped-write".into(),
+        allow_delete: true,
         local_read_roots: vec![],
         local_write_roots: vec![dir.clone()],
     };

@@ -227,6 +227,18 @@ impl ToolEnv {
         Ok(())
     }
 
+    pub fn assert_deletable(&self) -> Result<(), AgentToolError> {
+        self.assert_writable("删除文件")?;
+        if !self.scope.allow_delete {
+            return Err(AgentToolError::new(
+                AgentError::ReadOnly,
+                "当前未开启 Agent 删除权限，不能将网盘文件移入回收站",
+            )
+            .with_hint("如需允许 Agent 删除，请在客户端「设置 → Agent 接入」中开启「允许移入回收站」"));
+        }
+        Ok(())
+    }
+
     /// 网盘范围校验：fid 命中授权根或其祖先链命中（按当前真实归属，不信任路径名）。
     pub async fn assert_remote_in_scope(&self, fid: &str) -> Result<String, AgentToolError> {
         let id = fid.trim();
@@ -440,42 +452,71 @@ impl ToolEnv {
         Ok(())
     }
 
-    /// 等待传输任务到终态（400ms 轮询 transfer.list）。
+    /// 等待传输任务到终态（400ms 轮询 transfer.list；遇到会话切换/错误立即中止，绝不死循环）。
     pub async fn wait_for_transfers(&self, ids: &[String], timeout_ms: u64) -> Value {
+        if ids.is_empty() {
+            return json!({ "done": true, "tasks": [] });
+        }
         let timeout = timeout_ms.clamp(0, MAX_WAIT_MS);
         let start = std::time::Instant::now();
         loop {
-            if let Ok(tasks) = self.transfer_call("transfer.list", &Value::Null).await {
-                let arr = tasks.as_array().cloned().unwrap_or_default();
-                let mut pending: Vec<String> = Vec::new();
-                let mut matched: Vec<Value> = Vec::new();
-                for id in ids {
-                    if let Some(t) = arr.iter().find(|t| t.get("id").and_then(|v| v.as_str()) == Some(id.as_str())) {
-                        matched.push(t.clone());
-                        let st = t.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                        if !["done", "error", "canceled"].contains(&st) {
+            match self.transfer_call("transfer.list", &Value::Null).await {
+                Ok(tasks) => {
+                    let arr = tasks.as_array().cloned().unwrap_or_default();
+                    let mut pending: Vec<String> = Vec::new();
+                    let mut matched: Vec<Value> = Vec::new();
+                    for id in ids {
+                        if let Some(t) = arr.iter().find(|t| t.get("id").and_then(|v| v.as_str()) == Some(id.as_str())) {
+                            matched.push(t.clone());
+                            let st = t.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                            if !["done", "error", "canceled"].contains(&st) {
+                                pending.push(id.clone());
+                            }
+                        } else {
                             pending.push(id.clone());
                         }
-                    } else {
-                        pending.push(id.clone());
+                    }
+                    if pending.is_empty() {
+                        return json!({ "done": true, "tasks": matched });
+                    }
+                    if start.elapsed().as_millis() as u64 >= timeout {
+                        return json!({
+                            "done": false, "timedOut": true, "tasks": matched, "pendingIds": pending,
+                            "note": "等待超时：任务可能仍在后台执行，请稍后用 list_transfers 查询，不要重复提交",
+                        });
                     }
                 }
-                if pending.is_empty() {
-                    return json!({ "done": true, "tasks": matched });
-                }
-                if start.elapsed().as_millis() as u64 >= timeout {
+                Err(e) => {
                     return json!({
-                        "done": false, "timedOut": true, "tasks": matched, "pendingIds": pending,
-                        "note": "等待超时：任务可能仍在后台执行，请稍后用 list_transfers 查询，不要重复提交",
+                        "done": false,
+                        "aborted": true,
+                        "error": e.to_json(),
+                        "tasks": [],
+                        "pendingIds": ids,
+                        "note": format!("等待传输状态中断：{}", e.message),
                     });
                 }
             }
-            tokio::time::sleep(Duration::from_millis(400)).await;
+            let elapsed = start.elapsed().as_millis() as u64;
+            if elapsed >= timeout {
+                return json!({
+                    "done": false, "timedOut": true, "tasks": [], "pendingIds": ids,
+                    "note": "等待超时：任务可能仍在后台执行，请稍后用 list_transfers 查询，不要重复提交",
+                });
+            }
+            let remain = timeout - elapsed;
+            tokio::time::sleep(Duration::from_millis(remain.min(400))).await;
         }
     }
 
-    /// 序列化任务（丢弃上游 raw；eta=-1 表未知）。
+    /// 序列化任务（兼容 camelCase 与 snake_case；丢弃上游 raw；eta=-1 表未知）。
     pub fn serialize_task(t: &Value) -> Value {
+        let pick = |camel: &str, snake: &str, default: Value| {
+            t.get(camel)
+                .or_else(|| t.get(snake))
+                .cloned()
+                .unwrap_or(default)
+        };
         json!({
             "id": t.get("id").cloned().unwrap_or(Value::Null),
             "kind": t.get("kind").cloned().unwrap_or(Value::Null),
@@ -484,12 +525,12 @@ impl ToolEnv {
             "transferred": t.get("transferred").cloned().unwrap_or(json!(0)),
             "status": t.get("status").cloned().unwrap_or(Value::Null),
             "error": t.get("error").cloned().unwrap_or(Value::Null),
-            "errorCode": t.get("error_code").cloned().unwrap_or(Value::Null),
+            "errorCode": pick("errorCode", "error_code", Value::Null),
             "attempts": t.get("attempts").cloned().unwrap_or(json!(0)),
-            "createdAt": t.get("created_at").cloned().unwrap_or(json!(0)),
-            "updatedAt": t.get("updated_at").cloned().unwrap_or(json!(0)),
+            "createdAt": pick("createdAt", "created_at", json!(0)),
+            "updatedAt": pick("updatedAt", "updated_at", json!(0)),
             "fid": t.get("fid").cloned().unwrap_or(Value::Null),
-            "pdirFid": t.get("pdir_fid").cloned().unwrap_or(Value::Null),
+            "pdirFid": pick("pdirFid", "pdir_fid", Value::Null),
             "speed": t.get("speed").cloned().unwrap_or(json!(0)),
             "eta": t.get("eta").cloned().unwrap_or(json!(-1)),
         })
@@ -711,29 +752,15 @@ impl QuarkTools {
         }
     }
 
-    /// 执行并审计（所有工具统一入口）。
+    /// 执行工具分发（统一审计由入口层 gateway/chat 经 summarize_args 完成，避免重复记账与正文落盘）。
     pub async fn execute(
         &self,
         ctx: &crate::registry::ToolContext,
         name: &str,
         args: &Value,
     ) -> ToolResult {
-        let started = std::time::Instant::now();
         let env = self.env(ctx);
-        let result = self.dispatch(&env, name, args).await;
-        let ok = result.is_ok();
-        // 规格 §7：正文内容只记字节数不记内容。结果审计归入口层（gateway/chat 已有
-        // summarize 白名单审计）；execute 层只记耗时，避免 read_text_file 正文片段、
-        // 大结果整段落盘，也避免与入口层重复记账。
-        self.journal.append(
-            "tool",
-            name,
-            &ctx.actor,
-            if ok { "ok" } else { "error" },
-            &json!({ "args": crate::journal::sanitize(args) }),
-            &json!({ "ms": started.elapsed().as_millis() as u64 }),
-        );
-        result
+        self.dispatch(&env, name, args).await
     }
 
     async fn dispatch(&self, env: &ToolEnv, name: &str, args: &Value) -> Result<Value, AgentToolError> {
@@ -803,6 +830,7 @@ impl QuarkTools {
             "quota_bytes": quota,
             "agent": {
                 "write_mode": env.scope.write_mode,
+                "allow_delete": env.scope.allow_delete,
                 "remote_roots": env.scope.remote_roots,
                 "local_read_roots": env.scope.local_read_roots.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
                 "local_write_roots": env.scope.local_write_roots.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
@@ -853,6 +881,10 @@ impl QuarkTools {
     }
 
     async fn tool_search_files(&self, env: &ToolEnv, _args: &Value, a: &(dyn Fn(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
+        if env.scope.remote_roots.is_empty() {
+            return Err(AgentToolError::new(AgentError::OutOfScope, "尚未授权任何网盘目录")
+                .with_hint("请在客户端「设置 → Agent 接入」添加授权目录"));
+        }
         let keyword = require_string(&a("keyword"), "keyword", true)?;
         let page = clamp_int(&a("page"), 1, 100_000, 1);
         let requested_size = clamp_int(&a("size"), 1, 100_000, 50);
@@ -863,7 +895,8 @@ impl QuarkTools {
         }
         let res = env.deps.core_call(env.generation, "fs.search", &params).await?;
         let mut list = res.get("list").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let only_in_scope = a("only_in_scope").as_bool().unwrap_or(false);
+        // 默认按授权范围过滤，避免搜索结果越界暴露未授权目录的隐私文件名。
+        let only_in_scope = a("only_in_scope").as_bool().unwrap_or(true);
         let mut scope_filtered = false;
         if only_in_scope {
             scope_filtered = true;
@@ -1077,21 +1110,57 @@ impl QuarkTools {
                 }
                 let name = info.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let total = info.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-                let workdir = Self::resolve_work_dir(env, None)?;
-                let path = workdir.join(&name);
-                if !path.exists() {
+                // 绝不把不可信云端 info["name"] 直接拼接到工作目录（防路径穿越/任意本地文件读取）：
+                // 优先复用传输队列中已完成且通过本地授权范围校验的 localPath。
+                let mut verified_path: Option<std::path::PathBuf> = None;
+                if let Ok(tasks) = env.transfer_call("transfer.list", &Value::Null).await {
+                    if let Some(arr) = tasks.as_array() {
+                        let local_roots = env.local_roots();
+                        for t in arr.iter().rev() {
+                            if t.get("fid").and_then(|v| v.as_str()) == Some(f.as_str())
+                                && t.get("kind").and_then(|v| v.as_str()) == Some("download")
+                                && t.get("status").and_then(|v| v.as_str()) == Some("done")
+                            {
+                                if let Some(lp) = t.get("localPath").and_then(|v| v.as_str()) {
+                                    if let Ok(real) = crate::policy::assert_local_path(lp, &local_roots, false, "localPath") {
+                                        if real.is_file() {
+                                            verified_path = Some(real);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let path = if let Some(existing) = verified_path {
+                    existing
+                } else {
                     if !download_if_missing {
                         return Err(AgentToolError::new(AgentError::NotFound, "本地尚未下载该文件")
                             .with_hint("请先调用 download_files，或设置 download_if_missing=true"));
                     }
+                    // 下载写入用户工作目录并改动传输队列，必须要求写权限，禁止只读模式绕过。
+                    env.assert_writable("下载网盘文件到本地工作目录")?;
+                    let workdir = Self::resolve_work_dir(env, None)?;
+                    let safe_name = Self::safe_download_name(&name, &f);
                     let accepted = env.transfer_call(
                         "transfer.download",
-                        &json!({ "fids": [f], "localDir": workdir.to_string_lossy(), "names": [name.clone()] }),
+                        &json!({ "fids": [f], "localDir": workdir.to_string_lossy(), "names": [safe_name] }),
                     ).await?;
                     let ids: Vec<String> = accepted.as_array().map(|arr| {
                         arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
                     }).unwrap_or_default();
                     let waited = env.wait_for_transfers(&ids, timeout_ms).await;
+                    if waited.get("aborted").and_then(|v| v.as_bool()) == Some(true) {
+                        let err_obj = waited.get("error").unwrap_or(&Value::Null);
+                        let code = err_obj.get("code").and_then(|v| v.as_str()).unwrap_or("ABORTED");
+                        let msg = err_obj
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("等待下载状态中断");
+                        return Err(AgentToolError::from_upstream(code, msg, None));
+                    }
                     if waited.get("done").and_then(|v| v.as_bool()) != Some(true) {
                         return Ok(json!({
                             "status": "pending",
@@ -1101,12 +1170,20 @@ impl QuarkTools {
                         }));
                     }
                     let tasks = waited.get("tasks").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                    let failed = tasks.iter().any(|t| t.get("status").and_then(|v| v.as_str()) != Some("done"));
+                    let failed = tasks.is_empty()
+                        || tasks.iter().any(|t| t.get("status").and_then(|v| v.as_str()) != Some("done"));
                     if failed {
                         return Err(AgentToolError::new(AgentError::Upstream, "下载失败，无法读取正文")
                             .with_hint("请用 list_transfers 查看错误详情"));
                     }
-                }
+                    let downloaded = tasks
+                        .first()
+                        .and_then(|t| t.get("localPath"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                        .ok_or_else(|| AgentToolError::new(AgentError::Upstream, "下载完成但未返回本地路径"))?;
+                    crate::policy::assert_local_path(downloaded, &env.local_roots(), false, "localPath")?
+                };
                 (path, name, total)
             }
             (None, None) => {
@@ -1336,7 +1413,8 @@ impl QuarkTools {
             if info.get("dir").and_then(|v| v.as_bool()).unwrap_or(false) {
                 return Err(AgentToolError::new(AgentError::InvalidArg, "暂不支持下载整个文件夹，请指定文件"));
             }
-            names.push(info.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string());
+            let raw_name = info.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            names.push(Self::safe_download_name(raw_name, fid));
         }
         let accepted = env.transfer_call(
             "transfer.download",
@@ -1357,19 +1435,34 @@ impl QuarkTools {
         Ok(out)
     }
 
+    fn safe_download_name(raw: &str, fid: &str) -> String {
+        let leaf = raw.replace(['/', '\\', '\0'], "_").trim().to_string();
+        if leaf.is_empty() || leaf == "." || leaf == ".." {
+            format!("file-{fid}")
+        } else {
+            leaf
+        }
+    }
+
     fn resolve_work_dir(env: &ToolEnv, explicit: Option<&str>) -> Result<std::path::PathBuf, AgentToolError> {
+        let roots = env.local_roots();
         if let Some(dir) = explicit {
-            return crate::policy::assert_local_path(dir, &env.local_roots(), true, "local_dir");
+            return crate::policy::assert_local_path(dir, &roots, true, "local_dir");
         }
         // 优先下载目录设置；必须通过严格本地范围校验（qck 曾因只比前缀被符号链接绕过）
         let setting = env.deps.download_dir();
         if !setting.is_empty() {
-            if let Ok(real) = crate::policy::assert_local_path(&setting, &env.local_roots(), true, "下载目录") {
+            if let Ok(real) = crate::policy::assert_local_path(&setting, &roots, true, "下载目录") {
                 return Ok(real);
             }
         }
-        if let Some(root) = env.scope.local_write_roots.first() {
-            return Ok(root.clone());
+        // 所有分支均须经过 assert_local_path 校验，防止配置中的符号链接或含 .. 的根绕过。
+        for root in &env.scope.local_write_roots {
+            if let Some(s) = root.to_str() {
+                if let Ok(real) = crate::policy::assert_local_path(s, &roots, true, "工作目录") {
+                    return Ok(real);
+                }
+            }
         }
         Err(AgentToolError::new(AgentError::OutOfScope, "尚未授权任何可写的本地目录")
             .with_hint("请在客户端「设置 → Agent 接入」添加可写目录"))
@@ -2132,7 +2225,7 @@ impl QuarkTools {
     }
 
     async fn tool_delete_entries(&self, env: &ToolEnv, _args: &Value, a: &(dyn Fn(&str) -> Value + Sync)) -> Result<Value, AgentToolError> {
-        env.assert_writable("删除文件")?;
+        env.assert_deletable()?;
         let fids: Vec<String> = a("fids")
             .as_array()
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.trim().to_string())).filter(|s| !s.is_empty()).collect())
@@ -2240,14 +2333,14 @@ impl QuarkTools {
 // 文本读取（严格 UTF-8、NUL 检测、截断边界回退、BOM 去除、哈希）
 // ---------------------------------------------------------------------------
 
-/// 判断错误是否为"对象不存在"（上游 NOT_FOUND / 本地 NotFound）。
+/// 判断错误是否为"对象不存在"（仅上游 NOT_FOUND / 本地 NotFound；绝不把 400 INVALID_ARG 当作已删除）。
 fn is_not_found(e: &AgentToolError) -> bool {
     e.code == AgentError::NotFound
-        || e.code == AgentError::InvalidArg
+        || e.raw_code.as_deref() == Some("NOT_FOUND")
         || e.upstream_code
             .as_ref()
             .and_then(|v| v.as_str())
-            .map(|c| c == "NOT_FOUND" || c == "INVALID_ARG")
+            .map(|c| c == "NOT_FOUND")
             .unwrap_or(false)
 }
 
@@ -2415,9 +2508,11 @@ mod fake_tests {
         nodes: Mutex<HashMap<String, Value>>, // fid -> {fid,name,dir,size,pdirFid,updatedAt,category,ext}
         removed: Mutex<Vec<String>>,
         uploads: Mutex<Vec<Value>>,
+        downloads: Mutex<Vec<Value>>,
         download_dir: Mutex<String>,
         transfers: Mutex<Vec<Value>>,
         fail_removed_lookup: std::sync::atomic::AtomicBool,
+        transfer_list_error: Mutex<Option<(String, String)>>,
     }
 
     impl FakeDrive {
@@ -2512,6 +2607,18 @@ mod fake_tests {
                             .collect();
                         Ok(json!({"list": list, "total": list.len(), "page":1, "size":200, "hasMore": false}))
                     }
+                    "fs.search" => {
+                        let kw = p["keyword"].as_str().unwrap_or("").to_lowercase();
+                        let list: Vec<Value> = self
+                            .nodes
+                            .lock()
+                            .unwrap()
+                            .values()
+                            .filter(|n| n["name"].as_str().unwrap_or("").to_lowercase().contains(&kw))
+                            .cloned()
+                            .collect();
+                        Ok(json!({"list": list, "total": list.len(), "page":1, "size":50, "hasMore": false}))
+                    }
                     "fs.mkdir" => {
                         let name = p["name"].as_str().unwrap_or("");
                         let parent = p["pdirFid"].as_str().unwrap_or("0");
@@ -2555,8 +2662,16 @@ mod fake_tests {
         ) -> DepsFuture<'a, Result<Value, AgentToolError>> {
             Box::pin(async move {
                 match method {
-                    "transfer.list" => Ok(Value::Array(self.transfers.lock().unwrap().clone())),
-                    "transfer.download" => Ok(json!(["task-dl-1"])),
+                    "transfer.list" => {
+                        if let Some((code, msg)) = self.transfer_list_error.lock().unwrap().clone() {
+                            return Err(AgentToolError::from_upstream(&code, msg, None));
+                        }
+                        Ok(Value::Array(self.transfers.lock().unwrap().clone()))
+                    }
+                    "transfer.download" => {
+                        self.downloads.lock().unwrap().push(params.clone());
+                        Ok(json!(["task-dl-1"]))
+                    }
                     "transfer.upload" => {
                         self.uploads.lock().unwrap().push(params.clone());
                         Ok(json!(["task-up-1"]))
@@ -2605,9 +2720,16 @@ mod fake_tests {
         ScopeSnapshot {
             remote_roots: roots.iter().map(|s| s.to_string()).collect(),
             write_mode: if write { "scoped-write".into() } else { "read-only".into() },
+            allow_delete: false,
             local_read_roots: vec![],
             local_write_roots: local_write.iter().map(|p| p.to_path_buf()).collect(),
         }
+    }
+
+    fn scope_deletable(roots: &[&str], local_write: &[&std::path::Path]) -> ScopeSnapshot {
+        let mut s = scope(roots, true, local_write);
+        s.allow_delete = true;
+        s
     }
 
     async fn run(h: &Harness, ctx: &ToolContext, name: &str, args: Value) -> Value {
@@ -2682,10 +2804,13 @@ mod fake_tests {
 
     #[tokio::test]
     async fn delete_requires_dry_run_and_matching_confirm_names() {
-        let h = harness(scope(&["root"], true, &[]));
+        let h = harness(scope_deletable(&["root"], &[]));
         h.deps.add("f1", "报告.txt", false, "root", 3);
         h.deps.add("f2", "图片.jpg", false, "root", 3);
-        let ctx = ctx_with(scope(&["root"], true, &[]));
+        // 默认 scoped-write 但 allow_delete=false 时，必须拒绝删除！
+        let ro_del = run(&h, &ctx_with(scope(&["root"], true, &[])), "delete_entries", json!({"fids": ["f1"]})).await;
+        assert_eq!(ro_del["error"]["code"], "AGENT_READ_ONLY");
+        let ctx = ctx_with(scope_deletable(&["root"], &[]));
         // dry_run 默认 true → 只列目标，不删除
         let out = run(&h, &ctx, "delete_entries", json!({"fids": ["f1", "f2"]})).await;
         assert_eq!(out["dry_run"], true);
@@ -2729,10 +2854,10 @@ mod fake_tests {
 
     #[tokio::test]
     async fn accepted_delete_with_unavailable_verification_is_not_confirmed_deleted() {
-        let h=harness(scope(&["root"],true,&[]));
+        let h=harness(scope_deletable(&["root"],&[]));
         h.deps.add("f1","报告.txt",false,"root",3);
         h.deps.fail_removed_lookup.store(true,std::sync::atomic::Ordering::Relaxed);
-        let out=run(&h,&ctx_with(scope(&["root"],true,&[])),"delete_entries",json!({"fids":["f1"],"dry_run":false,"confirm_names":["报告.txt"]})).await;
+        let out=run(&h,&ctx_with(scope_deletable(&["root"],&[])),"delete_entries",json!({"fids":["f1"],"dry_run":false,"confirm_names":["报告.txt"]})).await;
         assert_eq!(out["accepted"],true);
         assert_eq!(out["deleted_to_recycle"],false);
         assert_eq!(out["results"][0]["status"],"uncertain");
@@ -2741,11 +2866,11 @@ mod fake_tests {
 
     #[tokio::test]
     async fn delete_out_of_scope_rejected_and_folder_deletes_children() {
-        let h = harness(scope(&["root"], true, &[]));
+        let h = harness(scope_deletable(&["root"], &[]));
         h.deps.add("outside", "x", false, "0", 1);
         h.deps.mkdir("folder-1", "待删目录", "root");
         h.deps.add("child-1", "child.txt", false, "folder-1", 1);
-        let ctx = ctx_with(scope(&["root"], true, &[]));
+        let ctx = ctx_with(scope_deletable(&["root"], &[]));
         let bad = run(&h, &ctx, "delete_entries", json!({"fids": ["outside"], "dry_run": false, "confirm_names": ["x"]})).await;
         assert_eq!(bad["error"]["code"], "AGENT_OUT_OF_SCOPE");
         // 目录删除连带子项
@@ -2959,5 +3084,193 @@ mod fake_tests {
         assert_eq!(out["logged_in"], true);
         assert_eq!(out["quota_bytes"]["total"], 100);
         assert_eq!(out["agent"]["write_mode"], "scoped-write");
+        assert_eq!(out["agent"]["allow_delete"], false);
+    }
+
+    #[tokio::test]
+    async fn read_text_file_blocks_traversal_enforces_read_only_and_uses_verified_local_path() {
+        let base = tempfile::tempdir().unwrap();
+        let work = base.path().join("work");
+        let outside = base.path().join("secret.txt");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(&outside, "HOST_SECRET_FILE").unwrap();
+
+        let h = harness(scope(&["root"], false, &[&work]));
+        // 恶意云端文件名试图通过 ../ 穿越到工作目录之外读取宿主敏感文件
+        h.deps.add("evil-fid", "../secret.txt", false, "root", 16);
+
+        // 1) 只读模式：绝不能读取 ../secret.txt，也不能触发 transfer.download 绕过只读模式！
+        let ro_ctx = ctx_with(scope(&["root"], false, &[&work]));
+        let ro_out = run(&h, &ro_ctx, "read_text_file", json!({"fid": "evil-fid"})).await;
+        assert_eq!(
+            ro_out["error"]["code"], "AGENT_READ_ONLY",
+            "只读模式下下载触发必须被拦截: {ro_out}"
+        );
+        assert!(h.deps.downloads.lock().unwrap().is_empty());
+
+        // 2) 可写模式：download_if_missing=false 绝不能因为 work.join("../secret.txt") 存在就读出宿主文件！
+        let rw_ctx = ctx_with(scope(&["root"], true, &[&work]));
+        let no_dl = run(
+            &h,
+            &rw_ctx,
+            "read_text_file",
+            json!({"fid": "evil-fid", "download_if_missing": false}),
+        )
+        .await;
+        assert_eq!(no_dl["error"]["code"], "AGENT_NOT_FOUND");
+
+        // 3) 若传输返回越界的 localPath，assert_local_path 必须拒绝（AGENT_OUT_OF_SCOPE）
+        h.deps.transfers.lock().unwrap().push(json!({
+            "id": "task-dl-1",
+            "kind": "download",
+            "fid": "evil-fid",
+            "status": "done",
+            "localPath": outside.to_string_lossy(),
+        }));
+        let escaped = run(&h, &rw_ctx, "read_text_file", json!({"fid": "evil-fid"})).await;
+        assert_eq!(escaped["error"]["code"], "AGENT_OUT_OF_SCOPE");
+        assert!(!escaped.to_string().contains("HOST_SECRET_FILE"));
+
+        // 4) 传输把文件保存到去重后的实际路径（report (1).txt），read_text_file 必须按实际 localPath 读取
+        let actual_file = work.join("report (1).txt");
+        std::fs::write(&actual_file, "hello from dedup download").unwrap();
+        h.deps.add("good-fid", "report.txt", false, "root", 25);
+        h.deps.transfers.lock().unwrap().clear();
+        h.deps.transfers.lock().unwrap().push(json!({
+            "id": "task-dl-1",
+            "kind": "download",
+            "fid": "good-fid",
+            "status": "done",
+            "localPath": actual_file.to_string_lossy(),
+        }));
+        let ok = run(&h, &rw_ctx, "read_text_file", json!({"fid": "good-fid"})).await;
+        assert_eq!(ok["text"], "hello from dedup download");
+        assert_eq!(ok["name"], "report.txt");
+    }
+
+    #[tokio::test]
+    async fn wait_for_transfers_aborts_immediately_on_error_without_deadlock() {
+        let h = harness(scope(&["root"], true, &[]));
+        *h.deps.transfer_list_error.lock().unwrap() =
+            Some(("ABORTED".into(), "账号已切换，会话失效".into()));
+        let env = h.tools.env(&ctx_with(scope(&["root"], true, &[])));
+        let started = std::time::Instant::now();
+        // 给 30 秒超时：若死循环会卡满 30 秒，修复后应立即退出。
+        let waited = env.wait_for_transfers(&["t-1".into()], 30_000).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "出错时必须立即退出，不能等待超时: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(waited["done"], false);
+        assert_eq!(waited["aborted"], true);
+        assert_eq!(waited["error"]["code"], "ABORTED");
+    }
+
+    #[test]
+    fn serialize_task_reads_camel_case_and_snake_case_and_is_not_found_rejects_invalid_arg() {
+        let camel = ToolEnv::serialize_task(&json!({
+            "id": "t1",
+            "kind": "upload",
+            "name": "a.txt",
+            "status": "error",
+            "errorCode": "CONFLICT",
+            "createdAt": 1001,
+            "updatedAt": 1002,
+            "pdirFid": "dir-9"
+        }));
+        assert_eq!(camel["errorCode"], "CONFLICT");
+        assert_eq!(camel["createdAt"], 1001);
+        assert_eq!(camel["updatedAt"], 1002);
+        assert_eq!(camel["pdirFid"], "dir-9");
+
+        let snake = ToolEnv::serialize_task(&json!({
+            "id": "t2",
+            "error_code": "NETWORK",
+            "created_at": 2001,
+            "updated_at": 2002,
+            "pdir_fid": "dir-8"
+        }));
+        assert_eq!(snake["errorCode"], "NETWORK");
+        assert_eq!(snake["createdAt"], 2001);
+        assert_eq!(snake["updatedAt"], 2002);
+        assert_eq!(snake["pdirFid"], "dir-8");
+
+        // is_not_found：绝不能把 400 / INVALID_ARG 当成已删除！
+        let invalid_local = AgentToolError::new(AgentError::InvalidArg, "参数无效");
+        assert!(!is_not_found(&invalid_local));
+        let invalid_up = AgentToolError::from_upstream("INVALID_ARG", "Bad Parameter", None);
+        assert!(!is_not_found(&invalid_up));
+        let not_found = AgentToolError::from_upstream("NOT_FOUND", "不存在", None);
+        assert!(is_not_found(&not_found));
+    }
+
+    #[tokio::test]
+    async fn search_files_requires_remote_roots_and_defaults_to_only_in_scope() {
+        let h = harness(scope(&[], false, &[]));
+        // 无授权目录 → 拒绝
+        let denied = run(&h, &ctx_with(scope(&[], false, &[])), "search_files", json!({"keyword": "doc"})).await;
+        assert_eq!(denied["error"]["code"], "AGENT_OUT_OF_SCOPE");
+
+        // 有授权目录：默认 only_in_scope=true，不泄漏未授权目录的同名文件
+        h.deps.add("in-1", "doc-inside.txt", false, "root", 10);
+        h.deps.add("out-1", "doc-private.txt", false, "0", 10);
+        let ok = run(
+            &h,
+            &ctx_with(scope(&["root"], false, &[])),
+            "search_files",
+            json!({"keyword": "doc"}),
+        )
+        .await;
+        assert_eq!(ok["scope_filtered"], true);
+        let fids: Vec<&str> = ok["list"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x["fid"].as_str())
+            .collect();
+        assert_eq!(fids, vec!["in-1"]);
+    }
+
+    #[tokio::test]
+    async fn gateway_and_tools_write_single_redacted_journal_entry_without_body_leak() {
+        use crate::gateway::{AccessSnapshot, AgentGateway, ConfigSource};
+        let work = tempfile::tempdir().unwrap();
+        let h = harness(scope(&["root"], true, &[work.path()]));
+        let work_path = work.path().to_path_buf();
+        struct Src(PathBuf);
+        impl ConfigSource for Src {
+            fn access(&self) -> AccessSnapshot {
+                AccessSnapshot { enabled: true, token: "a".repeat(64) }
+            }
+            fn scope(&self) -> ScopeSnapshot {
+                ScopeSnapshot {
+                    remote_roots: vec!["root".into()],
+                    write_mode: "scoped-write".into(),
+                    allow_delete: false,
+                    local_read_roots: vec![],
+                    local_write_roots: vec![self.0.clone()],
+                }
+            }
+        }
+        let gateway = AgentGateway::new(
+            std::sync::Arc::new(Src(work_path)),
+            h.tools.clone() as std::sync::Arc<dyn crate::registry::ToolRegistry>,
+            h.tools.journal.clone(),
+        );
+        let secret_body = "ULTRA_SECRET_NOTE_CONTENT_XYZ";
+        gateway
+            .call_tool(
+                "save_text_file",
+                &json!({"pdir_fid": "root", "name": "note.txt", "text": secret_body, "wait": false}),
+                "mcp",
+            )
+            .await
+            .unwrap();
+        let records = h.tools.journal.list(20, None);
+        assert_eq!(records.len(), 1, "不得重复写两条审计记录: {records:?}");
+        let dumped = serde_json::to_string(&records).unwrap();
+        assert!(!dumped.contains(secret_body), "审计日志绝不能包含正文内容: {dumped}");
+        assert_eq!(records[0]["detail"]["args"]["text_bytes"], json!(secret_body.len()));
     }
 }
