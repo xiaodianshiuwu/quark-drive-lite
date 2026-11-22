@@ -11,9 +11,14 @@
     check('askDownloadDir defaults off', settings.askDownloadDir === false);
     check('AI entries hidden when Beta off', document.getElementById('nav-chat')?.hidden === true && document.getElementById('agent-card')?.hidden === true);
     check('backup view removed', !document.querySelector('[data-view="backup"]') && !document.getElementById('view-backup'));
+    const tutSkip = document.getElementById('tut-btn-skip');
+    check('first-launch onboarding tutorial shown with skip action', !!tutSkip);
+    if (tutSkip) { tutSkip.click(); await new Promise(r => setTimeout(r, 220)); }
     const optDecline = document.getElementById('optin-btn-decline');
-    check('first-launch server opt-in modal shown', !!optDecline);
+    check('first-launch server opt-in modal shown after tutorial', !!optDecline);
     if (optDecline) { optDecline.click(); await new Promise(r => setTimeout(r, 120)); }
+    const afterSettings = await window.qk.settings.get();
+    check('tutorialSeen persisted after skip', afterSettings && afterSettings.tutorialSeen === true);
     const hubCfg = await window.qk.hub.config();
     check('hub opt-in defaults off and prompted after decline', hubCfg && hubCfg.optIn === false && hubCfg.prompted === true);
     let hubBlocked; try { await window.qk.hub.checkUpdate(); } catch (e) { hubBlocked = e.code; }

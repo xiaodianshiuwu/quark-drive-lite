@@ -1,6 +1,6 @@
 {
   "name": "quark-mini",
-  "version": "0.3.0-beta.1",
+  "version": "1.0.0",
   "private": true,
   "description": "夸克网盘极简桌面客户端（Tauri 2 + Rust）— 轻量高速的文件浏览、搜索、自研并发上传下载、传输任务管理与可选在线更新反馈",
   "engines": {

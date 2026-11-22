@@ -1,69 +1,177 @@
+<div align="center">
+
+<img src="docs/assets/app-icon.png" alt="夸克网盘极简版图标" width="96" height="96" />
+
 # 夸克网盘极简版 · Quark Drive Lite
 
-> **v0.3.0-beta.1（Tauri 2 + Rust 正式主线）**  
-> 本版本已完成从 Electron 向 **Tauri 2 + Rust 原生核心** 的全量替换：更小安装包、更低内存占用、更快启动与传输响应，同时完整保留并升级所有网盘核心能力。
+**轻巧、纯粹、高速的开源夸克网盘桌面客户端**  
+基于 **Tauri 2 + Rust** 原生内核打造 · 安装包仅约 **4–5 MB** · 零广告 · 零后台常驻 · 隐私优先
 
-## 核心特性
+[![Release](https://img.shields.io/github/v/release/xiaodianshiuwu/quark-drive-lite?style=flat-square&color=2F66F6&label=正式版)](https://github.com/xiaodianshiuwu/quark-drive-lite/releases/latest)
+[![Platform](https://img.shields.io/badge/平台-macOS%20Apple%20Silicon%20%7C%20Windows%20x64-0ea5e9?style=flat-square)](https://github.com/xiaodianshiuwu/quark-drive-lite/releases/latest)
+[![Stack](https://img.shields.io/badge/架构-Tauri%202%20%2B%20Rust-f97316?style=flat-square)](#核心架构与隐私承诺)
+[![Privacy](https://img.shields.io/badge/遥测-默认完全关闭（零外传）-10b981?style=flat-square)](#核心架构与隐私承诺)
+[![License](https://img.shields.io/badge/License-MIT-64748b?style=flat-square)](LICENSE)
 
-- **轻量原生架构（Tauri 2 + Rust）**：系统 WebView 承载本地界面，Rust 核心负责会话加密、网盘协议与自研高速分片传输引擎；已精简移除重装前备份模块与 SQLite 依赖，体积更小、内存更低，运行不依赖 Node.js 或 Electron。
-- **高效文件管理工作台**：
-  - 完整多级目录导航：工具栏「后退 / 前进 / 上一级」按钮、深层目录智能面包屑（4 级及以上常驻根目录 + 中间层级「···」一键下拉直达 + 鼠标滚轮与 `<`/`>` 箭头横向滚动，兼顾 Mac 触控板与 Windows 鼠标用户）、鼠标侧键与 `Alt+↑` / `Backspace` / `Alt+←` / `Alt+→` 快捷键；对服务端异常路径响应内置多重兜底。
-  - 文件浏览增强：分类快筛（全部 / 文件夹 / 图片 / 视频 / 文档 / 音频 / 压缩包）、子工具栏实时传输状态胶囊（传输中实时展示速度、进度与当前文件）、多字段排序、列表/网格双视图切换、右侧可收起「文件详情」面板、底部实时状态栏。
-  - 智能自动刷新：当前目录每 60 秒后台静默刷新；账号状态与网盘剩余空间每 90 秒后台同步一次（上传/删除完成或恢复前台时立即补刷）；下载/上传队列 `< 10` 个任务时每完成一项自动刷新，`≥ 10` 个任务时每 15 秒节流刷新并在批次完成后补一次收尾刷新，刷新不闪屏、不丢失滚动与选中态。
-  - 目录切换 SWR 本地缓存 + 同步节点池虚拟滚动（大目录流畅无卡顿）、拖拽上传、复选框增量多选、右键上下文菜单（支持单文件/多选「下载到指定位置…」与空白处新建/刷新）。
-  - 升级版目录选择器：支持「上一级」与弹窗内直接「新建文件夹」，移动/复制目标路径实时预览。
-- **高速自研传输引擎**：
-  - Rust 事件驱动调度器（空闲零轮询、状态即时推送），支持并发分片上传（2 MiB 同步分片读取 + 批量检查点持久化 + SHA-1 前缀状态握手）与多线程分片下载（自适应 1–4 MiB 分片 + 单共享句柄无锁随机位置写入 + 256 KiB 缓冲写入 + 单流边写边算哈希 + 强 ETag 绑定与断点续传）。
-  - 灵活下载目录：支持默认同一文件夹保存，也可切换为「每次询问目录」或右键/详情栏单文件「下载到指定位置…」。
-  - 宽松并发上限与阈值提醒：取消下载/上传并发数人工硬上限（不设限），超出推荐阈值时在设置页主动提醒（防止内存升高、卡顿或限流）。
-  - 传输筛选标签（全部 / 进行中 / 已暂停 / 已完成 / 失败）、实时总速率展示、一键「全部暂停 / 全部继续 / 重试失败」、侧栏常驻速率胶囊与容量进度条。
-- **可选的作者服务器连接（默认关闭 · 零外传承诺）**：
-  - 首次启动弹窗询问是否开启连接，随时可在设置页开关。**未开启时 Rust 底层强制拦截，绝不向作者服务器发送任何请求或数据。**
-  - 开启后支持：① 接收最新更新日志、公告通知并从作者服务器直链下载经 **Ed25519 验签 + SHA-256 校验** 的安装包；② 侧栏「反馈」直接向作者提交建议或问题（可选附带并预先查看脱敏运行日志）；③ 匿名上传严格脱敏的非敏感错误/性能/传输速度摘要（绝不含文件名、路径、Cookie、账号或隐私）。
-  - 全链路采用 **HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端前向保密加密**；服务端配套独立管理控制台（源码位于 `server/qdl-hub/`，不含任何私钥或密码）。服务器部署于海外节点（日本东京），国内直连如遇失败或延迟可开启代理/梯子重试，不连接也完全不影响网盘本地核心使用。
-- **AI 实验室（Beta 测试功能 · 默认关闭）**：
-  - 包含「内置对话（Beta）」与「Agent 接入 / MCP 网关（Beta）」。
-  - **默认关闭**，不展示入口、不启动后台网关；如需体验，请手动进入 **设置 → AI 实验室（Beta 测试功能）** 开启后使用，可随时关闭恢复极简网盘模式（已保存配置保留）。
-  - 外部 Agent 默认只读，写入/删除需显式授权目录与权限并经二次确认，操作记录自动脱敏保存于本地 `agent/journal.jsonl`。
+[**立即下载 v1.0.0**](https://github.com/xiaodianshiuwu/quark-drive-lite/releases/latest) · [**30 秒上手**](#-30-秒快速上手) · [**界面预览**](#-界面预览) · [**完整更新日志**](CHANGELOG.md) · [**反馈问题**](https://github.com/xiaodianshiuwu/quark-drive-lite/issues)
 
-## 数据与隐私安全
+</div>
 
-- **独立资料目录**：macOS `~/Library/Application Support/cn.quarkdrive.lite.tauri`；Windows `%APPDATA%\cn.quarkdrive.lite.tauri`；Linux `$XDG_DATA_HOME/cn.quarkdrive.lite.tauri`。
-- **本地加密存储**：登录态采用 QCK2 AES-256-GCM 加密保存在本机资料目录；扫码登录在独立原生窗口完成，Cookie 仅由 Rust 后端读写发送，不注入渲染页。
-- **默认零外传 / 严格脱敏**：界面无外链脚本与远程字体，严格 CSP 零 `innerHTML` 渲染；可选的作者服务器连接默认关闭（关闭状态下零网络请求），开启后仅在端到端加密下发送经客户端与服务端双重脱敏的非敏感摘要；开启 AI 对话时仅直连用户自行填写的 OpenAI 兼容服务地址，API Key 本地加密只写不读。
+---
 
-## 开发与验证
+> ### 致谢 · V1.0.0 正式版发布
+> 非常感谢每一位给本项目点亮 **Star**、参与内测以及在 Issues 中提出宝贵建议的朋友！  
+> 你们反馈的「深层目录返回上一级」「剩余空间直显」「灵活下载目录」「文件夹真实大小」「云解压」等痛点，正是推动 **V1.0.0 正式版** 从轻量原型一步步打磨成熟的动力。
 
-需要 Rust stable、Node.js 24 与对应平台的 [Tauri 2 原生构建依赖](https://v2.tauri.app/start/prerequisites/)。
+---
+
+## ✨ 为什么选择极简版？
+
+官方客户端体积动辄数百 MB、常驻多进程与推广入口；**夸克网盘极简版**专注于把网盘最核心、最高频的体验做到极致流畅：
+
+| 维度 | 夸克网盘极简版 v1.0.0 |
+|---|---|
+| **体积与性能** | **Tauri 2 + Rust 原生内核**，安装包仅 **~3.8–5.3 MB**，启动秒开、低内存占用、无多余后台驻留 |
+| **高效浏览体验** | 深层目录面包屑（`···` 一键直达上级 + 滚轮/箭头滚动）、**文件夹真实大小自动回填**、分类快筛、列表/网格切换、大目录虚拟滚动 |
+| **自研高速传输** | Rust 事件驱动多线程分片下载与并发分片上传、断点续传、SHA-1/MD5 校验、**支持每文件自定义保存位置**、并发数不设硬上限 |
+| **五大极简云工具** | **压缩包云解压与在线浏览**（目录钻取 / 密码解锁 / 勾选解压 / 同名覆盖）、**增强文件详情 & 历史版本恢复**、**空间占用分类明细**、**轻量回收站** |
+| **隐私与可控** | Cookie 本地 AES-256-GCM 加密、直连夸克官方接口；可选作者更新/反馈通道**默认关闭且底层零外传**，AI 实验室默认关闭 |
+
+---
+
+## 📸 界面预览
+
+### 浅色 / 深色双主题 · 文件夹真实大小自动统计 + 详情侧栏 + 实时传输胶囊
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/assets/workspace-light.png" alt="浅色模式文件工作台与文件夹真实大小" />
+      <div align="center"><sub>浅色工作台 · 文件夹真实大小自动回填 & 右侧增强详情</sub></div>
+    </td>
+    <td width="50%">
+      <img src="docs/assets/workspace-dark.png" alt="深色模式文件工作台" />
+      <div align="center"><sub>深色工作台 · 实时传输胶囊 & 顶部/侧栏剩余空间直显</sub></div>
+    </td>
+  </tr>
+</table>
+
+### 极简云工具 · 云解压 / 空间占用明细 / 回收站 / 首次引导教程
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/assets/cloud-archive.png" alt="压缩包云解压与在线目录预览" />
+      <div align="center"><sub>压缩包云解压 · 目录钻取 / 密码解锁 / 勾选解压 / 同名覆盖</sub></div>
+    </td>
+    <td width="50%">
+      <img src="docs/assets/storage-breakdown.png" alt="云盘空间占用分类明细" />
+      <div align="center"><sub>空间占用明细 · 点击左下角空间卡片一键查看分类占比</sub></div>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/assets/recycle-bin.png" alt="轻量回收站视图" />
+      <div align="center"><sub>轻量回收站 · 原路径与剩余保留天数一目了然</sub></div>
+    </td>
+    <td width="50%">
+      <img src="docs/assets/onboarding-tutorial.png" alt="首次使用引导教程" />
+      <div align="center"><sub>新手引导教程 · 4 步快速上手，支持随时「全部跳过」</sub></div>
+    </td>
+  </tr>
+</table>
+
+---
+
+## 🚀 30 秒快速上手
+
+### 1. 下载安装
+
+前往 [**GitHub Releases（v1.0.0 正式版）**](https://github.com/xiaodianshiuwu/quark-drive-lite/releases/latest) 选择对应平台：
+
+| 平台 | 推荐安装包 | 说明 |
+|---|---|---|
+| **Windows 10 / 11 (x64)** | `QuarkDriveLite-1.0.0-Windows-x64-setup.exe` | 标准安装版（支持简中/英文、当前用户免管理员安装、干净卸载零残留） |
+| **Windows 10 / 11 (x64)** | `QuarkDriveLite-1.0.0-Windows-x64-portable.zip` | 绿色便携版（解压即用，支持中文与含空格路径，无需安装） |
+| **macOS Apple Silicon (M1–M4)** | `QuarkDriveLite-1.0.0-macOS-arm64.zip` | 解压后将 `夸克网盘极简版.app` 拖入「应用程序」即可 |
+
+> 💡 **提示**：所有发布包均附带 `SHA256SUMS.txt` 校验文件；若 macOS 首次打开提示「无法验证开发者」，可在终端执行 `xattr -dr com.apple.quarantine "/Applications/夸克网盘极简版.app"` 后打开。
+
+### 2. 三步开始使用
+
+1. **查看或跳过新手引导**：首次启动会自动展示 4 步精简教程，随时可点左下角「全部跳过」，以后也能在 `设置 → 查看使用教程` 随时重看。
+2. **扫码登录夸克账号**：点击右上角「登录」，在独立原生窗口完成夸克扫码/账号登录（凭证自动加密存于本机）。
+3. **高效管理与高速传输**：
+   - **双击**文件夹进入、**双击**文件直接下载，或**右键**文件选择「下载到指定位置…」「云解压 / 浏览内容…」；
+   - **拖拽**本地文件到窗口即可直接上传到当前目录；
+   - 点击左下角**剩余可用空间**卡片即可查看各来源占用明细并直达回收站清理空间。
+
+---
+
+## ⌨️ 常用快捷键
+
+| 快捷键 | 功能 |
+|---|---|
+| `Alt + ↑` / `Backspace` | 返回上一级目录（或退出搜索返回原目录） |
+| `Alt + ←` / `Alt + →` / 鼠标侧键 | 目录浏览历史后退 / 前进 |
+| `Ctrl + F`（macOS: `⌘ + F`） | 聚焦全盘文件搜索 |
+| `F2` | 重命名当前选中文件/文件夹 |
+| `Enter` | 打开选中文件夹 / 下载选中文件 |
+| `Ctrl + A`（macOS: `⌘ + A`） | 全选当前列表 |
+| `Delete`（macOS: `⌘ + Backspace`） | 删除选中项目至回收站 |
+| `F5` / `Ctrl + R`（`⌘ + R`） | 刷新当前目录与剩余空间 |
+
+---
+
+## 🛡️ 核心架构与隐私承诺
+
+- **本地加密与直连官方**：登录 Cookie 采用 **QCK2 AES-256-GCM** 加密存储于本机独立资料目录（不注入前端页面），所有网盘操作均由 Rust 核心直接请求夸克官方 HTTPS 接口，无中间代理、不绕过官方权益校验。
+- **可选的作者更新与反馈通道（默认关闭）**：
+  - 首次启动可自主决定是否开启；**选择「暂不开启」后，Rust 底层硬拦截一切请求，严格零外传。**
+  - 开启后支持：① 接收最新更新日志并直链下载经 **Ed25519 数字签名 + SHA-256** 双重校验的安装包；② 在侧栏「反馈」直接向作者反馈问题（可先预览脱敏日志再提交）；③ 上传严格脱敏的非敏感性能/错误码摘要（绝不含文件名、本地路径、Cookie、账号或任何隐私）。
+  - 全链路采用 **HTTPS TLS 1.3 + X25519 / AES-256-GCM** 端到端加密（服务端位于海外东京节点，如遇直连波动可开代理重试，不开启完全不影响本地网盘使用）。
+- **AI 实验室（Beta · 默认关闭）**：内置对话与 MCP / Agent 网关默认完全隐藏且不启动，有需要可在 `设置 → AI 实验室` 手动开启，外部 Agent 默认只读并支持细粒度目录白名单。
+- **独立资料目录**：
+  - macOS：`~/Library/Application Support/cn.quarkdrive.lite.tauri`
+  - Windows：`%APPDATA%\cn.quarkdrive.lite.tauri`
+  - Linux：`$XDG_DATA_HOME/cn.quarkdrive.lite.tauri`
+
+---
+
+## 🛠️ 从源码构建与验证
+
+需要 **Rust stable**、**Node.js ≥ 24** 及对应平台的 [Tauri 2 构建依赖](https://v2.tauri.app/start/prerequisites/)：
 
 ```sh
+git clone https://github.com/xiaodianshiuwu/quark-drive-lite.git
+cd quark-drive-lite
 npm ci --ignore-scripts
 npm start
 ```
 
-常用检查与打包命令：
+常用命令：
 
 ```sh
 npm run check          # JS 语法 / JSON 配置 + Rust workspace 静态检查
-npm run test:rust      # Rust 全量单元测试（core / transfer / backup / agent / tauri）
-npm test               # 前端契约、AI Beta 门控、Agent/Chat/Backup 及无头 Chrome DOM 回归测试
-npm run verify:native  # 启动原生 Tauri WebView 运行端到端冒烟验收
-npm run verify:all     # 一键运行以上全部验证
-npm run build          # 打包当前平台桌面客户端
+npm run test:rust      # Rust 全工作区单元测试（core / transfer / agent / tauri）
+npm test               # 前端契约、AI 门控与无头 Chrome 全量 DOM 测试（66 项）
+npm run verify:native  # 原生 WebView 端到端冒烟验证（29 项）
+npm run verify:all     # 一键执行全部验证
+npm run build          # 构建当前平台正式安装包
 ```
 
-> `npm start` / `npm run build` 自动将 Rust 构建缓存置于用户缓存目录，避免云盘同步目录引发签名或锁冲突；也可通过 `CARGO_TARGET_DIR` 自定义。
+---
 
-## Windows 版打包与实机验收
+## 📚 进阶文档
 
-- Windows x64 构建配置位于 `src-tauri/tauri.windows.conf.json`（NSIS 安装包支持简体中文/英文、当前用户安装、自动引导 WebView2，同时可打包绿色免安装 ZIP）。
-- 实机验收流程与逐项核对表见 [docs/WINDOWS_QA_CHECKLIST.md](docs/WINDOWS_QA_CHECKLIST.md)。
+- [完整更新日志（CHANGELOG.md）](CHANGELOG.md)
+- [夸克接口取证与实测笔记（docs/API_NOTES.md）](docs/API_NOTES.md)
+- [Tauri 2 + Rust 架构说明（docs/TAURI_ARCHITECTURE.md）](docs/TAURI_ARCHITECTURE.md)
+- [渲染层桥接契约（docs/IPC_CONTRACT.md）](docs/IPC_CONTRACT.md)
+- [Windows 实机验收清单（docs/WINDOWS_QA_CHECKLIST.md）](docs/WINDOWS_QA_CHECKLIST.md)
 
-## 相关文档与许可
+---
 
-- 产品范围：[docs/PRODUCT.md](docs/PRODUCT.md)
-- 架构说明：[docs/TAURI_ARCHITECTURE.md](docs/TAURI_ARCHITECTURE.md)
-- 桥接契约：[docs/IPC_CONTRACT.md](docs/IPC_CONTRACT.md)
-- 协议笔记：[docs/API_NOTES.md](docs/API_NOTES.md)
-- 平台支持：[docs/PLATFORM_SUPPORT.md](docs/PLATFORM_SUPPORT.md)
-- 源码许可：MIT，详见 [LICENSE](LICENSE)
+## 📄 开源许可
+
+本项目以 [MIT License](LICENSE) 开源。若觉得好用，欢迎点一个 **Star ⭐** 支持！

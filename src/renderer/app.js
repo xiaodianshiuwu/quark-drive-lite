@@ -68,6 +68,7 @@
       aiBetaEnabled: false,
       serverOptIn: false,
       serverPrompted: false,
+      tutorialSeen: false,
       viewMode: 'list',
       sortBy: DEFAULT_SORT
     },
@@ -5884,7 +5885,7 @@
       var plat = info.platform ? (' · ' + info.platform + (info.arch ? '/' + info.arch : '')) : '';
       el.appVersionText.textContent = '夸克网盘极简版 v' + info.version + ' · ' + (info.runtime || 'Tauri 2 + Rust') + plat;
     } else {
-      el.appVersionText.textContent = '夸克网盘极简版 v0.3.0-beta.1 · Tauri 2 + Rust';
+      el.appVersionText.textContent = '夸克网盘极简版 v1.0.0 · Tauri 2 + Rust';
     }
   }
 
@@ -5943,6 +5944,7 @@
           aiBetaEnabled: s.aiBetaEnabled === true,
           serverOptIn: s.serverOptIn === true,
           serverPrompted: s.serverPrompted === true,
+          tutorialSeen: s.tutorialSeen === true,
           viewMode: s.viewMode === 'grid' ? 'grid' : 'list',
           sortBy: typeof s.sortBy === 'string' && s.sortBy ? s.sortBy : DEFAULT_SORT
         };
@@ -6340,6 +6342,168 @@
       state.hub.submittingFeedback = false;
       renderFeedbackView();
     }
+  }
+
+  var TUTORIAL_STEPS = [
+    {
+      icon: 'folder',
+      title: '欢迎使用夸克网盘极简版 v1.0.0',
+      sub: '基于 Tauri 2 + Rust 原生打造，轻巧流畅、零广告干扰，30 秒即可轻松上手。',
+      points: [
+        { icon: 'arrow-up', title: '深层目录高效导航', desc: '支持后退 / 前进 / 上一级按钮、深层面包屑「···」下拉一键跳级，以及鼠标滚轮与 Alt+↑ / Backspace 快捷键。' },
+        { icon: 'info', title: '文件夹真实大小自动统计', desc: '进入任意目录即自动在主列表回填文件夹真实大小，无需逐个点开；支持多选合计与列表 / 网格双视图切换。' },
+        { icon: 'search', title: '快筛、搜索与键盘流', desc: '按文件夹 / 图片 / 视频 / 文档 / 音频 / 压缩包一键筛选；Ctrl/⌘+F 快速搜索，F2 重命名，支持拖拽直接上传。' }
+      ]
+    },
+    {
+      icon: 'transfer',
+      title: '自研高速并发传输与灵活目录',
+      sub: 'Rust 事件驱动并发引擎，空闲零轮询，大文件断点续传与校验一步到位。',
+      points: [
+        { icon: 'download', title: '灵活选择下载位置', desc: '既可统一保存到默认目录，也可在设置开启「每次询问目录」，或右键 / 详情栏对单个文件选择「下载到指定位置…」。' },
+        { icon: 'upload', title: '不设死的并发调节', desc: '可在设置中自由调整上传/下载并发数与分片连接数，超出推荐阈值时自动提醒，兼顾极速与稳定。' },
+        { icon: 'refresh', title: '实时传输胶囊与自动刷新', desc: '活跃传输时子工具栏常驻速度与进度胶囊；上传/删除完成后自动静默刷新当前目录与剩余空间。' }
+      ]
+    },
+    {
+      icon: 'file-archive',
+      title: '五大极简实用云工具',
+      sub: '把高频刚需云工具收纳得恰到好处，保持极简清爽不臃肿。',
+      points: [
+        { icon: 'file-archive', title: '压缩包云解压与在线浏览', desc: '在 zip / rar / 7z 等压缩包上点击云解压，支持包内目录钻取、密码解锁、勾选部分解压、同名覆盖与实时进度。' },
+        { icon: 'history', title: '增强文件详情与历史版本', desc: '打开右侧详情抽屉查看云端路径、媒体时长/帧率、来源与一键复制 MD5/SHA-1，并支持展开恢复历史版本。' },
+        { icon: 'trash', title: '空间占用明细与轻量回收站', desc: '点击左下角「剩余可用空间」卡片查看分类占用占比；左侧「回收站」支持还原、彻底删除或一键清空释放空间。' }
+      ]
+    },
+    {
+      icon: 'shield',
+      title: '隐私安全承诺与可选在线更新',
+      sub: '你的网盘数据与登录凭据始终由你自己掌控。',
+      points: [
+        { icon: 'lock', title: '凭据本地加密 · 零外泄', desc: '扫码登录在独立原生窗口完成，Cookie 经 AES-256-GCM 加密存放在本机资料目录，所有网盘请求直连夸克官方接口。' },
+        { icon: 'cloud', title: '可选连接作者服务器（默认关闭）', desc: '开启后可接收最新更新日志、直链下载经 Ed25519 验签的安装包，或在侧栏「反馈」加密直达作者；不开启则严格零外传。' },
+        { icon: 'settings', title: '随时可重看本教程', desc: '之后可随时前往「设置 → 版本与运行环境 → 查看使用教程」再次打开，祝你使用愉快！' }
+      ]
+    }
+  ];
+
+  function showOnboardingTutorial(opts) {
+    var o = opts || {};
+    return new Promise(function (resolve) {
+      var settled = false;
+      var step = 0;
+      var markDone = function (result) {
+        if (settled) return;
+        settled = true;
+        if (!state.settings.tutorialSeen && API.injected && API.has('settings', 'set')) {
+          state.settings.tutorialSeen = true;
+          API.settings.set({ tutorialSeen: true }).catch(function () { /* 静默 */ });
+        } else {
+          state.settings.tutorialSeen = true;
+        }
+        resolve(result);
+      };
+      openOverlay(function (ui) {
+        ui.setResolve(function (val) { markDone(val || 'skipped'); });
+        ui.panel.classList.add('dlg-tutorial');
+
+        var head = h('div', 'tut-head');
+        var badge = h('span', 'tut-badge');
+        badge.appendChild(icon('cloud'));
+        badge.appendChild(h('span', null, '新手使用教程'));
+        var counter = h('span', 'tut-step-counter', '1 / ' + TUTORIAL_STEPS.length);
+        head.appendChild(badge);
+        head.appendChild(counter);
+        ui.panel.appendChild(head);
+
+        var body = h('div', 'tut-body');
+        var hero = h('div', 'tut-hero');
+        var heroIc = h('div', 'tut-hero-ic');
+        var heroText = h('div', 'tut-hero-text');
+        var titleEl = h('h3', 'tut-title', '');
+        var subEl = h('p', 'tut-sub', '');
+        heroText.appendChild(titleEl);
+        heroText.appendChild(subEl);
+        hero.appendChild(heroIc);
+        hero.appendChild(heroText);
+        body.appendChild(hero);
+
+        var pointsBox = h('div', 'tut-points');
+        body.appendChild(pointsBox);
+
+        var dotsBox = h('div', 'tut-dots');
+        TUTORIAL_STEPS.forEach(function (_, idx) {
+          var dot = h('button', 'tut-dot');
+          dot.type = 'button';
+          dot.setAttribute('aria-label', '第 ' + (idx + 1) + ' 步');
+          dot.addEventListener('click', function () {
+            step = idx;
+            paint();
+          });
+          dotsBox.appendChild(dot);
+        });
+        body.appendChild(dotsBox);
+        ui.panel.appendChild(body);
+
+        var foot = h('div', 'tut-foot');
+        var skipBtn = h('button', 'btn btn-ghost', '全部跳过');
+        skipBtn.type = 'button';
+        skipBtn.id = 'tut-btn-skip';
+        skipBtn.addEventListener('click', function () { ui.close('skipped'); });
+        foot.appendChild(skipBtn);
+
+        var right = h('div', 'tut-foot-right');
+        var prevBtn = h('button', 'btn', '上一步');
+        prevBtn.type = 'button';
+        prevBtn.id = 'tut-btn-prev';
+        prevBtn.addEventListener('click', function () {
+          if (step > 0) { step -= 1; paint(); }
+        });
+        var nextBtn = h('button', 'btn btn-primary', '下一步');
+        nextBtn.type = 'button';
+        nextBtn.id = 'tut-btn-next';
+        nextBtn.dataset.autofocus = '1';
+        nextBtn.addEventListener('click', function () {
+          if (step < TUTORIAL_STEPS.length - 1) {
+            step += 1;
+            paint();
+          } else {
+            ui.close('completed');
+          }
+        });
+        right.appendChild(prevBtn);
+        right.appendChild(nextBtn);
+        foot.appendChild(right);
+        ui.panel.appendChild(foot);
+
+        function paint() {
+          var s = TUTORIAL_STEPS[step];
+          counter.textContent = (step + 1) + ' / ' + TUTORIAL_STEPS.length;
+          heroIc.textContent = '';
+          heroIc.appendChild(icon(s.icon));
+          titleEl.textContent = s.title;
+          subEl.textContent = s.sub;
+          pointsBox.textContent = '';
+          s.points.forEach(function (pt) {
+            var card = h('div', 'tut-point');
+            card.appendChild(icon(pt.icon));
+            var t = h('div', 'tut-point-text');
+            t.appendChild(h('div', 'tut-point-title', pt.title));
+            t.appendChild(h('div', 'tut-point-desc', pt.desc));
+            card.appendChild(t);
+            pointsBox.appendChild(card);
+          });
+          Array.prototype.forEach.call(dotsBox.children, function (d, i) {
+            d.classList.toggle('active', i === step);
+          });
+          prevBtn.hidden = step === 0;
+          var isLast = step === TUTORIAL_STEPS.length - 1;
+          nextBtn.textContent = isLast ? (o.manual ? '知道了' : '开始使用') : '下一步';
+          skipBtn.hidden = isLast;
+        }
+        paint();
+      });
+    });
   }
 
   function showServerOptInModal() {
@@ -7031,6 +7195,7 @@
     });
     el.btnLogin2.addEventListener('click', doLogin);
     el.btnLogout2.addEventListener('click', doLogout);
+    if (el.btnOpenTutorial) el.btnOpenTutorial.addEventListener('click', function () { showOnboardingTutorial({ manual: true }); });
     el.btnEnvCheck.addEventListener('click', function () { location.reload(); });
 
     // Agent 接入
@@ -7389,6 +7554,7 @@
     el.btnLogin2 = $('btn-login-2');
     el.btnLogout2 = $('btn-logout-2');
     el.envHint = $('set-env');
+    el.btnOpenTutorial = $('btn-open-tutorial');
     el.btnEnvCheck = $('btn-env-check');
     el.setAccountHint = $('set-account-hint');
     el.dropmask = $('dropmask');
@@ -7586,6 +7752,9 @@
       refreshTransfers();
     }
 
+    if (!API.isMock && !state.settings.tutorialSeen) {
+      await showOnboardingTutorial();
+    }
     initHubOnBoot();
   }
 
@@ -7603,6 +7772,7 @@
     reload: reloadCurrent,
     silentRefreshFiles: silentRefreshFiles,
     silentRefreshAccountAndQuota: silentRefreshAccountAndQuota,
+    showOnboardingTutorial: showOnboardingTutorial,
     showServerOptInModal: showServerOptInModal,
     navigate: navigate,
     goUp: goUp,
@@ -7617,6 +7787,6 @@
     openStorageDetailModal: openStorageDetailModal,
     loadRecycle: loadRecycle,
     getRowCount: function () { return rowMap.size; },
-    version: '0.3.0-beta.1'
+    version: '1.0.0'
   };
 })();

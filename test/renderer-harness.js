@@ -512,6 +512,7 @@ async function bootApp(opts = {}) {
       downloadParallel: 16, downloadStrategy: 'auto', uploadPartConcurrency: 3,
       theme: 'light', aiBetaEnabled: !!opts.aiBetaEnabled,
       serverOptIn: !!opts.serverOptIn, serverPrompted: opts.serverPrompted !== false,
+      tutorialSeen: opts.tutorialSeen !== false,
       viewMode: 'list', sortBy: 'file_type:asc,updated_at:desc'
     }, opts.settings || {});
     qk.settings.get = (...args) => {
@@ -560,7 +561,7 @@ async function bootApp(opts = {}) {
             prompted: !!settingsState.serverPrompted,
             baseUrl: 'https://qdl.xiaodianshiuwu.space',
             region: '海外节点 · Tokyo (JP)',
-            currentVersion: '0.3.0-beta.1',
+            currentVersion: '1.0.0',
             recommendedAssetKey: 'macos-arm64',
             cryptoSummary: 'HTTPS TLS 1.3 + X25519/AES-256-GCM + Ed25519'
           });
@@ -574,7 +575,7 @@ async function bootApp(opts = {}) {
         checkUpdate: (...args) => {
           calls.push({ ns: 'hub', name: 'checkUpdate', args });
           if (!settingsState.serverOptIn) return Promise.reject({ code: 'OPT_IN_REQUIRED', message: '未开启连接' });
-          return Promise.resolve({ ok: true, hasUpdate: false, currentVersion: '0.3.0-beta.1', latestVersion: '0.3.0-beta.1', changelog: '', notice: null, assets: {}, signatureVerified: true });
+          return Promise.resolve({ ok: true, hasUpdate: false, currentVersion: '1.0.0', latestVersion: '1.0.0', changelog: '', notice: null, assets: {}, signatureVerified: true });
         },
         downloadUpdate: (...args) => {
           calls.push({ ns: 'hub', name: 'downloadUpdate', args });

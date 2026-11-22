@@ -226,6 +226,7 @@ pub(crate) fn settings(doc: &Value) -> Value {
             "aiBetaEnabled":false,
             "serverOptIn":false,
             "serverPrompted":false,
+            "tutorialSeen":false,
             "viewMode":"list",
             "sortBy":"file_type:asc,updated_at:desc"
         }),
@@ -281,6 +282,9 @@ pub(crate) fn merge_settings(mut base: Value, patch: Value) -> Value {
     }
     if let Some(prompted) = p.get("serverPrompted").and_then(Value::as_bool) {
         base["serverPrompted"] = json!(prompted);
+    }
+    if let Some(tut) = p.get("tutorialSeen").and_then(Value::as_bool) {
+        base["tutorialSeen"] = json!(tut);
     }
     if let Some(view_mode) = p
         .get("viewMode")
@@ -580,12 +584,14 @@ mod tests {
         assert_eq!(defaults["serverPrompted"], false);
         assert_eq!(defaults["viewMode"], "list");
         assert_eq!(defaults["sortBy"], "file_type:asc,updated_at:desc");
+        assert_eq!(defaults["tutorialSeen"], false);
         let patched = merge_settings(
             defaults.clone(),
             json!({
                 "aiBetaEnabled": true,
                 "serverOptIn": true,
                 "serverPrompted": true,
+                "tutorialSeen": true,
                 "viewMode": "grid",
                 "sortBy": "file_type:asc,file_name:asc"
             }),
@@ -593,6 +599,7 @@ mod tests {
         assert_eq!(patched["aiBetaEnabled"], true);
         assert_eq!(patched["serverOptIn"], true);
         assert_eq!(patched["serverPrompted"], true);
+        assert_eq!(patched["tutorialSeen"], true);
         assert_eq!(patched["viewMode"], "grid");
         assert_eq!(patched["sortBy"], "file_type:asc,file_name:asc");
         let rejected = merge_settings(
@@ -601,6 +608,7 @@ mod tests {
                 "aiBetaEnabled": "yes",
                 "serverOptIn": "yes",
                 "serverPrompted": 1,
+                "tutorialSeen": "yes",
                 "viewMode": "evil",
                 "sortBy": "invalid:desc"
             }),

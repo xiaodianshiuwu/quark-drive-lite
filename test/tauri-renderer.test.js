@@ -170,16 +170,16 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     window.__fixtureEmit = (name, payload) => (window.__fixtureListeners[name] || []).forEach(cb => cb({payload:structuredClone(payload)}));
     window.__fixture = {
       account:{loggedIn:true,expired:false,nickname:'Fixture',userId:'fixture-user'},
-      settings:{downloadDir:'/fixture',askDownloadDir:false,uploadConcurrency:2,downloadConcurrency:2,downloadParallel:16,downloadStrategy:'auto',uploadPartConcurrency:3,theme:'light',aiBetaEnabled:false,serverOptIn:false,serverPrompted:true},
+      settings:{downloadDir:'/fixture',askDownloadDir:false,uploadConcurrency:2,downloadConcurrency:2,downloadParallel:16,downloadStrategy:'auto',uploadPartConcurrency:3,theme:'light',aiBetaEnabled:false,serverOptIn:false,serverPrompted:true,tutorialSeen:true},
       tasks:[], names:{}, serial:0, customSaveDir:null,
       hubLatest:{
-        ok:true,hasUpdate:true,currentVersion:'0.3.0-beta.1',latestVersion:'0.3.0-beta.2',
-        channel:'beta',releaseDate:'2026-11-22',
+        ok:true,hasUpdate:true,currentVersion:'1.0.0',latestVersion:'1.0.1',
+        channel:'stable',releaseDate:'2026-11-23',
         changelog:'• 下载引擎提速 2x\\n• 修复深层面包屑鼠标导航',
         notice:'欢迎体验新版直链更新通道',
         recommendedAssetKey:'macos-arm64',
-        recommendedAsset:{filename:'QuarkDriveLite-0.3.0-beta.2.dmg',size:8388608,sha256:'a'.repeat(64),url:'https://qdl.xiaodianshiuwu.space/downloads/QuarkDriveLite-0.3.0-beta.2.dmg'},
-        assets:{'macos-arm64':{filename:'QuarkDriveLite-0.3.0-beta.2.dmg',size:8388608,sha256:'a'.repeat(64),url:'https://qdl.xiaodianshiuwu.space/downloads/QuarkDriveLite-0.3.0-beta.2.dmg'}},
+        recommendedAsset:{filename:'QuarkDriveLite-1.0.1.zip',size:8388608,sha256:'a'.repeat(64),url:'https://qdl.xiaodianshiuwu.space/downloads/QuarkDriveLite-1.0.1.zip'},
+        assets:{'macos-arm64':{filename:'QuarkDriveLite-1.0.1.zip',size:8388608,sha256:'a'.repeat(64),url:'https://qdl.xiaodianshiuwu.space/downloads/QuarkDriveLite-1.0.1.zip'}},
         signatureVerified:true,serverRegion:'海外节点 · Tokyo (JP)'
       }
     };
@@ -206,16 +206,16 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
           case 'agent.mcpConfig': return {mcpServers:{'quark-mini':{command:'node',args:['/fixture/agent/adapters/agent-mcp.js']}}};
           case 'chat.status': return {configured:false,hasKey:false,baseUrl:'',model:'',running:false};
           case 'chat.history': return [];
-          case 'hub.config': return {optIn:!!fixture.settings.serverOptIn,prompted:!!fixture.settings.serverPrompted,baseUrl:'https://qdl.xiaodianshiuwu.space',region:'海外节点 · Tokyo (JP)',currentVersion:'0.3.0-beta.1',recommendedAssetKey:'macos-arm64',cryptoSummary:'HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端加密 + Ed25519 签名校验'};
-          case 'hub.setOptIn': fixture.settings.serverOptIn=!!p.optIn;fixture.settings.serverPrompted=true;return {optIn:fixture.settings.serverOptIn,prompted:true,baseUrl:'https://qdl.xiaodianshiuwu.space',region:'海外节点 · Tokyo (JP)',currentVersion:'0.3.0-beta.1',recommendedAssetKey:'macos-arm64',cryptoSummary:'HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端加密 + Ed25519 签名校验'};
+          case 'hub.config': return {optIn:!!fixture.settings.serverOptIn,prompted:!!fixture.settings.serverPrompted,baseUrl:'https://qdl.xiaodianshiuwu.space',region:'海外节点 · Tokyo (JP)',currentVersion:'1.0.0',recommendedAssetKey:'macos-arm64',cryptoSummary:'HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端加密 + Ed25519 签名校验'};
+          case 'hub.setOptIn': fixture.settings.serverOptIn=!!p.optIn;fixture.settings.serverPrompted=true;return {optIn:fixture.settings.serverOptIn,prompted:true,baseUrl:'https://qdl.xiaodianshiuwu.space',region:'海外节点 · Tokyo (JP)',currentVersion:'1.0.0',recommendedAssetKey:'macos-arm64',cryptoSummary:'HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端加密 + Ed25519 签名校验'};
           case 'hub.checkUpdate': {
             if (!fixture.settings.serverOptIn) throw {code:'OPT_IN_REQUIRED',message:'未开启连接'};
             return snapshot(fixture.hubLatest);
           }
           case 'hub.downloadUpdate': {
             if (!fixture.settings.serverOptIn) throw {code:'OPT_IN_REQUIRED',message:'未开启连接'};
-            window.__fixtureEmit('qk:update-progress',{phase:'done',filename:'QuarkDriveLite-0.3.0-beta.2.dmg',downloaded:8388608,total:8388608,percent:100,verified:true});
-            return {ok:true,path:'/fixture/QuarkDriveLite-0.3.0-beta.2.dmg',filename:'QuarkDriveLite-0.3.0-beta.2.dmg',size:8388608,sha256:'a'.repeat(64),verified:true};
+            window.__fixtureEmit('qk:update-progress',{phase:'done',filename:'QuarkDriveLite-1.0.1.zip',downloaded:8388608,total:8388608,percent:100,verified:true});
+            return {ok:true,path:'/fixture/QuarkDriveLite-1.0.1.zip',filename:'QuarkDriveLite-1.0.1.zip',size:8388608,sha256:'a'.repeat(64),verified:true};
           }
           case 'hub.sendTelemetry': {
             if (!fixture.settings.serverOptIn) throw {code:'OPT_IN_REQUIRED',message:'未开启连接'};
@@ -390,7 +390,7 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
           case 'dialog.pickDirs': return ['/fixture/local-backup'];
           case 'dialog.pickFiles': return ['/fixture/local-upload.bin'];
           case 'dialog.saveDir': return fixture.customSaveDir || '/fixture';
-          case 'app.info': return {version:'0.3.0-beta.1',runtime:'Tauri 2 + Rust (Fixture)',platform:'test',arch:'x64'};
+          case 'app.info': return {version:'1.0.0',runtime:'Tauri 2 + Rust (Fixture)',platform:'test',arch:'x64'};
           case 'dialog.openPath': case 'dialog.showInFolder': case 'app.quit': return null;
           default: throw {code:'FIXTURE_UNEXPECTED',message:request.method};
         }
@@ -778,7 +778,7 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     // 开启后检查更新并展示 Ed25519 验签通过的更新日志与直链下载按钮
     await click('#set-hub-optin [data-hub-optin="on"]');
     await until('!document.getElementById("hub-update-panel").hidden', 'update manifest loaded after opt-in');
-    assert.ok((await evaluate('document.getElementById("hub-update-title").textContent')).includes('0.3.0-beta.2'));
+    assert.ok((await evaluate('document.getElementById("hub-update-title").textContent')).includes('1.0.1'));
     assert.equal(await evaluate('document.getElementById("btn-hub-download").hidden'), false, 'direct download button visible');
     await click('#btn-hub-download');
     await until('!document.getElementById("btn-hub-reveal").hidden', 'direct update downloaded and verified');
@@ -888,6 +888,27 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await until('!!document.querySelector(".overlay:not(.overlay-out) .dlg-confirm")', 'clear recycle confirm shown');
     await click('.overlay:not(.overlay-out) .dlg-foot .btn-danger');
     await until('__fixtureCalls.some(c=>c.method==="recycle.remove" && c.params.clearAll===true) && document.querySelectorAll(".recycle-row").length===0', 'recycle bin cleared');
+
+    // 6. 首次使用引导教程：支持分步浏览、一键「全部跳过」持久化 tutorialSeen，并可从设置页重新打开
+    await evaluate('QKUI.setView("files");QKUI.state.settings.tutorialSeen=false;__fixture.settings.tutorialSeen=false;window.__tutRes=QKUI.showOnboardingTutorial();void 0');
+    await until('!!document.getElementById("tut-btn-skip")', 'onboarding tutorial opened');
+    assert.equal(await evaluate('document.querySelector(".tut-step-counter").textContent'), '1 / 4', 'tutorial starts at step 1/4');
+    await capture('v1-onboarding-tutorial');
+    await click('#tut-btn-next');
+    assert.equal(await evaluate('document.querySelector(".tut-step-counter").textContent'), '2 / 4', 'next button advances to step 2/4');
+    await click('#tut-btn-prev');
+    assert.equal(await evaluate('document.querySelector(".tut-step-counter").textContent'), '1 / 4', 'prev button goes back to step 1/4');
+    await click('#tut-btn-skip');
+    await until('!document.querySelector(".dlg-tutorial") && __fixture.settings.tutorialSeen===true', 'skip all closes tutorial and persists tutorialSeen');
+    await evaluate('QKUI.setView("settings")');
+    await click('#btn-open-tutorial');
+    await until('!!document.querySelector(".overlay:not(.overlay-out) .dlg-tutorial")', 'reopened tutorial from settings');
+    await click('.overlay:not(.overlay-out) #tut-btn-next');
+    await click('.overlay:not(.overlay-out) #tut-btn-next');
+    await click('.overlay:not(.overlay-out) #tut-btn-next');
+    assert.equal(await evaluate('document.querySelector(".overlay:not(.overlay-out) .tut-step-counter").textContent'), '4 / 4', 'reached final step 4/4');
+    await click('.overlay:not(.overlay-out) #tut-btn-next');
+    await until('!document.querySelector(".overlay:not(.overlay-out) .dlg-tutorial")', 'completed tutorial closes cleanly');
 
     await evaluate('__fixture.cloudToolsMode=false;QKUI.setInspectorOpen(false);QKUI.setView("files")');
   });

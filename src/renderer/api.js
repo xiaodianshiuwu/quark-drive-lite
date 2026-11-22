@@ -455,7 +455,7 @@
     };
     api.app = {
       quit: expose('app', 'quit', { silent: true, fallback: null }),
-      info: expose('app', 'info', { silent: true, fallback: { version: '0.3.0-beta.1', runtime: 'Mock 预览', platform: 'mock', arch: 'mock' } })
+      info: expose('app', 'info', { silent: true, fallback: { version: '1.0.0', runtime: 'Mock 预览', platform: 'mock', arch: 'mock' } })
     };
     api.transfer = {
       list: expose('transfer', 'list'),
@@ -619,6 +619,7 @@
       aiBetaEnabled: false,
       serverOptIn: false,
       serverPrompted: true,
+      tutorialSeen: true,
       viewMode: 'list',
       sortBy: 'file_type:asc,updated_at:desc'
     };
@@ -1041,7 +1042,7 @@
 
       app: {
         quit: function () { return Promise.resolve(); },
-        info: function () { return Promise.resolve({ version: '0.3.0-beta.1', runtime: 'Tauri 2 + Rust (演示)', platform: 'preview', arch: 'mock' }); }
+        info: function () { return Promise.resolve({ version: '1.0.0', runtime: 'Tauri 2 + Rust (演示)', platform: 'preview', arch: 'mock' }); }
       },
 
       dialog: {
@@ -1081,7 +1082,7 @@
             prompted: true,
             baseUrl: 'https://qdl.xiaodianshiuwu.space',
             region: '海外节点 · Tokyo (JP)',
-            currentVersion: '0.3.0-beta.1',
+            currentVersion: '1.0.0',
             platform: 'preview',
             arch: 'mock',
             recommendedAssetKey: 'macos-arm64',
@@ -1096,7 +1097,7 @@
         checkUpdate: function () {
           if (!settings.serverOptIn) return Promise.reject({ code: 'OPT_IN_REQUIRED', message: '请先开启连接作者服务器' });
           return Promise.resolve({
-            ok: true, hasUpdate: false, currentVersion: '0.3.0-beta.1', latestVersion: '0.3.0-beta.1',
+            ok: true, hasUpdate: false, currentVersion: '1.0.0', latestVersion: '1.0.0',
             channel: 'beta', releaseDate: '2026-11-22', changelog: '当前已是最新版本（演示数据）',
             notice: null, assets: {}, recommendedAssetKey: 'macos-arm64', signatureVerified: true, serverRegion: '海外节点 · Tokyo (JP)'
           });
