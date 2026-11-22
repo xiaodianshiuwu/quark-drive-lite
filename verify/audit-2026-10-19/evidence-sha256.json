@@ -1,0 +1,134 @@
+[
+  {
+    "path": "README.md",
+    "sha256": "5efb5cd60de678a3e95dc8ebfcf47cc5ad60ef762deab2560d8ead4d9df6dd22"
+  },
+  {
+    "path": "baseline-rust.txt",
+    "sha256": "45e2992dba3f3522a3ed4c1fd9f0ca2dcc7c0ca7dc4d931d2ec72413138ac147"
+  },
+  {
+    "path": "build.txt",
+    "sha256": "6daf53ca14c57a957e8e733f9e79e70e38e4e82f4421fff2680ad5f4ba8360ef"
+  },
+  {
+    "path": "check.txt",
+    "sha256": "0a2f82e33fe516d91b525d747aedcb2f6920de756fa4540e83f9e672f8eb43bd"
+  },
+  {
+    "path": "clippy.txt",
+    "sha256": "6701728eeebe5468129992ca27f1ca898f0675d7ec4b899d922ffe63766a0198"
+  },
+  {
+    "path": "cloud-summary.json",
+    "sha256": "c5f68bc4bd70d6df4d7e9282523aa9a2339edf64bdb81d821a248e048f5c232a"
+  },
+  {
+    "path": "code-inventory.json",
+    "sha256": "453c6d98e435ee77065a34ce82b9a9569192776c708059e97f27c2084363edb3"
+  },
+  {
+    "path": "dependencies.json",
+    "sha256": "d8ca3e86f47e23780efb6957a9ab1c91e63884c66dee839f516e304f095801da"
+  },
+  {
+    "path": "linux-glib-tree.txt",
+    "sha256": "4457a09e34a7e0af1c27f7fedf8766e917e225586f57413eb8db2d4baeddf552"
+  },
+  {
+    "path": "macos-glib-tree.txt",
+    "sha256": "4dc8e4fe7f86c681d8b81d94c4e76a3dda13457f37def5513d5850195a7778f6"
+  },
+  {
+    "path": "native-smoke.json",
+    "sha256": "10c5c18e64a11f6492f9b70a35b303a19a9f4735fe9688f27a766cc0f4946611"
+  },
+  {
+    "path": "package-summary.json",
+    "sha256": "a8e34ffd092cd6b5ae424a0d7233d6dabb68206382b00f59a12e7eb771a8a1a6"
+  },
+  {
+    "path": "release-startup-stderr.txt",
+    "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+  },
+  {
+    "path": "round1/native-smoke.json",
+    "sha256": "10c5c18e64a11f6492f9b70a35b303a19a9f4735fe9688f27a766cc0f4946611"
+  },
+  {
+    "path": "round1/native.txt",
+    "sha256": "a7586b01ecaf0eb57f62368dffe4764007c9810bcf7048c9bf5f46b9959a1081"
+  },
+  {
+    "path": "round1/rust.txt",
+    "sha256": "cc5eec716655e19d70cc35484ec38f696d6e03fae7bf6402181cb61746da5b16"
+  },
+  {
+    "path": "round1/ui.txt",
+    "sha256": "7f3c658d012b242372a2f66eeeeb7ac1936d9f1267712a174550f98509ea61db"
+  },
+  {
+    "path": "round2/native-smoke.json",
+    "sha256": "10c5c18e64a11f6492f9b70a35b303a19a9f4735fe9688f27a766cc0f4946611"
+  },
+  {
+    "path": "round2/native.txt",
+    "sha256": "f5e9b55058e0f8beeadbdeabab1f9eb3a55d02ef22e734684bd752ce589e81da"
+  },
+  {
+    "path": "round2/rust.txt",
+    "sha256": "4c0de35332c0d1f2b37b11a0fe070edf4768a90fdd389beed3dd842709abc5e0"
+  },
+  {
+    "path": "round2/ui.txt",
+    "sha256": "891d05983852d9e902d9829072b00d7cfb22d6c827e4d7ca6ef80aadbf5b3d3e"
+  },
+  {
+    "path": "scan100k.txt",
+    "sha256": "4e5bfdf9985a8c542e09c773bddc1c477ecff03aae280c966f57d6e2d5136771"
+  },
+  {
+    "path": "screenshots/backup-760.png",
+    "sha256": "48a28d2288c1b1d1353b27f7be4da3fec54c1673d3d4b959e2774c2e4b3eb97b"
+  },
+  {
+    "path": "screenshots/backup-dark.png",
+    "sha256": "09710f2e08951d07d34927747d9cbc66d9b3d75bed0bfc68e894de231eb6e8a2"
+  },
+  {
+    "path": "screenshots/backup-paused.png",
+    "sha256": "08a53af0d48fd7e3f44cc81c7129c6c1e695d1c18ed4d67fc5d3111da19f22ec"
+  },
+  {
+    "path": "screenshots/backup-report.png",
+    "sha256": "f9509b01ef5e085c703c14653fb9c1af517a458ca75a65057256c69fed4c4ad5"
+  },
+  {
+    "path": "screenshots/backup-scanning.png",
+    "sha256": "f2cdde069c4b19d7ccbc018b14f116ececadd82e788ffd6b923324d14733c04f"
+  },
+  {
+    "path": "screenshots/chat.png",
+    "sha256": "284d4002a3c4c120a81a65976e3acc4912d0b5fc2248fe3892c98a16cb3d58f0"
+  },
+  {
+    "path": "screenshots/files.png",
+    "sha256": "3f9757710fb8499e2066235f220a7410e2676173ce1ef21d0bcbc051121cf83e"
+  },
+  {
+    "path": "screenshots/settings.png",
+    "sha256": "dfe007d7aac1fb30d00426f1a6d7900a90646cded8b73c2f7861286f65a8eae3"
+  },
+  {
+    "path": "screenshots/transfers.png",
+    "sha256": "1868fb71d76ccb9e32a0d04d81fd9409f9e625c7d10827c8ab42c8e6590c374e"
+  },
+  {
+    "path": "summary.json",
+    "sha256": "cec2036c0ace655261536794ba3a97f03007e22f74c16e04f3a5e932fd78d6f2"
+  },
+  {
+    "path": "verification-runs.json",
+    "sha256": "26347184f61551de48aae3aba2a28d2268151e2bca9f06a17224d98bb0cfd5c3"
+  }
+]

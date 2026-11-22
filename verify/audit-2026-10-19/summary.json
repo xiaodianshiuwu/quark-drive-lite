@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-19",
+  "baseline": "f512abfffcea75cfb8aeb775c800274ad4faa372",
+  "branch": "codex/independent-audit-20261019",
+  "code_sha256": "2a0ca191c4c88ac43061e9cf5b7b43f41887c6e3426d12ba3f10ef44063d9277",
+  "indexed_files": 120,
+  "environment": {
+    "macOS": "26.7.1 (25G241)",
+    "rustc": "1.98.1",
+    "node": "24.21.0",
+    "target": "aarch64-apple-darwin"
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "rust_passed": 166,
+      "ui_passed": 75,
+      "ui_failed": 0,
+      "ui_skipped": 0,
+      "native_passed": 20,
+      "native_total": 20
+    },
+    {
+      "round": 2,
+      "rust_passed": 166,
+      "ui_passed": 75,
+      "ui_failed": 0,
+      "ui_skipped": 0,
+      "native_passed": 20,
+      "native_total": 20
+    }
+  ],
+  "cargo_check": {
+    "exit_code": 0,
+    "warning_lines": 0
+  },
+  "clippy": {
+    "exit_code": 0,
+    "warning_lines": 127,
+    "note": "Includes diagnostic and per-target warning summaries; not a count of distinct defects"
+  },
+  "dependencies": {
+    "rustsec_warning_entries": 5,
+    "unresolved_glib": "RUSTSEC-2024-0429",
+    "npm_vulnerabilities": 0
+  },
+  "package": {
+    "build": true,
+    "signing": "local ad-hoc; not notarized",
+    "architecture": "arm64",
+    "bundle_signature_verified": true,
+    "version": "0.3.0-alpha.1",
+    "zip": ".work/audit-2026-10-19/deliverables/QuarkDrive-Tauri-0.3.0-alpha.1-macOS-arm64-audit-20261019.zip",
+    "zip_sha256": "ae470a99f9f8c2b7b586e9b638b3f2be7ced40d2c873b2f9d8325a4d234bbfc4",
+    "zip_bytes": 5685911,
+    "extracted_signature_verified": true,
+    "isolated_hidden_packaged_startup_10s": true,
+    "test_process_stopped": true
+  },
+  "subagents_used": 0,
+  "pushed": false,
+  "limitations": [
+    "Windows build and real device/filesystem acceptance absent",
+    "Linux runtime absent; GLib soundness advisory remains",
+    "Developer ID/notarization/Intel not tested",
+    "Guest packaged startup only; functional native WebView suite runs debug build",
+    "Real model endpoint, human QR login, OS dialogs/reveal and accessibility certification absent",
+    "No whole-disk/private-data or 100k-file real cloud upload acceptance"
+  ]
+}

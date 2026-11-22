@@ -1,0 +1,214 @@
+
+> quark-mini@0.3.0-alpha.1 build
+> node scripts/tauri.js build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
+
+        Info Looking up installed tauri packages to check mismatched versions...
+   Compiling quark-core v0.3.0 (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/crates/quark-core)
+   Compiling quark-transfer v0.1.0 (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/crates/quark-transfer)
+   Compiling quark-agent v0.1.0 (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/crates/quark-agent)
+   Compiling quark-backup v0.1.0 (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/crates/quark-backup)
+   Compiling quark-drive-lite-tauri v0.3.0-alpha.1 (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/src-tauri)
+warning: linker stderr: lld-link: Cannot use debug info for 'libcmt.lib(new_scalar_nothrow.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(delete_scalar_size.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(std_type_info_static.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(new_array.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(delete_array.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(std_nothrow.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(thread_safe_statics.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(guard_support.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(gs_cookie.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(fltused.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(tlssup.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(utility.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(throw.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(riscchandler.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(risctrnsctrl.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(purevirt.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(strchr.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(strrchr.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(wcsrchr.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(new_scalar.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(delete_scalar.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(gs_report.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(initialization.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(cpu_disp.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(argv_mode.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(ucrt_detection.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(utility_desktop.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(pesect.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(jbcxrval.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(ehhelpers.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(per_thread_data.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(ehstate.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(frame.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(gshandler.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(purevirt_data.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(throw_bad_alloc.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(locks.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(winapi_downlevel.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(std_exception.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(std_type_info.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(gshandlerseh.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(undname.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(exe_main.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(loadcfg.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(gs_support.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(matherr.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(commit_mode.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(file_mode.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(new_mode.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(thread_locale.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(tncleanup.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(env_mode.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(invalid_parameter_handler.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(denormal_control.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(default_local_stdio_options.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(matherr_detection.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(dyn_tls_init.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(dyn_tls_dtor.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(initsect.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(initializers.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libvcruntime.lib(softmemtag.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libvcruntime.amd64.pdb': No such file or directory
+
+         lld-link: Cannot use debug info for 'libcmt.lib(ucrt_stubs.obj)' [LNK4099]
+         >>> failed to load reference 'D:\a\_work\1\s\binaries\amd64ret\lib\amd64\libcmt.amd64.pdb': No such file or directory
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `quark-drive-lite-tauri` (bin "quark-drive-lite-tauri") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 56.04s
+       Built application at: /Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/target/x86_64-pc-windows-msvc/release/quark-drive-lite-tauri.exe
+        Warn Cross-platform compilation is experimental and does not support all features. Please use a matching host system for full compatibility.
+        Warn Signing, by default, is only supported on Windows hosts, but you can specify a custom signing command in `bundler > windows > sign_command`, for now, skipping signing the installer...
+        Info Patching /Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/target/x86_64-pc-windows-msvc/release/quark-drive-lite-tauri.exe with bundle type information: nsis
+        Warn NSIS.exe is missing. Recreating it.
+        Info Verifying NSIS package
+ Downloading https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll
+        Info validating hash
+        Info Target: x64
+     Running makensis to produce /Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/target/x86_64-pc-windows-msvc/release/bundle/nsis/夸克网盘极简版 Tauri_0.3.0-alpha.1_x64-setup.exe
+warning 5202: -OUTPUTCHARSET is disabled for non Win32 platforms.
+        Warn Signing, by default, is only supported on Windows hosts, but you can specify a custom signing command in `bundler > windows > sign_command`, for now, skipping signing the installer...
+    Finished 1 bundle at:
+        /Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/target/x86_64-pc-windows-msvc/release/bundle/nsis/夸克网盘极简版 Tauri_0.3.0-alpha.1_x64-setup.exe (4.55 MiB)

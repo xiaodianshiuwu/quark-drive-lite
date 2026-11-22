@@ -1,0 +1,32 @@
+   Compiling quark-backup v0.1.0 (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/crates/quark-backup)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.44s
+     Running tests/massive_scan.rs (target/debug/deps/massive_scan-651eb7614eba76ec)
+
+running 1 test
+[gen] 100k 文件生成: 4.609371792s
+[scan] files=100000 dirs=12 batches=201 耗时 1.177297833s（吞吐 84940 条/秒）
+[queue] upsert 累计耗时 1.169572376s（吞吐 85501 条/秒）
+[first-batch] 2.457167ms; channel容量1批。此项仅测扫描/数据库吞吐；完整上传背压另由manager会话测试验证。
+[claim] 认领 100000 条，耗时 1.206796333s（吞吐 82864 条/秒）
+test scan_100k_entries_batches_and_queue ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.32s
+
+       13.42 real         2.74 user         8.84 sys
+           246644736  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               34580  page reclaims
+               15757  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   2  signals received
+               12053  voluntary context switches
+               25312  involuntary context switches
+          1752674609  instructions retired
+           626079886  cycles elapsed
+            99287712  peak memory footprint

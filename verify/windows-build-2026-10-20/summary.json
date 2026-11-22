@@ -1,0 +1,110 @@
+{
+  "date": "2026-10-20",
+  "base_commit": "212ffd1",
+  "platform": "Windows 10/11 x64",
+  "build_host": "macOS arm64",
+  "target": "x86_64-pc-windows-msvc",
+  "build_method": "cargo-xwin + Tauri NSIS",
+  "tool_versions": {
+    "rust": "1.98.1",
+    "cargo-xwin": "0.23.1",
+    "LLVM": "23.1.3",
+    "NSIS": "3.13",
+    "7-Zip": "26.04"
+  },
+  "app_pe": {
+    "machine": "0x8664",
+    "bits": 64,
+    "subsystem": 2,
+    "authenticode_certificate_bytes": 0
+  },
+  "installer_pe": {
+    "machine": "0x14c",
+    "bits": 32,
+    "subsystem": 2,
+    "authenticode_certificate_bytes": 0
+  },
+  "installer_payload_equals_built_exe": false,
+  "installer_payload_matches_expected_nsis_patch": true,
+  "nsis_patch_note": "Tauri changes only __TAURI_BUNDLE_TYPE_VAR_UNK to __TAURI_BUNDLE_TYPE_VAR_NSS inside the installed executable; all other bytes exactly match. Portable keeps the original UNK marker.",
+  "installer_archive_test_passed": true,
+  "portable_zip_test_passed": true,
+  "languages": [
+    "SimpChinese",
+    "English"
+  ],
+  "install_mode": "currentUser",
+  "webview2": "downloadBootstrapper if missing; portable requires preinstalled runtime",
+  "direct_imports": [
+    "bcryptprimitives.dll",
+    "ntdll.dll",
+    "kernel32.dll",
+    "user32.dll",
+    "gdi32.dll",
+    "combase.dll",
+    "ole32.dll",
+    "comctl32.dll",
+    "shell32.dll",
+    "dwmapi.dll",
+    "oleaut32.dll",
+    "imm32.dll",
+    "ADVAPI32.dll",
+    "api-ms-win-core-winrt-error-l1-1-0.dll",
+    "shlwapi.dll",
+    "api-ms-win-core-synch-l1-2-0.dll",
+    "bcrypt.dll",
+    "crypt32.dll",
+    "ws2_32.dll",
+    "api-ms-win-crt-runtime-l1-1-0.dll",
+    "api-ms-win-crt-math-l1-1-0.dll",
+    "api-ms-win-crt-time-l1-1-0.dll",
+    "api-ms-win-crt-heap-l1-1-0.dll",
+    "api-ms-win-crt-utility-l1-1-0.dll",
+    "api-ms-win-crt-string-l1-1-0.dll",
+    "api-ms-win-crt-convert-l1-1-0.dll",
+    "api-ms-win-crt-stdio-l1-1-0.dll",
+    "api-ms-win-crt-locale-l1-1-0.dll"
+  ],
+  "host_rust_tests_passed": 166,
+  "windows_all_targets_type_check": {
+    "passed": true,
+    "warning_count": 0,
+    "note": "Compiled only; Windows tests not executed"
+  },
+  "windows_runtime_acceptance": false,
+  "authenticode_signed": false,
+  "warnings": [
+    "Vendor MSVC library PDBs absent (LNK4099 debug-information warnings)",
+    "Tauri cross-platform bundling experimental and installer unsigned",
+    "NSIS OUTPUTCHARSET ignored on non-Windows host"
+  ],
+  "source_sha256": {
+    "crates/quark-core/src/lib.rs": "feeb7561df2dfcf5b2862c1d0753b70a2fd7084c505028583f3bdcea54f729c3",
+    "crates/quark-agent/src/runtime.rs": "3a94ab54ef90c175804c3b176b2aa17044483ae3497f278a5f661c1d487ca3fa",
+    "crates/quark-agent/src/gateway.rs": "70c7d6240fa72cc2a3486e8743c4f7d7010f250128d5b7f5f58ad98d4b84c9ed",
+    "crates/quark-backup/src/scanner.rs": "44797cb1e45f608aaf07bbd25f33bb41339c6d7bdc67e82bab571de27b9b44a5",
+    "src-tauri/tauri.windows.conf.json": "57532e77260845c46af2b3f5de8b00eaaed9d6530d7fbb42da06a20b5408e5ff",
+    "src/renderer/app.js": "f1662cb9635bc79c0624b1db561ae2673543667c14bbea2331db205f8ed088fc",
+    "src/renderer/index.html": "be63353ff4937004253492f7745e8d783a608ca74cd8e606d5f16780232441bb",
+    "src/renderer/styles.css": "2dbb870bd6b8df9f20250ca5b0d06188d6df0fc7049330d5c1041ff210879875",
+    "src-tauri/tauri.conf.json": "9f4c6c73b27b8d62ae7a7dc34dc1420e838e471ee9ff313aded65097a8a8aa44",
+    "Cargo.lock": "8d62126e943ce24e4b055e236a53fb82b16065ea9aad42dd55298af635b53b68"
+  },
+  "artifacts": {
+    "QuarkDriveLite-0.3.0-alpha.1-Windows-x64-setup.exe": {
+      "path": ".work/windows-build-20261020/deliverables/QuarkDriveLite-0.3.0-alpha.1-Windows-x64-setup.exe",
+      "bytes": 4774553,
+      "sha256": "0285353a5ca8e8993d856e4c85f0f6109a6554231fd82aefc91b1bade6e9514e"
+    },
+    "QuarkDriveLite-0.3.0-alpha.1-Windows-x64-portable.zip": {
+      "path": ".work/windows-build-20261020/deliverables/QuarkDriveLite-0.3.0-alpha.1-Windows-x64-portable.zip",
+      "bytes": 6490133,
+      "sha256": "ab9828228ad6b56179660ec76d0e5c3db35813cac1f190fa1f8d7bd08ec06cb2"
+    },
+    "quark-drive-lite-tauri.exe": {
+      "path": "target/x86_64-pc-windows-msvc/release/quark-drive-lite-tauri.exe",
+      "bytes": 18045440,
+      "sha256": "bca15c10d8efdfff24431a551565210ce11511c7b8db971b563a6ef5b7cf4b3d"
+    }
+  }
+}

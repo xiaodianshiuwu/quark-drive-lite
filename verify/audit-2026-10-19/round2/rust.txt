@@ -1,0 +1,238 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
+     Running unittests src/lib.rs (target/debug/deps/quark_agent-3dce85ff319ca02d)
+
+running 90 tests
+test chat::tests::endpoint_for_tolerates_full_completion_url ... ok
+test chat::tests::pack_tool_error_keeps_code_and_hint ... ok
+test chat::tests::pack_tool_result_redacts_then_truncates ... ok
+test chat::tests::overflow_tool_calls_still_get_tool_responses ... ok
+test chat::tests::invalid_json_and_missing_choices_are_upstream_errors ... ok
+test chat::tests::network_error_maps_to_upstream ... ok
+test chat::tests::provider_echoed_api_key_is_never_returned_in_error_or_reply ... ok
+test chat::tests::max_rounds_stops_the_loop_with_explicit_marker ... ok
+test chat::tests::trim_history_cuts_at_user_boundary_and_keeps_tool_pairing ... ok
+test chat::tests::input_validation_busy_conflict_and_unconfigured_are_rejected ... ok
+test chat::tests::list_models_parses_defensively_and_dedups ... ok
+test chat_config::tests::base_url_allows_https_and_loopback_http_only ... ok
+test chat::tests::clear_and_config_changes_are_rejected_during_a_running_turn ... ok
+test chat_config::tests::api_key_update_semantics_keep_on_empty_and_clear_on_null ... ok
+test chat_config::tests::rounds_timeout_temperature_are_clamped ... ok
+test chat_config::tests::invalid_existing_chat_config_is_preserved_until_explicit_clear ... ok
+test chat_config::tests::invalid_update_does_not_write_partial_config ... ok
+test chat_config::tests::string_fields_are_trimmed_and_truncated_by_chars ... ok
+test chat_config::tests::roundtrip_is_encrypted_and_key_never_leaks_into_snapshot ... ok
+test chat::tests::http_401_maps_to_unauthorized_and_emits_error_event ... ok
+test config::tests::config_roundtrips_through_encryption_and_survives_reload ... ok
+test config::tests::corrupt_existing_access_config_is_never_overwritten_by_a_partial_patch ... ok
+test config::tests::scope_snapshot_prefers_write_roots_and_dedups ... ok
+test chat::tests::changing_login_during_model_wait_stops_the_turn_before_tools_execute ... ok
+test gateway::tests::auth_success_lists_tools_and_returns_protocol_metadata ... ok
+test gateway::tests::client_label_trims_sanitizes_and_falls_back_to_unknown ... ok
+test gateway::tests::disabled_source_blocks_start_and_calls ... ok
+test gateway::tests::extract_id_from_buffer_takes_only_the_current_line ... ok
+test config::tests::key_creation_is_atomic_and_corruption_does_not_replace_existing_material ... ok
+test gateway::tests::extract_request_id_anchors_at_object_and_only_takes_scalars ... ok
+test chat::tests::test_connection_uses_local_probe_without_polluting_history ... ok
+test gateway::tests::authenticated_pool_limit_rejects_new_connection ... ok
+test gateway::tests::message_limit_exceeds_tool_text_limit ... ok
+test gateway::tests::handle_message_rejects_non_object_and_non_string_method ... ok
+test config::tests::activate_deactivate_manage_bridge_file_and_rotate_invalidates ... ok
+test gateway::tests::invalid_json_returns_id_and_connection_survives ... ok
+test gateway::tests::rate_limit_triggers_at_boundary_with_request_id ... ok
+test gateway::tests::queue_overflow_returns_the_dropped_line_id ... ok
+test chat::tests::tool_calls_without_name_are_dropped_everywhere ... ok
+test gateway::tests::stale_socket_file_is_replaced_but_regular_file_is_refused ... ok
+test gateway::tests::repeated_auth_on_authenticated_connection_is_idempotent_even_when_pool_is_full ... ok
+test gateway::tests::summarize_args_keeps_whitelist_and_text_bytes_only ... ok
+test gateway::tests::start_is_idempotent_stop_removes_socket_and_is_safe_to_repeat ... ok
+test gateway::tests::status_reports_connections_tools_and_calls ... ok
+test gateway::tests::unauthenticated_connection_only_accepts_auth_ping_hello ... ok
+test gateway::tests::tool_error_carries_code_hint_and_is_audited ... ok
+test gateway::tests::wrong_token_is_rejected_closed_and_audited_without_leaking ... ok
+test journal::tests::append_list_roundtrip_and_secret_redaction ... ok
+test plans::tests::concurrent_execution_claim_has_exactly_one_winner ... ok
+test journal::tests::seq_survives_reopen_and_filter_and_limit ... ok
+test plans::tests::same_content_same_hash_and_executable_binding ... ok
+test plans::tests::ttl_zero_expires_immediately ... ok
+test policy::tests::canonical_json_sorts_keys_for_stable_hash ... ok
+test policy::tests::canonical_scope_does_not_case_fold_distinct_siblings ... ok
+test policy::tests::local_path_requires_absolute_and_inside_root ... ok
+test policy::tests::normalize_remote_roots_dedups_and_ignores_implicit_root ... ok
+test policy::tests::plain_path_rejects_empty_and_nul ... ok
+test policy::tests::remote_scope_matches_self_and_ancestors_but_requires_explicit_root ... ok
+test policy::tests::resolve_real_resolves_symlink_escape ... ok
+test policy::tests::token_is_64_hex_and_safe_equal_detects_difference ... ok
+test policy::tests::upstream_error_preserves_code_and_raw_message ... ok
+test plans::tests::create_requires_entries_and_caps_at_limit ... ok
+test plans::tests::prune_allows_new_plans_when_finished_exist_and_blocks_when_all_pending ... ok
+test tools::fake_tests::accepted_delete_with_unavailable_verification_is_not_confirmed_deleted ... ok
+test tools::fake_tests::all_write_tools_rejected_in_read_only_mode ... ok
+test tools::fake_tests::delete_out_of_scope_rejected_and_folder_deletes_children ... ok
+test tools::fake_tests::delete_requires_dry_run_and_matching_confirm_names ... ok
+test tools::fake_tests::drive_status_contains_no_credentials ... ok
+test chat::tests::tool_failure_is_reported_to_model_without_aborting ... ok
+test runtime::adapter_tests::packaged_mcp_adapter_is_self_contained_and_detects_replacement ... ok
+test tools::fake_tests::move_into_itself_is_rejected ... ok
+test tools::fake_tests::list_dir_requires_scope_and_enforces_page_cap ... ok
+test tools::fake_tests::rename_reads_fresh_metadata_and_async_moves_are_accepted_before_completion ... ok
+test tools::fake_tests::transfer_control_rejects_unknown_action_and_requires_write ... ok
+test tools::fake_tests::tree_dir_respects_depth_and_entry_limits ... ok
+test tools::fake_tests::upload_name_with_path_separator_rejected_and_staged_copy_used ... ok
+test tools::fake_tests::write_tools_reject_in_read_only_mode ... ok
+test tools::tests::input_helpers_behave ... ok
+test tools::tests::read_text_at_handles_encoding_and_truncation ... ok
+test tools::tests::recent_objects_ttl_and_capacity ... ok
+test tools::tests::scope_matches_delegates ... ok
+test chat::tests::two_round_flow_asserts_openai_request_shape_and_events ... ok
+test gateway::tests::auth_timeout_closes_connection_and_is_audited ... ok
+test gateway::tests::unauthenticated_pool_limit_rejects_new_connections_immediately ... ok
+test chat::tests::tool_result_is_redacted_before_truncation ... ok
+test tools::fake_tests::gateway_end_to_end_with_node_cli_adapter ... ok
+test tools::fake_tests::approximate_recent_metadata_cannot_authorize_a_remote_object ... ok
+test gateway::tests::oversized_message_without_id_returns_null_id ... ok
+test gateway::tests::oversized_message_returns_limit_with_request_id ... ok
+test tools::fake_tests::plan_create_execute_binds_to_content_hash ... ok
+
+test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.19s
+
+     Running tests/agent_loop_verify.rs (target/debug/deps/agent_loop_verify-f16b744cfd676d8c)
+
+running 1 test
+test agent_loop_verify ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.47s
+
+     Running unittests src/lib.rs (target/debug/deps/quark_backup-2951334e766d9999)
+
+running 31 tests
+test scanner::tests::windows_name_risk_flags_reserved_and_trailing ... ok
+test scanner::tests::normalize_rel_rejects_escape_and_normalizes ... ok
+test state::tests::backoff_is_exponential_with_cap_and_stop ... ok
+test state::tests::cancel_allowed_from_any_active_state ... ok
+test state::tests::crash_recovery_maps_to_pending ... ok
+test state::tests::illegal_jumps_are_rejected ... ok
+test scanner::tests::scan_missing_root_is_whole_error ... ok
+test state::tests::forward_pipeline_is_legal ... ok
+test state::tests::state_round_trip ... ok
+test state::tests::terminal_states_reenter_pending_only ... ok
+test manager::audit_tests::camel_case_config_is_applied_and_zero_or_unknown_config_is_rejected ... ok
+test store::tests::identity_key_distinguishes_targets ... ok
+test scanner::tests::scan_batches_and_reports_warnings ... ok
+test store::tests::dir_mapping_round_trip ... ok
+test store::tests::queue_depth_and_counts ... ok
+test store::tests::recover_interrupted_maps_to_pending_and_keeps_attempts ... ok
+test store::tests::transition_enforces_guard ... ok
+test store::tests::claim_promotes_discovered_and_returns_batch ... ok
+test store::tests::claim_respects_backoff_window ... ok
+test store::tests::upsert_does_not_reset_active_tasks ... ok
+test store::tests::upsert_is_idempotent_and_requeues_changes ... ok
+test verifier::tests::sample_plan_bounds ... ok
+test verifier::tests::empty_success_set_with_unfinished_tasks_is_not_a_verified_backup ... ok
+test verifier::tests::manifest_flags_size_mismatch_and_missing ... ok
+test verifier::tests::manifest_verify_matches_and_flags_missing ... ok
+test verifier::tests::full_hash_really_checks_more_than_twenty_and_missing_download_cannot_pass ... ok
+test scheduler::tests::vanished_source_is_skipped_not_failed ... ok
+test manager::audit_tests::linked_files_are_reported_and_do_not_escape_source ... ok
+test scheduler::tests::full_pipeline_success_with_dirs_and_conflict ... ok
+test scheduler::tests::source_mutation_requeues_and_retry_backoff ... ok
+test manager::audit_tests::full_session_backpressure_pause_cancel_join_resume_and_empty_dirs ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.76s
+
+     Running tests/backpressure.rs (target/debug/deps/backpressure-7c4e94ed4b0e9036)
+
+running 1 test
+test slow_consumer_triggers_backpressure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.31s
+
+     Running tests/massive_scan.rs (target/debug/deps/massive_scan-409bb0b5e6af0b28)
+
+running 1 test
+test scan_100k_entries_batches_and_queue ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.56s
+
+     Running unittests src/lib.rs (target/debug/deps/quark_core-3e07d300befac689)
+
+running 23 tests
+test session::tests::settings_bounds_and_unknown_field_rejection ... ok
+test session::tests::partial_metadata_refresh_preserves_stable_identity_but_updates_present_values ... ok
+test files::tests::paging_uses_metadata_and_preserves_unknown ... ok
+test session::tests::settings_strategies_and_stable_identity_have_no_credential_fallback ... ok
+test files::tests::explicit_task_failure_wins_over_finish_and_success_flags ... ok
+test files::tests::normalized_directory_primary_field_wins ... ok
+test files::tests::unknown_numeric_task_status_never_means_success ... ok
+test tests::capacity_is_not_rate_limit_and_unknown_code_is_not_success ... ok
+test store::tests::legacy_unknown_and_oversized_sessions_are_preserved ... ok
+test store::tests::symlink_profile_session_and_key_are_rejected_without_touching_target ... ok
+test session::tests::external_seconds_and_api_scope ... ok
+test session::tests::rotation_and_max_age_precedence ... ok
+test tests::malformed_envelopes_and_reflected_credentials_never_become_success_or_error_text ... ok
+test session::tests::download_url_cookie_scope_never_leaks_api_host_only_or_path_credentials ... ok
+test session::tests::scoped_cookie_rotation_does_not_destroy_sibling_or_specific_path_cookie ... ok
+test tests::api_url_rejects_credential_exfiltration_and_preserves_protocol ... ok
+test store::tests::encryption_is_randomized_and_no_credentials_are_in_plaintext ... ok
+test tests::guest_file_operations_fail_without_network ... ok
+test tests::failed_persistence_does_not_publish_new_settings ... ok
+test tests::settings_are_durable_and_corruption_never_overwritten ... ok
+test tests::account_generation_is_durable_on_success_and_isolates_stale_updates ... ok
+test tests::login_binding_survives_restart_and_rotation_but_never_a_new_login ... ok
+test tests::delayed_old_account_response_cannot_rotate_or_expire_new_account ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.73s
+
+     Running unittests src/main.rs (target/debug/deps/quark_drive_lite_tauri-04387ab2e9c827fb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/quark_transfer-6612f12586079bac)
+
+running 19 tests
+test protocol::tests::completion_xml_keeps_part_number_order ... ok
+test download::tests::strategy_is_size_adaptive_and_respects_user_limit ... ok
+test protocol::tests::prefix_context_is_signed_in_the_observed_header_position ... ok
+test protocol::tests::signed_strings_match_existing_oss_wire_contract ... ok
+test sha1_state::tests::exports_real_unpadded_prefix_and_bit_counter_high_word ... ok
+test protocol::tests::signed_upload_origin_and_download_names_are_constrained ... ok
+test sha1_state::tests::real_compression_matches_standard_digest_across_buffer_boundaries ... ok
+test upload::tests::actual_http_put_carries_prefix_without_cookies_and_rejects_bad_etag ... ok
+test upload::tests::completion_errors_and_cloud_digest_mismatches_cannot_finish_a_task ... ok
+test upload::tests::prefix_inspection_and_saved_part_replay_bind_to_actual_source_bytes ... ok
+test manager::tests::interrupted_tasks_recover_paused_and_cannot_cross_accounts ... ok
+test upload::tests::bandwidth_limit_applies_to_the_actual_http_request_body ... ok
+test download::tests::cancelled_stream_stops_without_publishing_and_cleanup_is_owned ... ok
+test download::tests::real_range_stream_binds_etag_and_never_sends_cookies_to_cdn ... ok
+test manager::tests::missing_verified_account_cannot_enqueue_tasks ... ok
+test download::tests::ignored_range_falls_back_to_complete_response_and_exclusive_publication ... ok
+test manager::tests::login_replaced_while_enqueue_waits_for_control_cannot_bind_to_the_new_account ... ok
+test download::tests::durable_resume_skips_verified_parts_and_redownloads_corrupted_parts ... ok
+test download::tests::changed_or_missing_etag_and_wrong_range_never_publish ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.01s
+
+   Doc-tests quark_agent
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests quark_backup
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests quark_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests quark_transfer
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

@@ -1,0 +1,3 @@
+    Checking quark-agent v0.1.0 (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/crates/quark-agent)
+    Checking quark-drive-lite-tauri v0.3.0-alpha.1 (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.26s

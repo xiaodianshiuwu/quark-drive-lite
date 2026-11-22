@@ -1,0 +1,87 @@
+{
+  "checks": [
+    {
+      "name": "bundled interface",
+      "ok": true
+    },
+    {
+      "name": "native bridge",
+      "ok": true
+    },
+    {
+      "name": "quit action available",
+      "ok": true
+    },
+    {
+      "name": "visible interface",
+      "ok": true
+    },
+    {
+      "name": "Rust settings command",
+      "ok": true
+    },
+    {
+      "name": "Rust settings persist",
+      "ok": true
+    },
+    {
+      "name": "Rust auth status",
+      "ok": true
+    },
+    {
+      "name": "Rust persisted tasks",
+      "ok": true
+    },
+    {
+      "name": "NEED_LOGIN error bridge",
+      "ok": true
+    },
+    {
+      "name": "settings view",
+      "ok": true
+    },
+    {
+      "name": "transfers view",
+      "ok": true
+    },
+    {
+      "name": "backup view",
+      "ok": true
+    },
+    {
+      "name": "Rust backup status",
+      "ok": true
+    },
+    {
+      "name": "Rust backup scanner via native IPC",
+      "ok": true
+    },
+    {
+      "name": "backup cannot spoof unauthenticated account",
+      "ok": true
+    },
+    {
+      "name": "Rust agent status",
+      "ok": true
+    },
+    {
+      "name": "packaged MCP adapter path",
+      "ok": true
+    },
+    {
+      "name": "chat view",
+      "ok": true
+    },
+    {
+      "name": "Rust chat status",
+      "ok": true
+    },
+    {
+      "name": "no mock data",
+      "ok": true
+    }
+  ],
+  "passed": true,
+  "runtime": "Tauri 2 / system WebView / Rust",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+}

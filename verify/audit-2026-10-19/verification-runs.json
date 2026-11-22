@@ -1,0 +1,105 @@
+[
+  {
+    "round": 1,
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked"
+    ],
+    "log": "verify/audit-2026-10-19/round1/rust.txt",
+    "exit_code": 0,
+    "seconds": 49.421,
+    "started_at": "2026-10-19T04:46:15.867150+00:00",
+    "code_sha256": "2a0ca191c4c88ac43061e9cf5b7b43f41887c6e3426d12ba3f10ef44063d9277"
+  },
+  {
+    "round": 1,
+    "command": [
+      "npm",
+      "test"
+    ],
+    "log": "verify/audit-2026-10-19/round1/ui.txt",
+    "exit_code": 0,
+    "seconds": 6.401,
+    "started_at": "2026-10-19T04:47:05.309950+00:00",
+    "code_sha256": "2a0ca191c4c88ac43061e9cf5b7b43f41887c6e3426d12ba3f10ef44063d9277"
+  },
+  {
+    "round": 1,
+    "command": [
+      "npm",
+      "run",
+      "verify:native"
+    ],
+    "log": "verify/audit-2026-10-19/round1/native.txt",
+    "exit_code": 0,
+    "seconds": 6.763,
+    "started_at": "2026-10-19T04:47:11.726264+00:00",
+    "code_sha256": "2a0ca191c4c88ac43061e9cf5b7b43f41887c6e3426d12ba3f10ef44063d9277"
+  },
+  {
+    "round": 2,
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked"
+    ],
+    "log": "verify/audit-2026-10-19/round2/rust.txt",
+    "exit_code": 0,
+    "seconds": 45.987,
+    "started_at": "2026-10-19T04:47:18.505567+00:00",
+    "code_sha256": "2a0ca191c4c88ac43061e9cf5b7b43f41887c6e3426d12ba3f10ef44063d9277"
+  },
+  {
+    "round": 2,
+    "command": [
+      "npm",
+      "test"
+    ],
+    "log": "verify/audit-2026-10-19/round2/ui.txt",
+    "exit_code": 0,
+    "seconds": 6.431,
+    "started_at": "2026-10-19T04:48:04.515419+00:00",
+    "code_sha256": "2a0ca191c4c88ac43061e9cf5b7b43f41887c6e3426d12ba3f10ef44063d9277"
+  },
+  {
+    "round": 2,
+    "command": [
+      "npm",
+      "run",
+      "verify:native"
+    ],
+    "log": "verify/audit-2026-10-19/round2/native.txt",
+    "exit_code": 0,
+    "seconds": 4.935,
+    "started_at": "2026-10-19T04:48:10.974045+00:00",
+    "code_sha256": "2a0ca191c4c88ac43061e9cf5b7b43f41887c6e3426d12ba3f10ef44063d9277"
+  },
+  {
+    "command": [
+      "cargo",
+      "check",
+      "--workspace",
+      "--locked"
+    ],
+    "log": "verify/audit-2026-10-19/check.txt",
+    "exit_code": 0,
+    "seconds": 1.29,
+    "code_sha256": "2a0ca191c4c88ac43061e9cf5b7b43f41887c6e3426d12ba3f10ef44063d9277"
+  },
+  {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked"
+    ],
+    "log": "verify/audit-2026-10-19/clippy.txt",
+    "exit_code": 0,
+    "seconds": 1.33,
+    "code_sha256": "2a0ca191c4c88ac43061e9cf5b7b43f41887c6e3426d12ba3f10ef44063d9277"
+  }
+]

@@ -1,0 +1,14 @@
+
+> quark-mini@0.3.0-alpha.1 build
+> node scripts/tauri.js build
+
+        Info Looking up installed tauri packages to check mismatched versions...
+   Compiling quark-agent v0.1.0 (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/crates/quark-agent)
+   Compiling quark-drive-lite-tauri v0.3.0-alpha.1 (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/src-tauri)
+    Finished `release` profile [optimized] target(s) in 48.33s
+       Built application at: /Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/target/release/quark-drive-lite-tauri
+    Bundling 夸克网盘极简版 Tauri.app (/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/target/release/bundle/macos/夸克网盘极简版 Tauri.app)
+    Finished 1 bundle at:
+        /Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/target/release/bundle/macos/夸克网盘极简版 Tauri.app (12.13 MiB)
+
+/Users/xiaodianshinengyoushenmehuaixinsi/zongh/repos/quark-drive-lite-alpha/target/release/bundle/macos/夸克网盘极简版 Tauri.app: replacing existing signature
