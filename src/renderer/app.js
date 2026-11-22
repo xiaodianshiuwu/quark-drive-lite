@@ -295,12 +295,45 @@
     if (!ok) return;
     try {
       await API.auth.logout();
+      resetSessionViews();
       applyAccount({ loggedIn: false, expired: false });
       clearExpiredBanner();
       toast('info', '已退出登录');
     } catch (err) {
       reportError(err, '退出登录失败');
     }
+  }
+
+  /** 登出或切换账号时清空备份与对话视图中的上个账号状态（保留大模型连接配置）。 */
+  function resetSessionViews() {
+    stopBackupPolling();
+    backup.planned = null;
+    backup.lastStatus = null;
+    backup.taskOffset = 0;
+    backup.pollBusy = false;
+    backup.taskBusy = false;
+    var runBox = $('backup-run');
+    if (runBox) runBox.hidden = true;
+    var planBox = $('backup-plan-result');
+    if (planBox) { planBox.hidden = true; planBox.textContent = ''; }
+    var verifyBox = $('backup-verify-result');
+    if (verifyBox) { verifyBox.hidden = true; verifyBox.textContent = ''; }
+    var taskList = $('backup-task-list');
+    if (taskList) taskList.textContent = '';
+
+    var cg = chatOf();
+    cg.history = [];
+    cg.historyError = '';
+    cg.loaded = true;
+    cg.sending = false;
+    cg.round = null;
+    cg.phase = 'idle';
+    cg.curRound = 0;
+    cg.runningTool = '';
+    cg.errorText = '';
+    cg.doneText = '';
+    renderChat();
+    renderChatHistory();
   }
 
   /* ================================================================== *
@@ -324,6 +357,9 @@
       resetList();
       renderCrumbs();
       renderEmpty(s.expired ? '登录状态已失效，请重新登录' : '请先登录夸克网盘', false);
+      resetSessionViews();
+    } else if ((!previous || !previous.loggedIn) && s.loggedIn) {
+      chatOf().loaded = false;
     }
     if (s.expired === true) showExpiredBanner();
     else if (s.loggedIn === true) clearExpiredBanner();
@@ -1314,6 +1350,10 @@
     try {
       var accepted = await API.fs.rename({ fid: item.fid, name: name });
       item.name = name;
+      if (!item.dir) {
+        var dot = name.lastIndexOf('.');
+        item.ext = (dot > 0 && dot < name.length - 1) ? name.slice(dot + 1).toLowerCase() : '';
+      }
       var row = rowMap.get(String(item.fid));
       if (row) updateRow(row, item);
       toast('info', '已重命名为「' + name + '」');
@@ -1338,9 +1378,16 @@
       excludeFids: exclude
     });
     if (targetFid === null || targetFid === undefined) return;
-    if (isMove && String(targetFid) === String(state.fid)) {
-      toast('warn', '目标目录与当前目录相同，无需移动');
-      return;
+    if (isMove) {
+      var sameDir = state.mode === 'browse'
+        ? String(targetFid) === String(state.fid)
+        : list.every(function (i) {
+            return i.pdirFid !== undefined && i.pdirFid !== null && String(i.pdirFid) === String(targetFid);
+          });
+      if (sameDir) {
+        toast('warn', '目标目录与当前目录相同，无需移动');
+        return;
+      }
     }
     var targetName = await dirNameOf(targetFid);
     var ok = await confirmDialog({
@@ -1428,6 +1475,8 @@
     } else if (t.status === 'error') {
       acts.push({ key: 'retry', title: '重试', icon: 'retry' });
       acts.push({ key: 'cancel', title: '取消', icon: 'cancel', danger: true });
+    } else if (t.status === 'canceled') {
+      acts.push({ key: 'retry', title: '重试', icon: 'retry' });
     } else {
       acts.push({ key: 'open', title: '打开所在文件夹', icon: 'folder-open' });
     }
@@ -1664,8 +1713,13 @@
   var AGENT_TRANSPORT_LABEL = { 'unix-socket': 'unix-socket', 'named-pipe': 'named-pipe' };
 
   var AGENT_SCOPE_HINT = {
-    'read-only': '只读：Agent 只能浏览、搜索与下载，不能修改网盘内容。',
-    'scoped-write': '授权范围内可写：Agent 可在下列授权目录内新建、上传、重命名与移动，但不能删除（删除接口未对 Agent 开放）。'
+    'read-only': '只读：Agent 只能浏览、搜索与读取已授权本地文件，不能下载、上传或修改网盘内容。',
+    'scoped-write': '授权范围内可写：Agent 可在下列授权目录内下载、新建、上传、重命名与移动；删除权限需在下方单独开启。'
+  };
+
+  var AGENT_DELETE_HINT = {
+    off: '禁止删除（默认）：即使开启写入模式，Agent 也不能删除网盘文件。',
+    on: '允许移入回收站：仅在「授权范围内可写」时生效，Agent 可将授权目录内文件移入网盘回收站（需二次确认名称）。'
   };
 
   /** Agent 面板是否可用（桥接层已注入且提供 agent.status）。 */
@@ -1825,6 +1879,7 @@
   function renderAgentWriteMode() {
     if (!el.agentScopeSeg) return;
     var ag = agentOf();
+    var ready = agentBridgeReady();
     var st = ag.status && typeof ag.status === 'object' ? ag.status : null;
     var mode = st ? String(st.writeMode || '') : '';
     if (mode !== 'read-only' && mode !== 'scoped-write') mode = '';
@@ -1832,11 +1887,33 @@
       var on = !!mode && b.dataset.agentScope === mode;
       b.classList.toggle('active', on);
       b.setAttribute('aria-checked', on ? 'true' : 'false');
-      b.disabled = !agentBridgeReady() || !st;
+      b.disabled = !ready || !st;
     });
     if (el.agentScopeHint) {
       el.agentScopeHint.textContent = AGENT_SCOPE_HINT[mode] ||
-        (agentBridgeReady() ? '写入模式决定 Agent 能否修改网盘内容；修改后立即生效。' : '未注入桥接层，无法修改授权范围。');
+        (ready ? '写入模式决定 Agent 能否修改网盘内容；修改后立即生效。' : '未注入桥接层，无法修改授权范围。');
+    }
+    if (el.agentDeleteSeg) {
+      var allowDelete = !!(st && st.allowDelete);
+      var writable = mode === 'scoped-write';
+      Array.prototype.forEach.call(el.agentDeleteSeg.querySelectorAll('.seg'), function (b) {
+        var wantOn = b.dataset.agentDelete === 'on';
+        var active = !!st && (wantOn ? allowDelete : !allowDelete);
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-checked', active ? 'true' : 'false');
+        b.disabled = !ready || !st || (wantOn && !writable);
+      });
+      if (el.agentDeleteHint) {
+        if (!ready) {
+          el.agentDeleteHint.textContent = '未注入桥接层，无法修改删除权限。';
+        } else if (!st) {
+          el.agentDeleteHint.textContent = AGENT_DELETE_HINT.off;
+        } else if (!writable) {
+          el.agentDeleteHint.textContent = '当前为只读模式，Agent 不能执行任何修改或删除操作。';
+        } else {
+          el.agentDeleteHint.textContent = allowDelete ? AGENT_DELETE_HINT.on : AGENT_DELETE_HINT.off;
+        }
+      }
     }
   }
 
@@ -2120,6 +2197,38 @@
       reportError(err, '设置写入模式失败');
     }
     await loadAgentStatus(true);
+  }
+
+  async function agentSetAllowDelete(allow) {
+    var want = !!allow;
+    if (!agentBridgeReady()) { toast('warn', '未注入桥接层，无法修改删除权限'); return; }
+    var ag = agentOf();
+    if (ag.status && Boolean(ag.status.allowDelete) === want) return;
+    if (want) {
+      if (!ag.status || String(ag.status.writeMode) !== 'scoped-write') {
+        toast('warn', '请先将写入模式切换为「授权范围内可写」');
+        return;
+      }
+      var ok = await agentConfirm({
+        title: '开启 Agent 删除权限',
+        message: '开启后，外部 Agent 与内置对话可在授权目录内将文件移入网盘回收站。',
+        detail: '删除仍受授权目录限制并需核对文件名，且文件会进入网盘回收站（可找回）。',
+        danger: true,
+        confirmText: '允许移入回收站'
+      });
+      if (!ok) return;
+    }
+    try {
+      var st = await API.agent.setScope({ allowDelete: want });
+      if (st && typeof st === 'object') ag.status = st;
+      ag.statusError = '';
+      renderAgent();
+      toast('info', want ? '已开启 Agent 删除权限（仅移入回收站）' : '已禁止 Agent 删除网盘文件');
+    } catch (err) {
+      reportError(err, '更新删除权限失败');
+    }
+    await loadAgentStatus(true);
+    await loadAgentJournal();
   }
 
   async function agentAddCurrentDir() {
@@ -2694,6 +2803,19 @@
 
   /* ------------------------------ 数据加载 ------------------------------ */
 
+  /** 从服务端状态回填 Base URL 与模型名（force=false 时不覆盖用户正在编辑的输入）。 */
+  function prefillChatForm(force) {
+    var ag = chatOf();
+    var st = ag.status && typeof ag.status === 'object' ? ag.status : null;
+    if (!st) return;
+    if (el.chatBaseUrl && (force || !String(el.chatBaseUrl.value || '').trim())) {
+      el.chatBaseUrl.value = asText(st.baseUrl);
+    }
+    if (el.chatModel && (force || !String(el.chatModel.value || '').trim())) {
+      el.chatModel.value = asText(st.model);
+    }
+  }
+
   async function loadChatStatus(force) {
     var ag = chatOf();
     if (!chatBridgeReady()) { renderChat(); return; }
@@ -2708,6 +2830,7 @@
       ag.statusError = agentErrText(err);
     }
     ag.loading = false;
+    prefillChatForm(false);
     renderChat();
   }
 
@@ -2900,7 +3023,10 @@
   function chatToggleConfig() {
     var ag = chatOf();
     ag.expanded = !ag.expanded;
-    if (ag.expanded) ag.formError = '';
+    if (ag.expanded) {
+      ag.formError = '';
+      prefillChatForm(true);
+    }
     renderChatCard();
   }
 
@@ -3318,6 +3444,7 @@
       + '，缺失 ' + fmtInt(r.listed_missing) + '，大小不符 ' + fmtInt(r.size_mismatch)
       + '；选定核验项哈希一致 ' + fmtInt(r.sample_ok) + '/' + fmtInt(r.sample_requested === undefined ? r.sample_checked : r.sample_requested)));
     var issues = Array.isArray(r.issues) ? r.issues : [];
+    var issueTotal = Math.max(issues.length, backupNum(r.issue_total));
     if (issues.length) {
       var ul = h('ul', 'backup-issues');
       issues.slice(0, BACKUP_ISSUE_MAX).forEach(function (it) {
@@ -3325,11 +3452,36 @@
         li.textContent = backupIssueText(it);
         ul.appendChild(li);
       });
-      if (issues.length > BACKUP_ISSUE_MAX) {
-        ul.appendChild(h('li', null, '…等共 ' + issues.length + ' 条问题'));
+      if (issueTotal > BACKUP_ISSUE_MAX) {
+        ul.appendChild(h('li', null, '…等共 ' + issueTotal + ' 条问题'));
       }
       box.appendChild(ul);
     }
+  }
+
+  /** 把验证问题里的字符串/对象/数组 detail 格式化为可读文本（绝不出现 [object Object]）。 */
+  function backupDetailText(v) {
+    if (v === undefined || v === null) return '';
+    if (typeof v !== 'object') return asText(v);
+    if (Array.isArray(v)) {
+      if (!v.length) return '';
+      var parts = v.slice(0, 3).map(function (item) {
+        if (!item || typeof item !== 'object') return asText(item);
+        var p = asText(item.relPath) || asText(item.rel_path) || asText(item.dir);
+        var m = asText(item.message) || asText(item.detail);
+        if (p && m) return p + '：' + m;
+        return p || m || JSON.stringify(item);
+      }).filter(Boolean);
+      var suffix = v.length > 3 ? '…等 ' + v.length + ' 项' : '';
+      return parts.join('；') + suffix;
+    }
+    var keys = Object.keys(v);
+    if (!keys.length) return '';
+    var nonZero = keys.filter(function (k) { return v[k] !== 0 && v[k] !== null && v[k] !== undefined && v[k] !== ''; });
+    var use = nonZero.length ? nonZero : keys;
+    return use.slice(0, 6).map(function (k) {
+      return k + '=' + (typeof v[k] === 'object' ? JSON.stringify(v[k]) : asText(v[k]));
+    }).join('，');
   }
 
   /** 单条验证问题 → 一行摘要（字段名来自后端 VerifyReport.issues，全部按文本拼接）。 */
@@ -3338,9 +3490,11 @@
     var kind = asText(it.kind);
     var path = asText(it.rel_path) || asText(it.dir) || asText(it.relPath);
     var extra = [];
-    if (it.local_size !== undefined) extra.push('本地 ' + fmtBytes(it.local_size));
+    var expectedSize = it.expected_size !== undefined ? it.expected_size : it.local_size;
+    if (expectedSize !== undefined) extra.push('本地 ' + fmtBytes(expectedSize));
     if (it.remote_size !== undefined) extra.push('远端 ' + fmtBytes(it.remote_size));
-    var detail = asText(it.detail);
+    if (it.count !== undefined) extra.push('共 ' + fmtInt(it.count) + ' 项');
+    var detail = backupDetailText(it.detail);
     if (extra.length) detail = detail ? detail + '，' + extra.join('，') : extra.join('，');
     var head = (kind ? kind + '：' : '') + path;
     return head + (detail ? '（' + detail + '）' : '');
@@ -3669,6 +3823,11 @@
       if (!b || b.disabled) return;
       agentSetWriteMode(b.dataset.agentScope);
     });
+    if (el.agentDeleteSeg) el.agentDeleteSeg.addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('.seg') : null;
+      if (!b || b.disabled) return;
+      agentSetAllowDelete(b.dataset.agentDelete === 'on');
+    });
     if (el.agentBtnAddRemote) el.agentBtnAddRemote.addEventListener('click', agentAddCurrentDir);
     if (el.agentBtnAddRead) el.agentBtnAddRead.addEventListener('click', function () { agentPickLocalRoots('read'); });
     if (el.agentBtnAddWrite) el.agentBtnAddWrite.addEventListener('click', function () { agentPickLocalRoots('write'); });
@@ -3846,6 +4005,8 @@
     el.agentBtnRotate = $('agent-btn-rotate');
     el.agentScopeSeg = $('agent-scope-seg');
     el.agentScopeHint = $('agent-scope-hint');
+    el.agentDeleteSeg = $('agent-delete-seg');
+    el.agentDeleteHint = $('agent-delete-hint');
     el.agentRemoteRoots = $('agent-remote-roots');
     el.agentBtnAddRemote = $('agent-btn-add-remote');
     el.agentLocalReadRoots = $('agent-local-read-roots');

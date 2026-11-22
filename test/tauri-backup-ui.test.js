@@ -432,3 +432,48 @@ test('D4: 慢状态请求不会叠加轮询，失败后仍能恢复',async()=>{
   resolveStatus({running:true,hasSession:true});await flush();await inst.backupTick();assert.equal(requests,2);
   resolveStatus({running:false});await flush();
 });
+
+test('D5: 验证报告兼容后端 expected_size、issue_total 与对象/数组 detail，不出现 [object Object]', async () => {
+  const report = {
+    status: 'partial',
+    total_success: 100,
+    listed_ok: 90,
+    listed_missing: 5,
+    size_mismatch: 5,
+    issue_total: 420,
+    sample_requested: 5,
+    sample_checked: 5,
+    sample_ok: 5,
+    sample_mismatch: 0,
+    issues: [
+      { kind: 'identity_or_size_mismatch', rel_path: 'doc.pdf', expected_size: 4096, remote_size: 2048 },
+      { kind: 'incomplete_tasks', detail: { failed: 3, pending: 2, success: 0 } },
+      { kind: 'scan_exclusions', count: 2, detail: [{ relPath: 'link-a', message: '跳过符号链接' }] },
+      { kind: 'missing', rel_path: 'b.txt' },
+      { kind: 'missing', rel_path: 'c.txt' },
+      { kind: 'missing', rel_path: 'd.txt' },
+    ],
+  };
+  const inst = await openBackup({ backupRunning: true, backupImpl: { verify: report } });
+  await inst.click('backup-verify');
+  await flush();
+  const txt = inst.text('backup-verify-result');
+  assert.ok(txt.includes('本地 4 KB'), '应识别后端 expected_size: ' + txt);
+  assert.ok(txt.includes('远端 2 KB'), '应渲染 remote_size: ' + txt);
+  assert.ok(txt.includes('failed=3'), '对象 detail 应格式化为可读文本: ' + txt);
+  assert.ok(txt.includes('link-a：跳过符号链接'), '数组 detail 应格式化为可读文本: ' + txt);
+  assert.ok(!txt.includes('[object Object]'), '绝不能出现 [object Object]: ' + txt);
+  assert.ok(txt.includes('…等共 420 条问题'), '应使用后端 issue_total 展示真实问题总数: ' + txt);
+});
+
+test('D6: 退出登录停止备份轮询并隐藏运行区', async () => {
+  const inst = await openBackup({ backupRunning: true });
+  await flush();
+  assert.equal(inst.$('backup-run').hidden, false);
+  assert.ok(inst.timerCount() >= 1);
+
+  await inst.click('btn-logout-2');
+  await inst.clickOverlay('ok');
+  assert.equal(inst.timerCount(), 0, '退出登录后必须停止备份轮询');
+  assert.equal(inst.$('backup-run').hidden, true, '退出登录后必须隐藏备份运行区');
+});

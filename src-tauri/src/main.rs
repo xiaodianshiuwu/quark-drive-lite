@@ -115,6 +115,7 @@ async fn qk_call(
             let _ = login.clear_all_browsing_data();
             let _ = login.close();
         }
+        state.agent.reset_for_account_change();
     }
     let result = if method.starts_with("backup.") {
         let core = state.core.clone();
@@ -257,6 +258,7 @@ async fn login(app: tauri::AppHandle, state: State) -> Result<Value> {
                     if app.get_webview_window("login").is_none() || state.login_generation.load(Ordering::SeqCst)!=generation {return Err(Error::new("ABORTED","登录已取消"));}
                     state.transfers.pause_all().await?;
                     state.core.replace_cookies(Value::Array(items))?;
+                    state.agent.reset_for_account_change();
                     state.core.call("auth.verify",Value::Null).await?;
                     let _=state.core.call("auth.getUserInfo",Value::Null).await;
                     let auth=state.core.call("auth.status",Value::Null).await?;
@@ -277,6 +279,18 @@ async fn login(app: tauri::AppHandle, state: State) -> Result<Value> {
     result
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn windows_explorer_select_arg(path: &std::path::Path) -> Result<String> {
+    let raw = path.to_string_lossy();
+    if raw.contains('"') || raw.contains('\0') {
+        return Err(Error::new(
+            "INVALID_ARG",
+            "路径包含非法字符，无法在资源管理器中定位",
+        ));
+    }
+    Ok(format!("/select,\"{raw}\""))
+}
+
 async fn open_local(path: PathBuf, reveal: bool) -> Result<Value> {
     if !path.is_absolute() || !path.exists() {
         return Err(Error::new("NOT_FOUND", "请选择存在的本地绝对路径"));
@@ -285,20 +299,37 @@ async fn open_local(path: PathBuf, reveal: bool) -> Result<Value> {
         if reveal {
             #[cfg(target_os = "macos")]
             {
-                return std::process::Command::new("open")
+                let status = std::process::Command::new("open")
                     .arg("-R")
                     .arg(&path)
                     .status()
-                    .map(|_| ())
-                    .map_err(shell_error);
+                    .map_err(shell_error)?;
+                if !status.success() {
+                    return Err(Error::new(
+                        "SYSTEM",
+                        format!("无法在访达中定位文件（退出码 {:?}）", status.code()),
+                    ));
+                }
+                return Ok(());
             }
             #[cfg(target_os = "windows")]
             {
-                return std::process::Command::new("explorer")
-                    .arg(format!("/select,{}", path.display()))
+                use std::os::windows::process::CommandExt;
+                let arg = windows_explorer_select_arg(&path)?;
+                let status = std::process::Command::new("explorer")
+                    .raw_arg(&arg)
                     .status()
-                    .map(|_| ())
-                    .map_err(shell_error);
+                    .map_err(shell_error)?;
+                if !status.success() {
+                    return Err(Error::new(
+                        "SYSTEM",
+                        format!(
+                            "无法在资源管理器中定位文件（退出码 {:?}）",
+                            status.code()
+                        ),
+                    ));
+                }
+                return Ok(());
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
@@ -498,25 +529,59 @@ fn main() {
         .expect("Tauri 应用启动失败")
         .run({
             let shutting_down = Arc::new(AtomicBool::new(false));
+            let shutdown_done = Arc::new(AtomicBool::new(false));
             move |app, event| {
                 if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                    if !shutting_down.swap(true, Ordering::SeqCst) {
+                    // 清理未完成前持续拦截重复退出请求（例如连续 Cmd+Q / 关窗），防止绕过优雅关闭。
+                    if !shutdown_done.load(Ordering::SeqCst) {
                         api.prevent_exit();
-                        let handle = app.clone();
-                        let manager = app.state::<State>().transfers.clone();
-                        let agent = app.state::<State>().agent.clone();
-                        let backup = app.state::<State>().backup.clone();
-                        tauri::async_runtime::spawn(async move {
-                            if backup.session.lock().await.is_some() {let _=tokio::time::timeout(Duration::from_secs(8),backup.cancel()).await;}
-                            let _ =
-                                tokio::time::timeout(Duration::from_secs(8), manager.pause_all())
+                        if !shutting_down.swap(true, Ordering::SeqCst) {
+                            let handle = app.clone();
+                            let manager = app.state::<State>().transfers.clone();
+                            let agent = app.state::<State>().agent.clone();
+                            let backup = app.state::<State>().backup.clone();
+                            let done = shutdown_done.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if backup.session.lock().await.is_some() {
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_secs(8),
+                                        backup.cancel(),
+                                    )
                                     .await;
-                            let _ = tokio::time::timeout(Duration::from_secs(2), agent.gateway.stop())
+                                }
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(8),
+                                    manager.pause_all(),
+                                )
                                 .await;
-                            handle.exit(0);
-                        });
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(2),
+                                    agent.gateway.stop(),
+                                )
+                                .await;
+                                done.store(true, Ordering::SeqCst);
+                                handle.exit(0);
+                            });
+                        }
                     }
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::windows_explorer_select_arg;
+    use std::path::Path;
+
+    #[test]
+    fn explorer_select_arg_quotes_spaces_and_commas_and_rejects_embedded_quotes() {
+        let with_space_comma = Path::new(r"C:\Users\Alice Smith\Docs,2026\report 1.pdf");
+        assert_eq!(
+            windows_explorer_select_arg(with_space_comma).unwrap(),
+            r#"/select,"C:\Users\Alice Smith\Docs,2026\report 1.pdf""#
+        );
+        let bad = Path::new(r#"C:\Users\bad"name.txt"#);
+        assert!(windows_explorer_select_arg(bad).is_err());
+    }
 }

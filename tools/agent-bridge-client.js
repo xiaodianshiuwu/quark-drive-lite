@@ -17,11 +17,13 @@ const CONNECT_TIMEOUT_MS = 5000;
 
 /** 桥接错误：带稳定 code，便于 MCP 层转成可读文案。 */
 class BridgeError extends Error {
-  constructor(message, { code = 'BRIDGE_ERROR', hint } = {}) {
+  constructor(message, { code = 'BRIDGE_ERROR', hint, detail, biz_code } = {}) {
     super(message);
     this.name = 'BridgeError';
     this.code = code;
     if (hint) this.hint = hint;
+    if (detail !== undefined) this.detail = detail;
+    if (biz_code !== undefined) this.biz_code = biz_code;
   }
 }
 
@@ -198,6 +200,8 @@ class BridgeClient {
     entry.reject(new BridgeError(err.message || '客户端返回了错误', {
       code: err.code || 'BRIDGE_ERROR',
       hint: err.hint,
+      detail: err.detail,
+      biz_code: err.biz_code,
     }));
   }
 

@@ -348,11 +348,20 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
   });
 
   await t.test('rename, mkdir, move, copy and confirmed removal retain their native command parameters', async () => {
+    // 改扩展名重命名时，item.ext 与图标类同步更新，随后再改回 renamed.txt 供后续断言复用
+    await click('.row [data-op="rename"]');
+    await evaluate('document.querySelector(".overlay:not(.overlay-out) .dlg-input").value="renamed.png"');
+    await click('.overlay:not(.overlay-out) .dlg-foot .btn:last-child');
+    await until('QKUI.state.items[0].name==="renamed.png"', 'renamed ext row');
+    assert.equal(await evaluate('QKUI.state.items[0].ext'), 'png');
+    assert.ok(await evaluate('document.querySelector(".row .fileicon").classList.contains("cat-image")'));
+
     await click('.row [data-op="rename"]');
     await evaluate('document.querySelector(".overlay:not(.overlay-out) .dlg-input").value="renamed.txt"');
     await click('.overlay:not(.overlay-out) .dlg-foot .btn:last-child');
     await until('QKUI.state.items[0].name==="renamed.txt"', 'renamed row');
-    assert.deepEqual(await evaluate('__fixtureCalls.find(call=>call.method==="fs.rename").params'), { fid: '7000', name: 'renamed.txt' });
+    assert.equal(await evaluate('QKUI.state.items[0].ext'), 'txt');
+    assert.deepEqual(await evaluate('__fixtureCalls.filter(call=>call.method==="fs.rename").at(-1).params'), { fid: '7000', name: 'renamed.txt' });
 
     await click('#search-clear');
     await until('QKUI.state.mode==="browse" && QKUI.state.loadedOnce && !QKUI.state.loading', 'browse after search');
@@ -365,14 +374,25 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
 
     await evaluate('__fixture.directoryMode=true;document.getElementById("search-input").value="fixture";document.getElementById("search-input").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))');
     await until('QKUI.state.items[0]?.fid==="7000" && !QKUI.state.loading', 'search to operate on file');
+    // 搜索模式下当前浏览目录是根目录 '0'，但子目录文件（pdirFid='folder-A'）必须允许移动到根目录 '0'
+    await evaluate('QKUI.state.items[0].pdirFid="folder-A"');
+    await click('.row [data-op="move"]');
+    await click('.overlay:not(.overlay-out) .dlg-foot .btn:last-child');
+    await until('!!document.querySelector(".overlay:not(.overlay-out) .dlg-confirm")', 'confirm move to root in search mode');
+    await click('.overlay:not(.overlay-out) .dlg-foot .btn:last-child');
+    await until('__fixtureCalls.some(call=>call.method==="fs.move" && call.params.toFid==="0")', 'move to root submitted');
+    await until('!document.querySelector(".overlay:not(.overlay-out)") && !QKUI.state.loading', 'search reloaded after move to root');
+    // 文件移回根目录后，再移向 folder-A 与复制到 folder-B 均应正常提交
+    await evaluate('QKUI.state.items[0].pdirFid="0"');
+
     for (const [kind, fid] of [['move', 'folder-A'], ['copy', 'folder-B']]) {
       await click('.row [data-op="' + kind + '"]');
       await click('.overlay:not(.overlay-out) .picker-row[data-fid="' + fid + '"]');
       await click('.overlay:not(.overlay-out) .dlg-foot .btn:last-child');
       await until('!!document.querySelector(".overlay:not(.overlay-out) .dlg-confirm")', 'confirm ' + kind);
       await click('.overlay:not(.overlay-out) .dlg-foot .btn:last-child');
-      await until('__fixtureCalls.some(call=>call.method==="fs.' + kind + '")', kind + ' submitted');
-      assert.deepEqual(await evaluate('__fixtureCalls.find(call=>call.method==="fs.' + kind + '").params'), { fids: ['7000'], toFid: fid });
+      await until('__fixtureCalls.some(call=>call.method==="fs.' + kind + '" && call.params.toFid===' + JSON.stringify(fid) + ')', kind + ' submitted');
+      assert.deepEqual(await evaluate('__fixtureCalls.filter(call=>call.method==="fs.' + kind + '").at(-1).params'), { fids: ['7000'], toFid: fid });
     }
     await click('.row [data-op="remove"]');
     await click('.overlay:not(.overlay-out) .dlg-foot .btn:first-child');
@@ -394,6 +414,9 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
       await click('.trow [data-tact="' + action + '"]');
       await until('document.querySelector(".trow").dataset.status===' + JSON.stringify(status), action);
     }
+    // 已取消任务显示「重试」与「清除记录」，不误显示「打开所在文件夹」
+    assert.equal(await evaluate('!!document.querySelector(".trow [data-tact=\\"retry\\"]")'), true);
+    assert.equal(await evaluate('!!document.querySelector(".trow [data-tact=\\"open\\"]")'), false);
     await click('.trow [data-tact="clear"]');
     await until('!document.querySelector(".trow")', 'canceled record cleared');
     await evaluate('QKUI.setView("files")');

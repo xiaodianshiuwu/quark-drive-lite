@@ -415,6 +415,7 @@ const BASE_AGENT_STATUS = {
   bridgeFile: '/tmp/qck-agent/bridge.json',
   journalFile: '/tmp/qck-agent/journal.jsonl',
   writeMode: 'read-only',
+  allowDelete: false,
   remoteRoots: [{ fid: 'fid-100', name: '项目资料' }],
   localReadRoots: ['/Users/tester/Downloads'],
   localWriteRoots: ['/Users/tester/work'],

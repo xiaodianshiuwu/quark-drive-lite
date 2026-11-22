@@ -656,3 +656,31 @@ test('配置状态读取失败：红色状态点与错误原因，表单保持�
   assert.equal(app.$('chat-config-form').hidden, false);
   assert.equal(app.$('chat-input').disabled, true);
 });
+
+test('已配置状态加载与展开设置表单时回填 Base URL 与模型名', async () => {
+  const app = await bootApp({ chatStatus: CONFIGURED_CHAT });
+  await app.openChat();
+
+  assert.equal(app.$('chat-base-url').value, CONFIGURED_CHAT.baseUrl);
+  assert.equal(app.$('chat-model').value, CONFIGURED_CHAT.model);
+
+  // 清空输入框后点击「设置」展开表单，应强制回填当前生效配置，避免误把空值覆盖提交
+  app.$('chat-base-url').value = '';
+  app.$('chat-model').value = '';
+  await app.click('chat-btn-settings');
+  assert.equal(app.$('chat-config-form').hidden, false);
+  assert.equal(app.$('chat-base-url').value, CONFIGURED_CHAT.baseUrl);
+  assert.equal(app.$('chat-model').value, CONFIGURED_CHAT.model);
+});
+
+test('退出登录清空对话历史并重置会话视图', async () => {
+  const app = await bootApp({ chatStatus: CONFIGURED_CHAT, history: BASE_HISTORY });
+  await app.openChat();
+  assert.equal(app.findAll('.chat-msg').length, 3);
+
+  await app.click('btn-logout-2');
+  await app.clickOverlay('ok');
+  assert.equal(app.ui.state.chat.history.length, 0);
+  assert.equal(app.findAll('.chat-msg').length, 0);
+  assert.ok(app.text('chat-messages').includes('暂无对话'));
+});

@@ -32,6 +32,8 @@ const AGENT_IDS = [
   'agent-btn-rotate',
   'agent-scope-seg',
   'agent-scope-hint',
+  'agent-delete-seg',
+  'agent-delete-hint',
   'agent-remote-roots',
   'agent-btn-add-remote',
   'agent-local-read-roots',
@@ -547,4 +549,46 @@ test('复制 MCP 配置：后端回配置时由渲染层写剪贴板；NO_BRIDGE
   await blank.openSettings();
   await blank.click('agent-btn-copy-mcp');
   assert.ok(blank.text('toasts').includes('没有可复制的 MCP 配置'));
+});
+
+test('安全文案准确表达只读与删除边界，删除权限默认关闭且开启需二次确认', async () => {
+  const app = await bootApp();
+  await app.openSettings();
+
+  // 只读模式文案准确：不能下载、上传或修改；删除开启按钮禁用
+  assert.ok(app.text('agent-scope-hint').includes('不能下载、上传或修改'));
+  assert.equal(app.text('agent-scope-hint').includes('删除接口未对 Agent 开放'), false);
+  const delSegs = app.$('agent-delete-seg').querySelectorAll('.seg');
+  const delOff = delSegs.find((b) => b.getAttribute('data-agent-delete') === 'off');
+  const delOn = delSegs.find((b) => b.getAttribute('data-agent-delete') === 'on');
+  assert.ok(delOff.hasClass('active'));
+  assert.equal(delOn.disabled, true, '只读模式下不允许开启删除权限');
+
+  // 切到授权范围内可写后，删除按钮解锁但默认仍为禁止删除
+  const scoped = app.$('agent-scope-seg').querySelectorAll('.seg')
+    .find((b) => b.getAttribute('data-agent-scope') === 'scoped-write');
+  await app.click(scoped);
+  assert.ok(app.text('agent-scope-hint').includes('删除权限需在下方单独开启'));
+  assert.equal(delOn.disabled, false);
+  assert.ok(delOff.hasClass('active'));
+
+  // 点击允许移入回收站：取消确认时不提交
+  app.setConfirmed(false);
+  const scopeBefore = app.calls.filter((c) => c.ns === 'agent' && c.name === 'setScope').length;
+  await app.click(delOn);
+  assert.equal(app.calls.filter((c) => c.ns === 'agent' && c.name === 'setScope').length, scopeBefore);
+  assert.ok(delOff.hasClass('active'));
+
+  // 确认后提交 setScope({ allowDelete: true })，再切回禁止删除提交 { allowDelete: false }
+  app.setConfirmed(true);
+  await app.click(delOn);
+  let lastScope = app.calls.filter((c) => c.ns === 'agent' && c.name === 'setScope').pop();
+  assert.deepEqual(plain(lastScope.args), [{ allowDelete: true }]);
+  assert.ok(delOn.hasClass('active'));
+  assert.ok(app.text('agent-delete-hint').includes('允许移入回收站'));
+
+  await app.click(delOff);
+  lastScope = app.calls.filter((c) => c.ns === 'agent' && c.name === 'setScope').pop();
+  assert.deepEqual(plain(lastScope.args), [{ allowDelete: false }]);
+  assert.ok(delOff.hasClass('active'));
 });

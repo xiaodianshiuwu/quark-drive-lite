@@ -32,13 +32,14 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 
-/** 客户端资料目录（与 Tauri 应用一致）。 */
-function defaultProfileDir(env = process.env) {
+/** 客户端资料目录（与 Tauri app_data_dir() 及 QK_PROFILE_DIR 一致）。 */
+function defaultProfileDir(env = process.env, platform = process.platform) {
   if (env.QCK_PROFILE_DIR) return env.QCK_PROFILE_DIR;
+  if (env.QK_PROFILE_DIR) return env.QK_PROFILE_DIR;
   const home = os.homedir();
-  if (process.platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'cn.quarkdrive.lite.tauri');
-  if (process.platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'cn.quarkdrive.lite.tauri');
-  return path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'cn.quarkdrive.lite.tauri');
+  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'cn.quarkdrive.lite.tauri');
+  if (platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'cn.quarkdrive.lite.tauri');
+  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'cn.quarkdrive.lite.tauri');
 }
 
 /** 读取 <profile>/agent/bridge.json（0600，端点与 token）。 */
@@ -117,17 +118,24 @@ function resolveBridge(env = process.env) {
   if (env.QCK_AGENT_ENDPOINT && env.QCK_AGENT_TOKEN) {
     return { endpoint: env.QCK_AGENT_ENDPOINT, token: env.QCK_AGENT_TOKEN, source: 'env' };
   }
-  const dir = env.QCK_PROFILE_DIR ? env.QCK_PROFILE_DIR : defaultProfileDir(env);
+  const dir = env.QCK_PROFILE_DIR || env.QK_PROFILE_DIR || defaultProfileDir(env);
   const cred = readBridgeCredentials(dir);
   return { endpoint: cred.endpoint, token: cred.token, source: cred.file };
 }
 
-/** 把任意异常转成面向用户的错误结果。 */
+/** 把任意异常转成面向用户的错误结果（保留 detail / biz_code 供模型判断重试策略）。 */
 function toToolErrorPayload(e) {
   if (e instanceof BridgeError) {
-    return { code: e.code, message: e.message, hint: e.hint };
+    const out = { code: e.code, message: e.message, hint: e.hint };
+    if (e.detail !== undefined) out.detail = e.detail;
+    if (e.biz_code !== undefined) out.biz_code = e.biz_code;
+    return out;
   }
-  return { code: 'INTERNAL', message: (e && e.message) || '未知错误' };
+  const out = { code: (e && e.code) || 'INTERNAL', message: (e && e.message) || '未知错误' };
+  if (e && e.hint) out.hint = e.hint;
+  if (e && e.detail !== undefined) out.detail = e.detail;
+  if (e && e.biz_code !== undefined) out.biz_code = e.biz_code;
+  return out;
 }
 
 /** 工具结果 → MCP content 块。刻意同时给出文本与结构化内容，兼容只读文本的客户端。 */
@@ -146,10 +154,17 @@ function toErrorResult(payload) {
   if (payload.code) lines.push(`错误码：${payload.code}`);
   if (payload.hint) lines.push(`建议：${payload.hint}`);
   // 上游服务端的原始信息（例如 "move file fail:[不能移动至相同目录]"）：
-  // 本地化文案会把它概括掉，但对判断"该重试还是该换目标"至关重要。
-  const upstream = payload.detail && payload.detail.upstream_message;
+  // Rust 网关返回字符串 detail + 顶层 biz_code；兼容旧对象 detail.upstream_message。
+  const upstream = typeof payload.detail === 'string'
+    ? payload.detail
+    : (payload.detail && payload.detail.upstream_message);
+  const biz = payload.biz_code !== undefined
+    ? payload.biz_code
+    : (payload.detail && payload.detail.upstream_code);
   if (upstream) {
-    lines.push(`服务端原始信息：${upstream}${payload.detail.upstream_code !== undefined ? `（code=${payload.detail.upstream_code}）` : ''}`);
+    lines.push(`服务端原始信息：${upstream}${biz !== undefined ? `（code=${biz}）` : ''}`);
+  } else if (biz !== undefined) {
+    lines.push(`服务端错误码：${biz}`);
   }
   return {
     resultType: 'complete',
@@ -191,10 +206,24 @@ function createSession(opts = {}) {
     return client;
   }
 
+  const RECONNECT_CODES = new Set([
+    'BRIDGE_CLOSED',
+    'BRIDGE_UNAVAILABLE',
+    'BRIDGE_TIMEOUT',
+    'AGENT_UNAUTHORIZED',
+  ]);
+
   function resetClient() {
     if (client) {
       try { client.close(); } catch { /* ignore */ }
       client = null;
+    }
+    toolsCache = null;
+  }
+
+  function maybeResetForError(e) {
+    if (e instanceof BridgeError && RECONNECT_CODES.has(e.code)) {
+      resetClient();
     }
   }
 
@@ -299,6 +328,7 @@ function createSession(opts = {}) {
         try {
           tools = toolsCache || await loadTools();
         } catch (e) {
+          maybeResetForError(e);
           const payload = toToolErrorPayload(e);
           return {
             jsonrpc: '2.0',
@@ -347,6 +377,7 @@ function createSession(opts = {}) {
             return { jsonrpc: '2.0', id, error: { code: RPC.INVALID_PARAMS, message: `未知工具：${name}` } };
           }
         } catch (e) {
+          maybeResetForError(e);
           const payload = toToolErrorPayload(e);
           return { jsonrpc: '2.0', id, result: toErrorResult(payload) };
         }
@@ -354,10 +385,8 @@ function createSession(opts = {}) {
           const result = await getClient().callTool(name, args, { timeoutMs: callTimeoutMs });
           return { jsonrpc: '2.0', id, result: toContentResult(result) };
         } catch (e) {
-          // 连接类错误后重置连接，下一次调用会重新建立（客户端重启后无需重启适配器）
-          if (e instanceof BridgeError && ['BRIDGE_CLOSED', 'BRIDGE_UNAVAILABLE', 'BRIDGE_TIMEOUT'].includes(e.code)) {
-            resetClient();
-          }
+          // 连接类错误或凭据轮换（AGENT_UNAUTHORIZED）后重置连接，下一次调用自动重读 bridge.json 并重连
+          maybeResetForError(e);
           // 工具执行错误 → 正常结果 + isError:true（规范明确要求，否则模型看不到错误）
           return { jsonrpc: '2.0', id, result: toErrorResult(toToolErrorPayload(e)) };
         }
@@ -417,9 +446,11 @@ function main() {
   });
 
   rl.on('close', () => {
-    // stdin EOF：唯一可移植的优雅关闭信号
-    session.shutdown();
-    process.exit(0);
+    // stdin EOF：等待队列中已入队的请求全部完成并写出后再退出，避免管道输入截断响应。
+    queue.finally(() => {
+      session.shutdown();
+      process.exit(0);
+    });
   });
 
   process.on('SIGTERM', () => { session.shutdown(); process.exit(0); });
@@ -436,4 +467,14 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { createSession, resolveBridge, toContentResult, toErrorResult, SERVER_NAME, NEW_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSIONS };
+module.exports = {
+  createSession,
+  defaultProfileDir,
+  resolveBridge,
+  toToolErrorPayload,
+  toContentResult,
+  toErrorResult,
+  SERVER_NAME,
+  NEW_PROTOCOL_VERSION,
+  LEGACY_PROTOCOL_VERSIONS,
+};

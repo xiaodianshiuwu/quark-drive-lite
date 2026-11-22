@@ -287,12 +287,25 @@
         <div class="setrow">
           <div class="setlabel">
             <div class="setname">写入模式</div>
-            <div class="sethint" id="agent-scope-hint">只读：Agent 只能浏览、搜索与下载，不能修改网盘内容。</div>
+            <div class="sethint" id="agent-scope-hint">只读：Agent 只能浏览、搜索与读取已授权本地文件，不能下载、上传或修改网盘内容。</div>
           </div>
           <div class="setcontrol">
             <div class="segmented" id="agent-scope-seg" role="radiogroup" aria-label="写入模式">
               <button type="button" class="seg" data-agent-scope="read-only" role="radio" aria-checked="false">只读</button>
               <button type="button" class="seg" data-agent-scope="scoped-write" role="radio" aria-checked="false">授权范围内可写</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">删除权限</div>
+            <div class="sethint" id="agent-delete-hint">禁止删除（默认）：即使开启写入模式，Agent 也不能删除网盘文件。</div>
+          </div>
+          <div class="setcontrol">
+            <div class="segmented" id="agent-delete-seg" role="radiogroup" aria-label="删除权限">
+              <button type="button" class="seg" data-agent-delete="off" role="radio" aria-checked="false">禁止删除</button>
+              <button type="button" class="seg" data-agent-delete="on" role="radio" aria-checked="false">允许移入回收站</button>
             </div>
           </div>
         </div>

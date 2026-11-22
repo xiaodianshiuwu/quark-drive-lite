@@ -22,13 +22,14 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 
-/** 客户端资料目录（与 Tauri 应用一致）。 */
-function defaultProfileDir(env = process.env) {
+/** 客户端资料目录（与 Tauri app_data_dir() 及 QK_PROFILE_DIR 一致）。 */
+function defaultProfileDir(env = process.env, platform = process.platform) {
   if (env.QCK_PROFILE_DIR) return env.QCK_PROFILE_DIR;
+  if (env.QK_PROFILE_DIR) return env.QK_PROFILE_DIR;
   const home = os.homedir();
-  if (process.platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'cn.quarkdrive.lite.tauri');
-  if (process.platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'cn.quarkdrive.lite.tauri');
-  return path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'cn.quarkdrive.lite.tauri');
+  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'cn.quarkdrive.lite.tauri');
+  if (platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'cn.quarkdrive.lite.tauri');
+  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'cn.quarkdrive.lite.tauri');
 }
 
 /** 读取 <profile>/agent/bridge.json（0600，端点与 token）。 */
@@ -70,7 +71,7 @@ function resolveBridge(env = process.env) {
   if (env.QCK_AGENT_ENDPOINT && env.QCK_AGENT_TOKEN) {
     return { endpoint: env.QCK_AGENT_ENDPOINT, token: env.QCK_AGENT_TOKEN };
   }
-  const dir = env.QCK_PROFILE_DIR ? env.QCK_PROFILE_DIR : defaultProfileDir(env);
+  const dir = env.QCK_PROFILE_DIR || env.QK_PROFILE_DIR || defaultProfileDir(env);
   const cred = readBridgeCredentials(dir);
   return { endpoint: cred.endpoint, token: cred.token };
 }
@@ -145,6 +146,11 @@ async function main(argv) {
     if (e instanceof BridgeError) {
       process.stderr.write(`失败：${e.message}\n`);
       if (e.hint) process.stderr.write(`建议：${e.hint}\n`);
+      if (e.detail) {
+        const d = typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail);
+        process.stderr.write(`详情：${d}\n`);
+      }
+      if (e.biz_code !== undefined) process.stderr.write(`业务码：${e.biz_code}\n`);
       process.stderr.write(`错误码：${e.code}\n`);
       return e.code && e.code.startsWith('BRIDGE') ? 3 : 1;
     }
