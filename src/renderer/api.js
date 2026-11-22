@@ -232,7 +232,10 @@
     normalizeError: normalizeError,
     has: hasMethod,
 
-    app: { quit: expose('app', 'quit') },
+    app: {
+      quit: expose('app', 'quit'),
+      info: expose('app', 'info', { silent: true, fallback: null })
+    },
 
     auth: {
       status: expose('auth', 'status'),
@@ -270,6 +273,9 @@
       retry: expose('transfer', 'retry'),
       cancel: expose('transfer', 'cancel'),
       clear: expose('transfer', 'clear'),
+      pauseAll: expose('transfer', 'pauseAll', { silent: true, fallback: null }),
+      resumeAll: expose('transfer', 'resumeAll', { silent: true, fallback: null }),
+      retryFailed: expose('transfer', 'retryFailed', { silent: true, fallback: null }),
       /** 非契约必需（主进程可能提供）：在资源管理器中定位该任务的文件。 */
       openItem: expose('transfer', 'openItem', { silent: true, fallback: null }),
       onUpdate: function (cb) {
@@ -285,6 +291,8 @@
       openPath: expose('dialog', 'openPath'),
       showInFolder: expose('dialog', 'showInFolder'),
       onFilesDropped: function (cb) { return subscribe([['dialog', 'onFilesDropped']], cb); },
+      onDragEnter: function (cb) { return subscribe([['dialog', 'onDragEnter']], cb); },
+      onDragLeave: function (cb) { return subscribe([['dialog', 'onDragLeave']], cb); },
       /**
        * 拖拽上传取真实路径（封装 webUtils.getPathForFile）。
        * 桥接层未暴露或返回空时返回 ''，由 UI 提示改用上传按钮。
@@ -409,6 +417,10 @@
       remove: expose('fs', 'remove'),
       taskStatus: expose('fs', 'taskStatus')
     };
+    api.app = {
+      quit: expose('app', 'quit', { silent: true, fallback: null }),
+      info: expose('app', 'info', { silent: true, fallback: { version: '0.3.0-beta.1', runtime: 'Mock 预览', platform: 'mock', arch: 'mock' } })
+    };
     api.transfer = {
       list: expose('transfer', 'list'),
       upload: expose('transfer', 'upload'),
@@ -418,6 +430,9 @@
       retry: expose('transfer', 'retry'),
       cancel: expose('transfer', 'cancel'),
       clear: expose('transfer', 'clear'),
+      pauseAll: expose('transfer', 'pauseAll', { silent: true, fallback: null }),
+      resumeAll: expose('transfer', 'resumeAll', { silent: true, fallback: null }),
+      retryFailed: expose('transfer', 'retryFailed', { silent: true, fallback: null }),
       openItem: expose('transfer', 'openItem', { silent: true, fallback: null }),
       onUpdate: function (cb) { return subscribe([['transfer', 'onUpdate']], cb); }
     };
@@ -428,6 +443,9 @@
       confirm: expose('dialog', 'confirm'),
       openPath: expose('dialog', 'openPath'),
       showInFolder: expose('dialog', 'showInFolder'),
+      onFilesDropped: function (cb) { return subscribe([['dialog', 'onFilesDropped']], cb); },
+      onDragEnter: function (cb) { return subscribe([['dialog', 'onDragEnter']], cb); },
+      onDragLeave: function (cb) { return subscribe([['dialog', 'onDragLeave']], cb); },
       getPathForFile: function (file) {
         if (!qk.dialog || typeof qk.dialog.getPathForFile !== 'function') return '';
         try {
@@ -435,6 +453,18 @@
           return typeof p === 'string' ? p : '';
         } catch (e) { return ''; }
       }
+    };
+    api.backup = {
+      plan: expose('backup', 'plan'),
+      start: expose('backup', 'start'),
+      status: expose('backup', 'status'),
+      retry: expose('backup', 'retry'),
+      cancel: expose('backup', 'cancel'),
+      verify: expose('backup', 'verify'),
+      pause: expose('backup', 'pause'),
+      resume: expose('backup', 'resume'),
+      tasks: expose('backup', 'tasks'),
+      export: expose('backup', 'export')
     };
     api.settings = { get: expose('settings', 'get'), set: expose('settings', 'set') };
     api.agent = {
@@ -546,7 +576,13 @@
       downloadDir: 'C:\\Users\\Public\\Downloads',
       uploadConcurrency: 2,
       downloadConcurrency: 2,
-      theme: 'light'
+      downloadParallel: 16,
+      downloadStrategy: 'auto',
+      uploadPartConcurrency: 3,
+      theme: 'light',
+      aiBetaEnabled: false,
+      viewMode: 'list',
+      sortBy: 'file_type:asc,updated_at:desc'
     };
 
     /* ---------- 异步任务（mkdir/move/copy/remove 受理后延迟完成） ---------- */
@@ -844,12 +880,41 @@
           emitTransfers();
           return Promise.resolve();
         },
+        pauseAll: function () {
+          var count = 0;
+          transfers.forEach(function (t) {
+            if (t.status === 'running' || t.status === 'queued') { t.status = 'paused'; t.speed = 0; count += 1; }
+          });
+          emitTransfers();
+          return Promise.resolve({ count: count });
+        },
+        resumeAll: function () {
+          var count = 0;
+          transfers.forEach(function (t) {
+            if (t.status === 'paused') { t.status = 'running'; t.speed = t.kind === 'download' ? 3.4 * MB : 1.15 * MB; count += 1; }
+          });
+          ensureTimer(); emitTransfers();
+          return Promise.resolve({ count: count });
+        },
+        retryFailed: function () {
+          var count = 0;
+          transfers.forEach(function (t) {
+            if (t.status === 'error') { t.status = 'running'; t.error = undefined; t.errorCode = undefined; t.attempts += 1; t.speed = 2.1 * MB; count += 1; }
+          });
+          ensureTimer(); emitTransfers();
+          return Promise.resolve({ count: count });
+        },
         openItem: function () { return Promise.resolve(); },
         onUpdate: function (cb) {
           if (typeof cb !== 'function') return function () {};
           transferSubs.push(cb);
           return function () { var i = transferSubs.indexOf(cb); if (i >= 0) transferSubs.splice(i, 1); };
         }
+      },
+
+      app: {
+        quit: function () { return Promise.resolve(); },
+        info: function () { return Promise.resolve({ version: '0.3.0-beta.1', runtime: 'Tauri 2 + Rust (演示)', platform: 'preview', arch: 'mock' }); }
       },
 
       dialog: {
@@ -867,6 +932,9 @@
         },
         openPath: function (pth) { pushToast('info', '（假数据模式）打开：' + pth); return Promise.resolve(); },
         showInFolder: function (pth) { pushToast('info', '（假数据模式）定位：' + pth); return Promise.resolve(); },
+        onFilesDropped: function () { return function () {}; },
+        onDragEnter: function () { return function () {}; },
+        onDragLeave: function () { return function () {}; },
         getPathForFile: function () { return ''; }   // 模拟"拿不到真实路径"，用于验证降级提示
       },
 

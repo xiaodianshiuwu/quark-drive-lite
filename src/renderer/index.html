@@ -6,7 +6,7 @@
 <!--
   内容安全策略：默认禁止一切外部资源。
   connect-src 仅允许 Tauri 本机 IPC；全部夸克与传输网络访问由 Rust 核心承担。
-  script-src / style-src 允许 'self' 与 file:，以便在 Electron(file://) 与本地浏览器中均可直接打开本页调试。
+  script-src / style-src 允许 'self' 与 file:，以便在本地浏览器调试与桌面端均可直接加载。
 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; img-src 'self' file: data:; font-src 'self' file:; connect-src ipc: http://ipc.localhost https://ipc.localhost; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
@@ -43,9 +43,10 @@
         <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-backup"></use></svg>
         <span>备份</span>
       </button>
-      <button type="button" class="nav-item" data-view="chat">
+      <button type="button" class="nav-item" id="nav-chat" data-view="chat" hidden>
         <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-chat"></use></svg>
         <span>对话</span>
+        <span class="beta-badge beta-badge-nav">Beta</span>
       </button>
       <button type="button" class="nav-item" data-view="settings">
         <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-settings"></use></svg>
@@ -53,18 +54,45 @@
       </button>
     </nav>
 
+    <!-- 侧栏实时传输迷你胶囊（有活跃传输时显示） -->
+    <button type="button" class="sidebar-transfer-mini" id="sidebar-transfer-mini" hidden title="查看正在进行的传输任务">
+      <span class="mini-pulse" aria-hidden="true"></span>
+      <span class="mini-text" id="sidebar-transfer-text">传输中…</span>
+    </button>
+
+    <!-- 侧栏云盘空间用量卡（登录后展示，窄窗口也清晰可见） -->
+    <div class="sidebar-quota" id="sidebar-quota" hidden>
+      <div class="sidebar-quota-head">
+        <span class="sidebar-quota-label">网盘空间</span>
+        <span class="sidebar-quota-pct" id="sidebar-quota-pct"></span>
+      </div>
+      <div class="sidebar-quota-bar"><i id="sidebar-quota-fill"></i></div>
+      <div class="sidebar-quota-sub" id="sidebar-quota-text"></div>
+    </div>
+
     <div class="sidebar-foot" id="sidebar-foot"></div>
-    <button type="button" class="btn btn-ghost btn-quit" id="btn-quit" title="退出应用并保存任务进度">退出客户端</button>
+    <button type="button" class="btn btn-ghost btn-quit" id="btn-quit" title="退出应用并保存任务进度">
+      <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-logout"></use></svg>
+      <span>退出客户端</span>
+    </button>
   </aside>
 
   <!-- ======================= 右侧主区 ======================= -->
   <main class="main">
 
-    <!-- 顶栏：面包屑 + 搜索 + 操作 + 账号区 -->
+    <!-- 顶栏：导航控制组 + 面包屑 + 搜索 + 操作 + 账号区 -->
     <header class="topbar">
       <div class="directory-nav" id="directory-nav">
-        <button type="button" class="btn btn-up" id="btn-up" title="返回上一级目录（Alt+↑）" aria-label="返回上一级目录" disabled>
-          <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-chevron"></use></svg>
+        <div class="nav-history" role="group" aria-label="目录历史">
+          <button type="button" class="btn btn-icon btn-nav-hist" id="btn-back" title="后退（Alt+←）" aria-label="后退" disabled>
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
+          </button>
+          <button type="button" class="btn btn-icon btn-nav-hist" id="btn-forward" title="前进（Alt+→）" aria-label="前进" disabled>
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
+          </button>
+        </div>
+        <button type="button" class="btn btn-up" id="btn-up" title="返回上一级目录（Alt+↑ / Backspace）" aria-label="返回上一级目录" disabled>
+          <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-arrow-up"></use></svg>
           <span id="btn-up-label">上一级</span>
         </button>
         <div class="crumbs" id="crumbs" aria-label="目录路径"></div>
@@ -73,13 +101,14 @@
       <div class="topbar-tools">
         <div class="search" id="search-box">
           <svg viewBox="0 0 24 24" class="ic search-icon" aria-hidden="true"><use href="#i-search"></use></svg>
-          <input type="search" id="search-input" placeholder="搜索文件名称" autocomplete="off" spellcheck="false" aria-label="搜索文件名称">
+          <input type="search" id="search-input" placeholder="搜索全盘文件名" autocomplete="off" spellcheck="false" aria-label="搜索文件名称">
+          <kbd class="search-kbd" id="search-kbd" aria-hidden="true">⌘F</kbd>
           <button type="button" class="search-clear" id="search-clear" title="清空搜索" aria-label="清空搜索" hidden>
             <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-close"></use></svg>
           </button>
         </div>
 
-        <button type="button" class="btn btn-icon" id="btn-refresh" title="刷新当前目录" aria-label="刷新当前目录">
+        <button type="button" class="btn btn-icon" id="btn-refresh" title="刷新当前目录（F5）" aria-label="刷新当前目录">
           <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-refresh"></use></svg>
         </button>
 
@@ -100,6 +129,43 @@
     <!-- ======================= 视图：全部文件 ======================= -->
     <section class="view" id="view-files">
 
+      <!-- 文件管理增强栏：分类快筛 + 排序 + 列表/网格切换 + 属性侧栏开关 -->
+      <div class="file-subbar" id="file-subbar">
+        <div class="filter-pills" id="filter-pills" role="tablist" aria-label="按类型筛选当前列表">
+          <button type="button" class="pill active" data-filter="all" role="tab" aria-selected="true">全部</button>
+          <button type="button" class="pill" data-filter="dir" role="tab" aria-selected="false">文件夹</button>
+          <button type="button" class="pill" data-filter="image" role="tab" aria-selected="false">图片</button>
+          <button type="button" class="pill" data-filter="video" role="tab" aria-selected="false">视频</button>
+          <button type="button" class="pill" data-filter="doc" role="tab" aria-selected="false">文档</button>
+          <button type="button" class="pill" data-filter="audio" role="tab" aria-selected="false">音频</button>
+          <button type="button" class="pill" data-filter="archive" role="tab" aria-selected="false">压缩包</button>
+        </div>
+
+        <div class="file-subbar-right">
+          <select id="sort-select" class="input input-sm sort-select" aria-label="排序方式" title="切换目录排序方式">
+            <option value="file_type:asc,updated_at:desc">最新修改</option>
+            <option value="file_type:asc,updated_at:asc">最早修改</option>
+            <option value="file_type:asc,file_name:asc">名称 A → Z</option>
+            <option value="file_type:asc,file_name:desc">名称 Z → A</option>
+            <option value="file_type:asc,size:desc">文件从大到小</option>
+            <option value="file_type:asc,size:asc">文件从小到大</option>
+          </select>
+
+          <div class="segmented segmented-compact" id="view-mode-seg" role="radiogroup" aria-label="视图模式">
+            <button type="button" class="seg active" data-mode="list" role="radio" aria-checked="true" title="列表视图" aria-label="列表视图">
+              <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-view-list"></use></svg>
+            </button>
+            <button type="button" class="seg" data-mode="grid" role="radio" aria-checked="false" title="网格视图" aria-label="网格视图">
+              <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-view-grid"></use></svg>
+            </button>
+          </div>
+
+          <button type="button" class="btn btn-sm btn-icon" id="btn-inspector" title="切换文件详情侧栏" aria-label="切换文件详情侧栏" aria-pressed="false">
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-sidebar-right"></use></svg>
+          </button>
+        </div>
+      </div>
+
       <div class="bulkbar" id="bulkbar" hidden>
         <span class="bulk-count" id="bulk-count">已选 0 项</span>
         <div class="bulk-actions">
@@ -119,22 +185,48 @@
         </div>
       </div>
 
-      <div class="listhead" id="listhead">
-        <span class="cb-cell">
-          <label class="cb" title="全选已加载的项目">
-            <input type="checkbox" id="check-all" aria-label="全选已加载的项目">
-            <i aria-hidden="true"></i>
-          </label>
-        </span>
-        <span class="col-name">名称</span>
-        <span class="col-size">大小</span>
-        <span class="col-time">修改时间</span>
-        <span class="col-ops">操作</span>
-      </div>
+      <div class="file-workspace">
+        <div class="file-card">
+          <div class="listhead" id="listhead">
+            <span class="cb-cell">
+              <label class="cb" title="全选已加载的项目">
+                <input type="checkbox" id="check-all" aria-label="全选已加载的项目">
+                <i aria-hidden="true"></i>
+              </label>
+            </span>
+            <span class="col-name">
+              <button type="button" class="sort-btn" data-sort-col="file_name">名称<span class="sort-ind" aria-hidden="true"></span></button>
+            </span>
+            <span class="col-size">
+              <button type="button" class="sort-btn" data-sort-col="size">大小<span class="sort-ind" aria-hidden="true"></span></button>
+            </span>
+            <span class="col-time">
+              <button type="button" class="sort-btn" data-sort-col="updated_at">修改时间<span class="sort-ind" aria-hidden="true"></span></button>
+            </span>
+            <span class="col-ops">操作</span>
+          </div>
 
-      <div class="listwrap" id="listwrap" tabindex="-1">
-        <div class="list" id="list" role="list"></div>
-        <div class="listfoot" id="listfoot"></div>
+          <div class="listwrap" id="listwrap" tabindex="-1">
+            <div class="list" id="list" role="list"></div>
+            <div class="listfoot" id="listfoot"></div>
+          </div>
+
+          <div class="file-statusbar" id="file-statusbar">
+            <span class="statusbar-left" id="statusbar-summary">准备就绪</span>
+            <span class="statusbar-right" id="statusbar-hint">Alt+↑ 上一级 · Backspace 返回 · ⌘F 搜索</span>
+          </div>
+        </div>
+
+        <!-- 右侧文件详情侧抽屉 -->
+        <aside class="inspector" id="file-inspector" hidden aria-label="文件详情">
+          <div class="inspector-head">
+            <span class="inspector-title">文件详情</span>
+            <button type="button" class="btn btn-sm btn-icon btn-ghost" id="btn-inspector-close" title="收起详情" aria-label="收起详情">
+              <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-close"></use></svg>
+            </button>
+          </div>
+          <div class="inspector-body" id="inspector-body"></div>
+        </aside>
       </div>
     </section>
 
@@ -144,9 +236,26 @@
         <h2 class="section-title">传输列表</h2>
         <div class="section-actions">
           <span class="muted" id="transfers-summary"></span>
+          <button type="button" class="btn btn-sm btn-ghost" id="btn-pause-all" hidden>全部暂停</button>
+          <button type="button" class="btn btn-sm btn-ghost" id="btn-resume-all" hidden>全部继续</button>
+          <button type="button" class="btn btn-sm btn-ghost" id="btn-retry-failed" hidden>重试失败</button>
           <button type="button" class="btn btn-sm btn-ghost" id="btn-clear-finished">清除已结束记录</button>
         </div>
       </div>
+
+      <div class="transfer-bar" id="transfer-bar">
+        <div class="filter-pills" id="transfer-filters" role="tablist" aria-label="筛选传输状态">
+          <button type="button" class="pill active" data-tfilter="all" role="tab" aria-selected="true">全部</button>
+          <button type="button" class="pill" data-tfilter="active" role="tab" aria-selected="false">进行中</button>
+          <button type="button" class="pill" data-tfilter="paused" role="tab" aria-selected="false">已暂停</button>
+          <button type="button" class="pill" data-tfilter="done" role="tab" aria-selected="false">已完成</button>
+          <button type="button" class="pill" data-tfilter="error" role="tab" aria-selected="false">失败</button>
+        </div>
+        <div class="transfer-speed-strip" id="transfer-speed-strip" hidden>
+          <span id="transfer-speed-text"></span>
+        </div>
+      </div>
+
       <div class="tlist" id="tlist"></div>
     </section>
 
@@ -225,8 +334,8 @@
 
         <div class="setrow">
           <div class="setlabel">
-            <div class="setname">主题</div>
-            <div class="sethint">深浅色跟随设置持久化保存。</div>
+            <div class="setname">主题外观</div>
+            <div class="sethint">深浅色主题持久化保存，启动即自动应用。</div>
           </div>
           <div class="setcontrol">
             <div class="segmented" id="set-theme" role="radiogroup" aria-label="主题">
@@ -251,14 +360,21 @@
         </div>
       </div>
 
-      <div class="setcard">
+      <!-- AI 实验室（Beta 测试功能）：默认关闭，手动开启后才展示「对话」与「Agent 接入」 -->
+      <div class="setcard setcard-beta" id="ai-beta-card">
         <div class="setrow">
           <div class="setlabel">
-            <div class="setname">运行环境</div>
-            <div class="sethint" id="set-env">—</div>
+            <div class="setname setname-badge">
+              <span>AI 实验室</span>
+              <span class="beta-badge">Beta 测试功能</span>
+            </div>
+            <div class="sethint" id="ai-beta-hint">默认关闭以保持极简网盘体验。手动开启后，侧栏将展示「对话 (Beta)」并展开下方「Agent / MCP 接入」配置；全部 AI 能力均运行在本地授权边界内且默认只读。</div>
           </div>
           <div class="setcontrol">
-            <button type="button" class="btn btn-sm btn-ghost" id="btn-env-check">重新检测桥接层</button>
+            <div class="segmented" id="set-ai-beta" role="radiogroup" aria-label="AI 测试功能开关">
+              <button type="button" class="seg active" data-ai-beta="off" role="radio" aria-checked="true">关闭</button>
+              <button type="button" class="seg" data-ai-beta="on" role="radio" aria-checked="false">开启 Beta</button>
+            </div>
           </div>
         </div>
       </div>
@@ -266,11 +382,15 @@
       <!--
         Agent 接入：只做「启停 / 授权范围 / 操作记录 / MCP 配置」，不是聊天窗口。
         界面只展示路径与状态，绝不展示 token、Cookie 或桥接凭据文件内容。
+        默认折叠隐藏，开启上方「AI 实验室 (Beta)」开关后展示。
       -->
-      <div class="setcard" id="agent-card">
+      <div class="setcard" id="agent-card" hidden>
         <div class="setrow">
           <div class="setlabel">
-            <div class="setname">Agent 接入</div>
+            <div class="setname setname-badge">
+              <span>Agent 接入</span>
+              <span class="beta-badge">Beta</span>
+            </div>
             <div class="sethint" id="agent-status-text">未启用</div>
             <div class="sethint" id="agent-status-hint">外部 Agent 通过本机套接字连接客户端，仅能访问下面授权的目录。</div>
             <div class="sethint agent-error" id="agent-status-error" hidden></div>
@@ -357,6 +477,32 @@
           </div>
           <div class="setcontrol agent-actions">
             <button type="button" class="btn btn-sm" id="agent-btn-copy-mcp">复制配置</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="setcard">
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">版本与运行环境</div>
+            <div class="sethint" id="app-version-text">夸克网盘极简版 · Tauri 2 + Rust</div>
+            <div class="sethint" id="set-env">—</div>
+          </div>
+          <div class="setcontrol">
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-env-check">重新检测桥接层</button>
+          </div>
+        </div>
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">常用快捷键</div>
+            <div class="shortcuts-grid">
+              <span><kbd>Alt+↑</kbd> / <kbd>Backspace</kbd> 返回上一级</span>
+              <span><kbd>Alt+←</kbd> / <kbd>Alt+→</kbd> 后退 / 前进</span>
+              <span><kbd>Ctrl/⌘+F</kbd> 聚焦搜索</span>
+              <span><kbd>F2</kbd> 重命名选中项</span>
+              <span><kbd>Enter</kbd> 打开 / 下载</span>
+              <span><kbd>Ctrl/⌘+A</kbd> 全选 · <kbd>Del</kbd> 删除</span>
+            </div>
           </div>
         </div>
       </div>
@@ -448,10 +594,13 @@
       </div>
     </section>
 
-    <!-- ======================= 视图：对话 ======================= -->
+    <!-- ======================= 视图：对话（Beta 测试功能） ======================= -->
     <section class="view" id="view-chat" hidden>
       <div class="section-head">
-        <h2 class="section-title">对话</h2>
+        <h2 class="section-title section-title-badge">
+          <span>对话</span>
+          <span class="beta-badge">Beta 测试功能</span>
+        </h2>
         <div class="section-actions">
           <span class="muted" id="chat-summary"></span>
           <button type="button" class="btn btn-sm btn-ghost" id="chat-btn-clear">清空对话</button>
@@ -463,7 +612,7 @@
         <div class="setrow">
           <div class="setlabel">
             <div class="setname">大模型服务</div>
-            <div class="sethint" id="chat-card-hint">对话由你自己填写的模型服务提供，客户端不内置模型、不经过中间服务。</div>
+            <div class="sethint" id="chat-card-hint">对话为 Beta 测试功能，由你自己填写的模型服务提供，客户端不内置模型、不经过中间服务。可在「设置 → AI 实验室」中随时关闭。</div>
           </div>
           <div class="setcontrol chat-card-state">
             <span class="agent-dot" id="chat-card-dot"></span>
@@ -540,53 +689,52 @@
 
 <!-- ======================= 内联图标（无外部资源） ======================= -->
 <svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
-  <symbol id="i-cloud" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.95 5.5 5.5 0 0 0-10.5-1.3A3.9 3.9 0 0 0 7 18z"/></symbol>
-  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1l1.9 2.2h8A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/></symbol>
-  <symbol id="i-folder-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1l1.9 2.2h8A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 11.5v5M9.5 14h5"/></symbol>
-  <symbol id="i-folder-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h3.1l1.9 2h5A2 2 0 0 1 17 8v1"/><path d="M3.4 10h16.2a1.5 1.5 0 0 1 1.45 1.9l-1.7 6A1.5 1.5 0 0 1 17.9 19H5a2 2 0 0 1-2-2z"/></symbol>
-  <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
-  <symbol id="i-file-doc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M8.5 13h7M8.5 16.5h4.5"/></symbol>
-  <symbol id="i-file-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><circle cx="9.5" cy="12" r="1.3"/><path d="M7.5 18l3.2-3.2 2.3 2.3 1.8-1.8 1.7 1.7"/></symbol>
-  <symbol id="i-file-audio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M14.5 12.2v5.2"/><circle cx="13" cy="18" r="1.6"/><path d="M14.5 12.2l2.3-.6v5"/></symbol>
-  <symbol id="i-file-archive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M10 12h2.5M10 15h2.5M11.5 18h.01"/></symbol>
-  <symbol id="i-file-video" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M8 11.5h8M8 15h8M10.5 11.5v8M14 11.5v8"/></symbol>
-  <symbol id="i-file-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M10.5 13.5 8.5 15.5l2 2M13.5 13.5l2 2-2 2"/></symbol>
-  <symbol id="i-transfer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4v13M4.5 13.5 8 17l3.5-3.5"/><path d="M16 20V7M12.5 10.5 16 7l3.5 3.5"/></symbol>
-  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.1 14.6a1.6 1.6 0 0 0 .32 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.32 1.6 1.6 0 0 0-.97 1.47V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1.05-1.46 1.6 1.6 0 0 0-1.77.32l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .32-1.77 1.6 1.6 0 0 0-1.47-.97H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.46-1.05 1.6 1.6 0 0 0-.32-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.32H8.9a1.6 1.6 0 0 0 .97-1.47V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 .97 1.47 1.6 1.6 0 0 0 1.77-.32l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.32 1.77v.08a1.6 1.6 0 0 0 1.47.97H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.47.97z"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.95 5.5 5.5 0 0 0-10.5-1.3A3.9 3.9 0 0 0 7 18z"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1l1.9 2.2h8A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/></symbol>
+  <symbol id="i-folder-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1l1.9 2.2h8A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 11.5v5M9.5 14h5"/></symbol>
+  <symbol id="i-folder-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h3.1l1.9 2h5A2.5 2.5 0 0 1 17 8v1"/><path d="M3.4 10h16.2a1.5 1.5 0 0 1 1.45 1.9l-1.7 6A1.5 1.5 0 0 1 17.9 19H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+  <symbol id="i-file-doc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M8.5 13h7M8.5 16.5h4.5"/></symbol>
+  <symbol id="i-file-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><circle cx="9.5" cy="12" r="1.3"/><path d="M7.5 18l3.2-3.2 2.3 2.3 1.8-1.8 1.7 1.7"/></symbol>
+  <symbol id="i-file-audio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M14.5 12.2v5.2"/><circle cx="13" cy="18" r="1.6"/><path d="M14.5 12.2l2.3-.6v5"/></symbol>
+  <symbol id="i-file-archive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M10 12h2.5M10 15h2.5M11.5 18h.01"/></symbol>
+  <symbol id="i-file-video" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M10.2 12.3l4.3 2.7-4.3 2.7z"/></symbol>
+  <symbol id="i-file-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M10.5 13.5 8.5 15.5l2 2M13.5 13.5l2 2-2 2"/></symbol>
+  <symbol id="i-transfer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4v13M4.5 13.5 8 17l3.5-3.5"/><path d="M16 20V7M12.5 10.5 16 7l3.5 3.5"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.1 14.6a1.6 1.6 0 0 0 .32 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.32 1.6 1.6 0 0 0-.97 1.47V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1.05-1.46 1.6 1.6 0 0 0-1.77.32l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .32-1.77 1.6 1.6 0 0 0-1.47-.97H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.46-1.05 1.6 1.6 0 0 0-.32-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.32H8.9a1.6 1.6 0 0 0 .97-1.47V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 .97 1.47 1.6 1.6 0 0 0 1.77-.32l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.32 1.77v.08a1.6 1.6 0 0 0 1.47.97H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.47.97z"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
-  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.35-5.65"/><path d="M20 4.5V9h-4.5"/></symbol>
-  <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16.5V5"/><path d="M7.5 9.5 12 5l4.5 4.5"/><path d="M5 19.5h14"/></symbol>
-  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v11.5"/><path d="M7.5 12 12 16.5 16.5 12"/><path d="M5 19.5h14"/></symbol>
-  <symbol id="i-rename" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10-10-4-4L4 16z"/><path d="M13.5 5.5l4 4"/></symbol>
-  <symbol id="i-move" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1l1.9 2.2h8A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M10 13.5h5M12.8 11l2.6 2.5-2.6 2.5"/></symbol>
-  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11.5" rx="2"/><path d="M5.5 15.5h-1V4.5a1 1 0 0 1 1-1h8.5v1"/></symbol>
-  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7"/><path d="M6.5 7l1 12.1a1.7 1.7 0 0 0 1.7 1.6h5.6a1.7 1.7 0 0 0 1.7-1.6L17.5 7"/><path d="M10.5 11v6M13.5 11v6"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.35-5.65"/><path d="M20 4.5V9h-4.5"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16.5V5"/><path d="M7.5 9.5 12 5l4.5 4.5"/><path d="M5 19.5h14"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v11.5"/><path d="M7.5 12 12 16.5 16.5 12"/><path d="M5 19.5h14"/></symbol>
+  <symbol id="i-rename" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10-10-4-4L4 16z"/><path d="M13.5 5.5l4 4"/></symbol>
+  <symbol id="i-move" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1l1.9 2.2h8A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M10 13.5h5M12.8 11l2.6 2.5-2.6 2.5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11.5" rx="2"/><path d="M5.5 15.5h-1V4.5a1 1 0 0 1 1-1h8.5v1"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7"/><path d="M6.5 7l1 12.1a1.7 1.7 0 0 0 1.7 1.6h5.6a1.7 1.7 0 0 0 1.7-1.6L17.5 7"/><path d="M10.5 11v6M13.5 11v6"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="8" y="5.5" width="3" height="13" rx="1"/><rect x="13" y="5.5" width="3" height="13" rx="1"/></symbol>
   <symbol id="i-resume" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8.5 5.6a1 1 0 0 1 1.5-.87l8 6.4a1 1 0 0 1 0 1.74l-8 6.4a1 1 0 0 1-1.5-.87z"/></symbol>
   <symbol id="i-retry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.35-5.65"/><path d="M20 4.5V9h-4.5"/></symbol>
   <symbol id="i-cancel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.2"/><path d="M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5.5v13M5.5 12h13"/></symbol>
-  <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12H4.5"/><path d="M8 8.2 4.2 12 8 15.8"/><path d="M14 4h4.3A1.7 1.7 0 0 1 20 5.7v12.6a1.7 1.7 0 0 1-1.7 1.7H14"/></symbol>
-  <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8.5" r="3.7"/><path d="M4.8 20a7.2 7.2 0 0 1 14.4 0"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12H4.5"/><path d="M8 8.2 4.2 12 8 15.8"/><path d="M14 4h4.3A1.7 1.7 0 0 1 20 5.7v12.6a1.7 1.7 0 0 1-1.7 1.7H14"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8.5" r="3.7"/><path d="M4.8 20a7.2 7.2 0 0 1 14.4 0"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.8 9.5 17 19 7"/></symbol>
   <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.2"/><path d="M12 11v5.5M12 7.8v.02"/></symbol>
   <symbol id="i-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.2 21 19.6H3z"/><path d="M12 10v4M12 16.6v.02"/></symbol>
   <symbol id="i-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.2"/><path d="M12 8v5M12 15.8v.02"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 5.5 16 12l-6.5 6.5"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M6.5 10.5 12 5l5.5 5.5"/></symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M10.5 6.5 5 12l5.5 5.5"/></symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13.5 6.5 19 12l-5.5 5.5"/></symbol>
+  <symbol id="i-view-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6.5h11M8 12h11M8 17.5h11"/><circle cx="4.5" cy="6.5" r="1" fill="currentColor" stroke="none"/><circle cx="4.5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="4.5" cy="17.5" r="1" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-view-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6"/></symbol>
+  <symbol id="i-sidebar-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M15 4.5v15"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/></symbol>
-  <symbol id="i-backup" viewBox="0 0 24 24"><path d="M12 3v10m0 0 4-4m-4 4-4-4M5 17h14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></symbol>
-  <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5c4.7 0 8.5 3.1 8.5 7s-3.8 7-8.5 7c-.9 0-1.8-.11-2.6-.32a10.2 10.2 0 0 1-4.06 1.28.6.6 0 0 1-.6-.86c.4-.86.66-1.7.72-2.45C3.9 15.24 3.5 13.44 3.5 11.5c0-3.9 3.8-7 8.5-7z"/><path d="M8.5 10.5h7M8.5 13.5h4.5"/></symbol>
-  <symbol id="i-link-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 14.5 6.8 17.2a3.6 3.6 0 1 1-5-5l2.7-2.7"/><path d="M14.5 9.5l2.7-2.7a3.6 3.6 0 1 1 5 5l-2.7 2.7"/><path d="M4 4l16 16"/></symbol>
+  <symbol id="i-backup" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v10m0 0 4-4m-4 4-4-4M5 17.5h14"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5c4.7 0 8.5 3.1 8.5 7s-3.8 7-8.5 7c-.9 0-1.8-.11-2.6-.32a10.2 10.2 0 0 1-4.06 1.28.6.6 0 0 1-.6-.86c.4-.86.66-1.7.72-2.45C3.9 15.24 3.5 13.44 3.5 11.5c0-3.9 3.8-7 8.5-7z"/><path d="M8.5 10.5h7M8.5 13.5h4.5"/></symbol>
+  <symbol id="i-link-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 14.5 6.8 17.2a3.6 3.6 0 1 1-5-5l2.7-2.7"/><path d="M14.5 9.5l2.7-2.7a3.6 3.6 0 1 1 5 5l-2.7 2.7"/><path d="M4 4l16 16"/></symbol>
 </svg>
 
-<!--
-  脚本加载方式说明：这里刻意使用**经典脚本**（classic script）而非 ES 模块脚本来加载 api.js / app.js。
-  原因：浏览器对模块脚本强制 CORS 校验，在 file: 协议下页面 origin 为 'null'，模块脚本会被直接拦截，
-  导致"直接在浏览器打开 index.html 即可调试、且未注入桥接层时优雅降级"这一验收标准无法满足；
-  Electron 的沙箱渲染进程同样以 file: 载入本页。
-  因此采用经典脚本 + 显式命名空间（window.QKAPI / window.QKUI），不依赖任何打包器，功能等价且更稳健。
--->
 <script src="tauri-bridge.js" defer></script>
 <script src="api.js" defer></script>
 <script src="virtual-list.js" defer></script>

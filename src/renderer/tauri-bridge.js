@@ -41,7 +41,10 @@
     auth: {}, fs: {}, transfer: {}, dialog: {}, settings: {},
     agent: {}, chat: {},
     platform: platform, runtime: 'tauri',
-    app: { quit: function () { return call('app.quit'); } },
+    app: {
+      quit: function () { return call('app.quit'); },
+      info: function () { return call('app.info'); }
+    },
     onToast: function (cb) { return listen('qk:toast', cb); },
     onTransferUpdate: function (cb) { return listen('qk:transfer-update', cb); }
   };
@@ -57,6 +60,9 @@
   ['pause', 'resume', 'retry', 'cancel', 'openItem'].forEach(function (name) {
     api.transfer[name] = method('transfer.' + name, 'id');
   });
+  ['pauseAll', 'resumeAll', 'retryFailed'].forEach(function (name) {
+    api.transfer[name] = method('transfer.' + name);
+  });
   api.transfer.clear = method('transfer.clear', 'ids');
   api.transfer.onUpdate = api.onTransferUpdate;
   ['pickDirs', 'pickFiles', 'confirm'].forEach(function (name) { api.dialog[name] = method('dialog.' + name); });
@@ -68,6 +74,16 @@
   api.dialog.onFilesDropped = function (cb) {
     return listen('tauri://drag-drop', function (payload) {
       if (payload && Array.isArray(payload.paths)) cb(payload.paths);
+    });
+  };
+  api.dialog.onDragEnter = function (cb) {
+    return listen('tauri://drag-enter', function (payload) {
+      cb(payload || {});
+    });
+  };
+  api.dialog.onDragLeave = function (cb) {
+    return listen('tauri://drag-leave', function () {
+      cb();
     });
   };
   api.settings.get = method('settings.get');
