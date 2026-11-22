@@ -31,7 +31,7 @@
   };
 
   var state = {
-    view: 'files',                 // files | transfers | chat | settings | feedback
+    view: 'files',                 // files | recycle | transfers | chat | settings | feedback
     fid: ROOT_FID,                 // 当前目录
     crumbs: [{ fid: ROOT_FID, name: '全部文件' }],
     history: [],                   // 前进/后退导航栈
@@ -84,6 +84,15 @@
     transfersLoaded: false,
     transferFilter: 'all',         // all | active | paused | done | error
     transfersDirty: false,
+    recycle: {
+      items: [],
+      selected: new Set(),
+      page: 0,
+      hasMore: false,
+      total: 0,
+      loading: false,
+      loadedOnce: false
+    },
     expired: false,
     uploading: false,
     // Agent 接入面板状态（lastError 只保存文本，凭据文件内容一律不进渲染层）
@@ -118,11 +127,14 @@
   var transferMap = new Map();     // id  -> element
   var transferSigs = new Map();    // id  -> last render signature
   var dirCache = new Map();        // cacheKey -> { items, total, page, hasMore, ts }
+  var dirDetailCache = new Map();  // fid -> { size, items, finished, ts }
+  var dirDetailInflight = new Map(); // fid -> Promise
   var scrollPosMap = new Map();    // fid -> scrollTop
   var recentToasts = new Map();    // key -> timestamp (去重)
   var unsubs = [];
   var toastSeq = 0;
   var listSeq = 0;
+  var recycleSeq = 0;
   var listVersion = 0;
   var lastRenderKey = '';
   var cachedRowHeight = 46;
@@ -317,12 +329,71 @@
     });
   }
 
+  function isArchiveItem(item) {
+    if (!item || item.dir) return false;
+    var ext = String(item.ext || '').toLowerCase();
+    if (!ext && item.name) {
+      var dot = String(item.name).lastIndexOf('.');
+      if (dot > 0 && dot < item.name.length - 1) ext = item.name.slice(dot + 1).toLowerCase();
+    }
+    if (['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'cbz', 'cbr'].indexOf(ext) >= 0) return true;
+    return item.category === 5;
+  }
+
+  function fmtDuration(sec) {
+    var s = Math.round(Number(sec) || 0);
+    if (!isFinite(s) || s <= 0) return '';
+    var hPart = Math.floor(s / 3600);
+    var mPart = Math.floor((s % 3600) / 60);
+    var sPart = s % 60;
+    return hPart > 0
+      ? (hPart + ':' + pad2(mPart) + ':' + pad2(sPart))
+      : (pad2(mPart) + ':' + pad2(sPart));
+  }
+
+  function fmtSource(src) {
+    var raw = String(src || '').trim();
+    if (!raw) return '';
+    var map = {
+      UPLOAD: '手动上传',
+      SAVE_AS: '分享转存',
+      SAVE_AS_ALL: '分享转存',
+      UNARCHIVE: '云端解压',
+      BACKUP: '自动备份',
+      BACKUP_ALL: '自动备份',
+      SAVE_TO: '网盘收藏',
+      AUTO: '自动归档',
+      PC: '桌面端上传',
+      WEB: '网页端上传',
+      ANDROID: 'Android 上传',
+      IOS: 'iOS 上传'
+    };
+    return map[raw.toUpperCase()] || raw;
+  }
+
+  var STORAGE_SRC_META = {
+    UPLOAD: { label: '手动上传', color: '#336DF4' },
+    SAVE_AS_ALL: { label: '分享转存', color: '#199E63' },
+    BACKUP_ALL: { label: '设备备份', color: '#E08B19' },
+    UNARCHIVE: { label: '云端解压', color: '#7B61FF' },
+    SAVE_TO: { label: '收藏与保存', color: '#0EA5E9' },
+    AUTO: { label: '自动保存', color: '#14B8A6' },
+    SECRET_SPACE: { label: '私密空间', color: '#EC4899' },
+    SHARED_ALBUM: { label: '共享相册', color: '#F97316' },
+    OTHER: { label: '其他文件', color: '#64748B' }
+  };
+
   function invalidateDirCache(fid) {
     if (fid === undefined || fid === null) {
       dirCache.clear();
+      dirDetailCache.clear();
+      dirDetailInflight.clear();
       return;
     }
-    var needle = '|' + String(fid) + '|';
+    var keyStr = String(fid);
+    dirDetailCache.delete(keyStr);
+    dirDetailInflight.delete(keyStr);
+    var needle = '|' + keyStr + '|';
     Array.from(dirCache.keys()).forEach(function (k) {
       if (k.indexOf(needle) >= 0) dirCache.delete(k);
     });
@@ -481,11 +552,22 @@
     }
   }
 
-  /** 登出或切换账号时清空对话视图中的上个账号状态（保留大模型连接配置）。 */
+  /** 登出或切换账号时清空对话视图与回收站中的上个账号状态（保留大模型连接配置）。 */
   function resetSessionViews() {
     prevTaskStatus.clear();
     transferBatchWasBulk = false;
     pendingFilesRefresh = false;
+    dirDetailCache.clear();
+    dirDetailInflight.clear();
+    state.recycle.items = [];
+    state.recycle.selected.clear();
+    state.recycle.page = 0;
+    state.recycle.hasMore = false;
+    state.recycle.total = 0;
+    state.recycle.loading = false;
+    state.recycle.loadedOnce = false;
+    recycleSeq += 1;
+    if (el.recycleList) renderRecycle();
     var cg = chatOf();
     cg.history = [];
     cg.historyError = '';
@@ -573,7 +655,7 @@
     var isDanger = pct >= 95;
     el.sidebarQuota.classList.toggle('warn', isWarn);
     el.sidebarQuota.classList.toggle('danger', isDanger);
-    el.sidebarQuota.title = '剩余可用 ' + fmtSize(freeSpace) + ' · 已用 ' + fmtSize(usedSpace) + ' / 共 ' + fmtSize(q.total) + '（点击刷新）';
+    el.sidebarQuota.title = '剩余可用 ' + fmtSize(freeSpace) + ' · 已用 ' + fmtSize(usedSpace) + ' / 共 ' + fmtSize(q.total) + '（点击查看空间明细）';
     if (el.sidebarQuotaFree) el.sidebarQuotaFree.textContent = fmtSize(freeSpace);
     if (el.sidebarQuotaPct) el.sidebarQuotaPct.textContent = pct.toFixed(pct >= 10 ? 0 : 1) + '%';
     if (el.sidebarQuotaFill) {
@@ -1998,8 +2080,13 @@
       r.fname.title = item.name;
       r.cb.setAttribute('aria-label', '选择 ' + item.name);
     }
-    var sizeText = item.dir ? '—' : fmtSize(item.size);
+    var cachedDir = item.dir ? dirDetailCache.get(fid) : null;
+    var sizeText = item.dir
+      ? (cachedDir ? (cachedDir.size > 0 ? fmtSize(cachedDir.size) : '0 B') : '—')
+      : fmtSize(item.size);
     if (r.sizeEl.textContent !== sizeText) r.sizeEl.textContent = sizeText;
+    var sizeTitle = (item.dir && cachedDir) ? ('共 ' + fmtInt(cachedDir.items) + ' 项' + (cachedDir.finished ? '' : '（统计中）')) : '';
+    if (r.sizeEl.title !== sizeTitle) r.sizeEl.title = sizeTitle;
     var timeText = fmtTime(item.updatedAt || item.createdAt);
     if (r.timeEl.textContent !== timeText) r.timeEl.textContent = timeText;
     var wantCls = 'fileicon ' + catClass(item);
@@ -2012,6 +2099,9 @@
     }
     if (r.opButtons.download) {
       r.opButtons.download.hidden = !!item.dir;
+    }
+    if (r.opButtons.unarchive) {
+      r.opButtons.unarchive.hidden = !isArchiveItem(item);
     }
     var sel = state.selected.has(fid);
     if (r.cb.checked !== sel) r.cb.checked = sel;
@@ -2087,6 +2177,7 @@
     bottomSpacer.style.height = range.after + 'px';
     var ref = topSpacer.nextSibling;
     var setSize = String(state.filter === 'all' && state.total >= 0 ? state.total : count);
+    var visibleDirs = [];
     for (var j = range.start; j < range.end; j++) {
       var item = items[j];
       var key = String(item.fid);
@@ -2097,12 +2188,16 @@
       } else {
         updateRow(row, item);
       }
+      if (item.dir) visibleDirs.push(item);
       row.dataset.index = String(j);
       row.classList.toggle('focused', j === state.focusIndex);
       row.setAttribute('aria-posinset', String(j + 1));
       row.setAttribute('aria-setsize', setSize);
       if (row === ref) ref = ref.nextSibling;
       else el.list.insertBefore(row, ref || bottomSpacer);
+    }
+    if (visibleDirs.length) {
+      prefetchFolderSizes(visibleDirs, seq);
     }
   }
 
@@ -2313,8 +2408,96 @@
   }
 
   /* ================================================================== *
-   * 文件详情侧栏（Inspector）
+   * 文件详情侧栏（Inspector）+ 文件夹大小自动回填 + 历史版本
    * ================================================================== */
+
+  function formatFullPath(fp) {
+    if (!fp) return '';
+    if (Array.isArray(fp)) {
+      var names = fp.map(function (c) { return c && c.name ? String(c.name) : ''; }).filter(Boolean);
+      return names.length ? ('/' + names.join('/')) : '';
+    }
+    return String(fp);
+  }
+
+  async function fetchDirDetail(fid, opts) {
+    var key = String(fid || '');
+    var o = opts || {};
+    if (!key || !API.has('fs', 'dirDetail')) return null;
+    var cached = dirDetailCache.get(key);
+    if (!o.force && cached && cached.finished && (Date.now() - cached.ts) < 60000) {
+      return cached;
+    }
+    if (!o.force && dirDetailInflight.has(key)) {
+      return dirDetailInflight.get(key);
+    }
+    var p = (async function () {
+      try {
+        var res = await API.fs.dirDetail(key);
+        if (!res || typeof res !== 'object') return null;
+        var entry = {
+          fid: key,
+          size: Math.max(0, Number(res.size) || 0),
+          items: Math.max(0, Number(res.items) || 0),
+          finished: res.finished !== false,
+          ts: Date.now()
+        };
+        dirDetailCache.set(key, entry);
+        var row = rowMap.get(key);
+        var it = findItem(key);
+        if (row && it) updateRow(row, it);
+        if (state.inspectorOpen && state.inspectorFid === key && it) {
+          renderInspector(it);
+        }
+        return entry;
+      } catch (_) {
+        return null;
+      } finally {
+        dirDetailInflight.delete(key);
+      }
+    })();
+    dirDetailInflight.set(key, p);
+    return p;
+  }
+
+  /**
+   * 自动后台统计当前可视区内的文件夹真实大小并即时回填列表「大小」列，
+   * 无需点开详情抽屉；并发上限 4，且目录切换（listSeq 变化）时自动停止旧队列。
+   */
+  function prefetchFolderSizes(dirs, seq) {
+    if (!API.injected || needsLoginState() || !API.has('fs', 'dirDetail')) return;
+    var queue = [];
+    var now = Date.now();
+    for (var i = 0; i < dirs.length; i++) {
+      var d = dirs[i];
+      if (!d || !d.dir || !d.fid) continue;
+      var fid = String(d.fid);
+      var cached = dirDetailCache.get(fid);
+      if (cached && cached.finished && (now - cached.ts) < 60000) continue;
+      if (dirDetailInflight.has(fid)) continue;
+      queue.push(fid);
+    }
+    if (!queue.length) return;
+    var concurrency = Math.min(4, queue.length);
+    for (var w = 0; w < concurrency; w++) {
+      (async function () {
+        while (queue.length) {
+          if (seq !== listSeq || state.view !== 'files' || needsLoginState()) return;
+          var nextFid = queue.shift();
+          if (!nextFid) continue;
+          var entry = await fetchDirDetail(nextFid);
+          if (entry && !entry.finished && seq === listSeq && state.view === 'files') {
+            (function (retryFid) {
+              setTimeout(function () {
+                if (seq !== listSeq || state.view !== 'files' || needsLoginState()) return;
+                fetchDirDetail(retryFid, { force: true });
+              }, 1500);
+            })(nextFid);
+          }
+        }
+      })();
+    }
+  }
 
   function setInspectorOpen(open) {
     state.inspectorOpen = !!open;
@@ -2333,11 +2516,13 @@
     var sel = selectedItems();
     if (!detailedItem && sel.length > 1) {
       state.inspectorFid = null;
-      var totalBytes = sel.reduce(function (acc, x) { return acc + (x.dir ? 0 : (Number(x.size) || 0)); }, 0);
-      var dirs = sel.filter(function (x) { return x.dir; }).length;
-      var files = sel.length - dirs;
+      var selDirs = sel.filter(function (x) { return x.dir; });
+      var selFiles = sel.filter(function (x) { return !x.dir; });
+      var fileBytes = selFiles.reduce(function (acc, x) { return acc + (Number(x.size) || 0); }, 0);
+      var dirs = selDirs.length;
+      var files = selFiles.length;
       var multiHero = h('div', 'inspector-hero');
-      var mic = h('span', 'fileicon cat-folder');
+      var mic = h('span', 'fileicon cat-dir');
       mic.appendChild(icon('folder'));
       multiHero.appendChild(mic);
       multiHero.appendChild(h('div', 'inspector-name', '已选中 ' + sel.length + ' 个项目'));
@@ -2352,11 +2537,47 @@
       }
       addMultiKv('文件夹', dirs + ' 个');
       addMultiKv('文件', files + ' 个');
-      if (files > 0) addMultiKv('文件总大小', fmtSize(totalBytes));
+      if (files > 0) addMultiKv('已选文件大小', fmtSize(fileBytes));
+
+      if (dirs > 0 && API.has('fs', 'dirDetail')) {
+        var allCached = selDirs.every(function (d) { return dirDetailCache.has(String(d.fid)); });
+        if (allCached) {
+          var dirBytes = 0;
+          var dirItems = 0;
+          selDirs.forEach(function (d) {
+            var c = dirDetailCache.get(String(d.fid));
+            if (c) { dirBytes += c.size; dirItems += c.items; }
+          });
+          addMultiKv('含文件夹总大小', fmtSize(fileBytes + dirBytes));
+          addMultiKv('文件夹内含项数', fmtInt(dirItems) + ' 项');
+        }
+        var calcBtn = h('button', 'btn btn-sm inspector-calc-btn');
+        calcBtn.type = 'button';
+        calcBtn.id = 'btn-inspector-calc-multi';
+        calcBtn.appendChild(icon('refresh'));
+        calcBtn.appendChild(h('span', null, allCached ? '重新统计含文件夹大小' : '统计含文件夹的总大小'));
+        calcBtn.addEventListener('click', async function () {
+          calcBtn.disabled = true;
+          calcBtn.lastChild.textContent = '正在统计文件夹大小…';
+          var queue = selDirs.slice();
+          var workers = [];
+          var concurrency = Math.min(4, queue.length);
+          for (var w = 0; w < concurrency; w++) {
+            workers.push((async function () {
+              while (queue.length) {
+                var next = queue.shift();
+                if (next) await fetchDirDetail(next.fid, { force: true });
+              }
+            })());
+          }
+          await Promise.all(workers);
+          if (state.inspectorOpen) renderInspector();
+        });
+        multiMeta.appendChild(calcBtn);
+      }
       body.appendChild(multiMeta);
 
       var mActs = h('div', 'inspector-actions');
-      var selFiles = sel.filter(function (x) { return !x.dir; });
       if (selFiles.length > 0) {
         var dlAll = h('button', 'btn btn-sm btn-primary');
         dlAll.type = 'button';
@@ -2401,7 +2622,8 @@
       body.appendChild(h('div', 'inspector-empty', '单击任意文件或文件夹可在此查看详细信息与快捷操作。'));
       return;
     }
-    state.inspectorFid = String(item.fid);
+    var fidStr = String(item.fid);
+    state.inspectorFid = fidStr;
     var hero = h('div', 'inspector-hero');
     var ic = h('span', 'fileicon ' + catClass(item));
     ic.appendChild(icon(iconFor(item)));
@@ -2410,20 +2632,98 @@
     body.appendChild(hero);
 
     var meta = h('div', 'inspector-meta');
-    function addKv(k, v, mono) {
-      if (!v) return;
+    function addKv(k, v, opts) {
+      if (v === undefined || v === null || v === '') return;
+      var o = typeof opts === 'boolean' ? { mono: opts } : (opts || {});
       var row = h('div', 'inspector-kv');
       row.appendChild(h('span', 'inspector-k', k));
-      row.appendChild(h('span', 'inspector-v' + (mono ? ' mono' : ''), v));
+      if (o.copyLabel || o.actionBtn) {
+        var line = h('div', 'inspector-kv-line');
+        line.appendChild(h('span', 'inspector-v' + (o.mono ? ' mono' : ''), String(v)));
+        if (o.copyLabel) {
+          var cb = h('button', 'inspector-mini-btn');
+          cb.type = 'button';
+          cb.title = '复制' + o.copyLabel;
+          cb.setAttribute('aria-label', '复制' + o.copyLabel);
+          cb.appendChild(icon('copy'));
+          cb.addEventListener('click', function () { copyText(String(v), o.copyLabel); });
+          line.appendChild(cb);
+        }
+        if (o.actionBtn) line.appendChild(o.actionBtn);
+        row.appendChild(line);
+      } else {
+        row.appendChild(h('span', 'inspector-v' + (o.mono ? ' mono' : ''), String(v)));
+      }
       meta.appendChild(row);
     }
-    addKv('类型', item.dir ? '文件夹' : (item.ext ? item.ext.toUpperCase() + ' 文件' : '文件'));
-    if (!item.dir) addKv('大小', fmtSize(item.size) + '（' + fmtInt(item.size) + ' 字节）');
+
+    var typeDesc = item.dir
+      ? '文件夹'
+      : ((item.ext ? item.ext.toUpperCase() + ' 文件' : '文件') + (item.formatType ? ' · ' + item.formatType : ''));
+    addKv('类型', typeDesc);
+
+    if (item.dir) {
+      var dInfo = dirDetailCache.get(fidStr);
+      var refreshDirBtn = h('button', 'inspector-mini-btn');
+      refreshDirBtn.type = 'button';
+      refreshDirBtn.id = 'btn-inspector-dir-refresh';
+      refreshDirBtn.title = '重新统计文件夹大小';
+      refreshDirBtn.setAttribute('aria-label', '重新统计文件夹大小');
+      refreshDirBtn.appendChild(icon('refresh'));
+      refreshDirBtn.addEventListener('click', function () {
+        dirDetailCache.delete(fidStr);
+        renderInspector(item);
+        fetchDirDetail(fidStr, { force: true }).then(function () {
+          if (state.inspectorOpen && state.inspectorFid === fidStr) renderInspector(item);
+        });
+      });
+      if (dInfo) {
+        var sizeStr = (dInfo.size > 0 ? fmtSize(dInfo.size) : '0 B') + '（' + fmtInt(dInfo.size) + ' 字节）';
+        addKv('文件夹大小', dInfo.finished ? sizeStr : ('统计中 · 当前 ' + fmtSize(dInfo.size)), { actionBtn: refreshDirBtn });
+        addKv('内含项目', fmtInt(dInfo.items) + ' 项' + (dInfo.finished ? '' : '（扫描中…）'));
+      } else if (API.has('fs', 'dirDetail')) {
+        addKv('文件夹大小', '正在统计…', { actionBtn: refreshDirBtn });
+        if (item.includeItems > 0) addKv('直接子项', fmtInt(item.includeItems) + ' 项');
+      } else if (item.includeItems > 0) {
+        addKv('直接子项', fmtInt(item.includeItems) + ' 项');
+      }
+    } else {
+      addKv('大小', fmtSize(item.size) + '（' + fmtInt(item.size) + ' 字节）');
+    }
+
+    var fullPathText = formatFullPath(item.fullPath);
+    if (fullPathText) {
+      var pathRow = h('div', 'inspector-kv');
+      pathRow.appendChild(h('span', 'inspector-k', '云端位置'));
+      if (item.pdirFid && (state.mode === 'search' || String(item.pdirFid) !== String(state.fid))) {
+        var pathBtn = h('button', 'inspector-path-link', fullPathText);
+        pathBtn.type = 'button';
+        pathBtn.title = '前往所在目录';
+        pathBtn.addEventListener('click', function () {
+          navigate(item.pdirFid, item.pdirFid === ROOT_FID ? '全部文件' : '上级目录');
+        });
+        pathRow.appendChild(pathBtn);
+      } else {
+        pathRow.appendChild(h('span', 'inspector-v', fullPathText));
+      }
+      meta.appendChild(pathRow);
+    }
+
+    var durText = fmtDuration(item.duration);
+    if (durText || (item.fps && item.fps > 0)) {
+      var mediaParts = [];
+      if (durText) mediaParts.push('时长 ' + durText);
+      if (item.fps && item.fps > 0) mediaParts.push(Math.round(item.fps * 10) / 10 + ' fps');
+      addKv('媒体参数', mediaParts.join(' · '));
+    }
+    var srcText = fmtSource(item.source);
+    if (srcText) addKv('文件来源', srcText);
     addKv('修改时间', fmtTime(item.updatedAt || item.createdAt));
     if (item.createdAt) addKv('创建时间', fmtTime(item.createdAt));
-    addKv('云端 ID (fid)', String(item.fid), true);
-    if (item.md5) addKv('MD5', String(item.md5), true);
-    if (item.sha1) addKv('SHA-1', String(item.sha1), true);
+    if (item.operatedAt && item.operatedAt !== item.updatedAt) addKv('最近操作', fmtTime(item.operatedAt));
+    addKv('云端 ID (fid)', fidStr, { mono: true, copyLabel: '云端 ID' });
+    if (item.md5) addKv('MD5', String(item.md5), { mono: true, copyLabel: 'MD5' });
+    if (item.sha1) addKv('SHA-1', String(item.sha1), { mono: true, copyLabel: 'SHA-1' });
     body.appendChild(meta);
 
     var acts = h('div', 'inspector-actions');
@@ -2433,6 +2733,16 @@
     primary.appendChild(h('span', null, item.dir ? '打开文件夹' : '下载到本地'));
     primary.addEventListener('click', function () { openItem(item); });
     acts.appendChild(primary);
+
+    if (isArchiveItem(item) && API.has('archive', 'preview')) {
+      var unzipBtn = h('button', 'btn btn-sm');
+      unzipBtn.type = 'button';
+      unzipBtn.id = 'btn-inspector-unarchive';
+      unzipBtn.appendChild(icon('file-archive'));
+      unzipBtn.appendChild(h('span', null, '云解压 / 浏览内容'));
+      unzipBtn.addEventListener('click', function () { openArchiveModal(item); });
+      acts.appendChild(unzipBtn);
+    }
 
     if (!item.dir) {
       var dlAsBtn = h('button', 'btn btn-sm');
@@ -2457,13 +2767,6 @@
     copyNameBtn.addEventListener('click', function () { copyText(item.name, '文件名'); });
     acts.appendChild(copyNameBtn);
 
-    var copyFidBtn = h('button', 'btn btn-sm btn-ghost');
-    copyFidBtn.type = 'button';
-    copyFidBtn.appendChild(icon('copy'));
-    copyFidBtn.appendChild(h('span', null, '复制云端 ID'));
-    copyFidBtn.addEventListener('click', function () { copyText(item.fid, '云端 ID'); });
-    acts.appendChild(copyFidBtn);
-
     var delBtn = h('button', 'btn btn-sm btn-ghost');
     delBtn.type = 'button';
     delBtn.appendChild(icon('trash'));
@@ -2472,17 +2775,941 @@
     acts.appendChild(delBtn);
     body.appendChild(acts);
 
-    // 若缺少摘要且为文件，后台静默查一次 fs.info 补齐 MD5/SHA-1
-    if (!detailedItem && !item.dir && !item.md5 && API.has('fs', 'info')) {
-      var mySeq = ++inspectorSeq;
-      var wantFid = String(item.fid);
-      API.fs.info(wantFid).then(function (full) {
-        if (mySeq !== inspectorSeq || !state.inspectorOpen || state.inspectorFid !== wantFid) return;
-        if (full && (full.md5 || full.sha1)) {
-          Object.assign(item, full);
-          renderInspector(item);
+    // 历史版本（仅普通文件，按需展开查询）
+    if (!item.dir && API.has('fs', 'revisions')) {
+      var revSec = h('div', 'inspector-rev-section');
+      var revBtn = h('button', 'btn btn-sm btn-ghost inspector-rev-toggle');
+      revBtn.type = 'button';
+      revBtn.id = 'btn-inspector-revisions';
+      var revLeft = h('span', null);
+      revLeft.style.display = 'inline-flex';
+      revLeft.style.alignItems = 'center';
+      revLeft.style.gap = '6px';
+      revLeft.appendChild(icon('history'));
+      revLeft.appendChild(h('span', null, '历史版本'));
+      revBtn.appendChild(revLeft);
+      var revChevron = h('span', 'muted', '展开');
+      revBtn.appendChild(revChevron);
+      var revBox = h('div', 'inspector-rev-box');
+      revBox.hidden = true;
+      var revLoaded = false;
+
+      revBtn.addEventListener('click', async function () {
+        if (!revBox.hidden) {
+          revBox.hidden = true;
+          revChevron.textContent = '展开';
+          return;
         }
-      }).catch(function () { /* 静默 */ });
+        revBox.hidden = false;
+        revChevron.textContent = '收起';
+        if (revLoaded) return;
+        revBox.textContent = '';
+        revBox.appendChild(h('div', 'inspector-rev-empty', '正在读取历史版本…'));
+        try {
+          var res = await API.fs.revisions(fidStr);
+          var list = (res && Array.isArray(res.list)) ? res.list : [];
+          revLoaded = true;
+          revBox.textContent = '';
+          if (!list.length) {
+            revBox.appendChild(h('div', 'inspector-rev-empty', '暂无可用的历史版本记录'));
+            return;
+          }
+          list.forEach(function (rv) {
+            var row = h('div', 'inspector-rev-item');
+            var left = h('div', 'inspector-rev-meta');
+            left.appendChild(h('div', 'inspector-rev-time', fmtTime(rv.updatedAt) || ('版本 #' + rv.version)));
+            var sub = h('div', 'inspector-rev-sub');
+            sub.appendChild(h('span', null, fmtSize(rv.size)));
+            if (rv.version) sub.appendChild(h('span', null, 'v' + rv.version));
+            if (rv.current) sub.appendChild(h('span', 'inspector-rev-tag', '当前'));
+            left.appendChild(sub);
+            row.appendChild(left);
+            if (!rv.current && API.has('fs', 'revertRevision')) {
+              var rb = h('button', 'btn btn-sm', '恢复');
+              rb.type = 'button';
+              rb.addEventListener('click', async function () {
+                var ok = await confirmDialog({
+                  title: '恢复历史版本',
+                  message: '确认将「' + item.name + '」恢复到 ' + (fmtTime(rv.updatedAt) || ('版本 v' + rv.version)) + '？',
+                  detail: '恢复后当前版本内容会被替换为该历史版本。',
+                  confirmText: '恢复此版本'
+                });
+                if (!ok) return;
+                try {
+                  await API.fs.revertRevision({ fid: fidStr, version: rv.version });
+                  toast('ok', '已恢复到所选历史版本');
+                  invalidateDirCache(state.fid);
+                  item._infoLoaded = false;
+                  reloadCurrent();
+                  revLoaded = false;
+                  revBox.hidden = true;
+                  revChevron.textContent = '展开';
+                } catch (err) {
+                  reportError(err, '恢复历史版本失败');
+                }
+              });
+              row.appendChild(rb);
+            }
+            revBox.appendChild(row);
+          });
+        } catch (err) {
+          revBox.textContent = '';
+          var e2 = API.normalizeError(err, '读取历史版本失败');
+          revBox.appendChild(h('div', 'inspector-rev-empty', e2.message));
+        }
+      });
+      revSec.appendChild(revBtn);
+      revSec.appendChild(revBox);
+      body.appendChild(revSec);
+    }
+
+    // 后台自动补齐文件夹真实大小 + 完整元信息（fs.info），同 fid 重复渲染不取消在途请求
+    if (item.dir && API.has('fs', 'dirDetail') && !item._dirDetailPending) {
+      var curDir = dirDetailCache.get(fidStr);
+      if (!curDir) {
+        item._dirDetailPending = true;
+        var dirSeq = ++inspectorSeq;
+        fetchDirDetail(fidStr).then(function (d) {
+          item._dirDetailPending = false;
+          if (!state.inspectorOpen || state.inspectorFid !== fidStr) return;
+          if (d) {
+            renderInspector(item);
+            if (!d.finished) {
+              setTimeout(function () {
+                if (dirSeq !== inspectorSeq || !state.inspectorOpen || state.inspectorFid !== fidStr) return;
+                fetchDirDetail(fidStr, { force: true }).then(function (d2) {
+                  if (!state.inspectorOpen || state.inspectorFid !== fidStr) return;
+                  if (d2) renderInspector(item);
+                });
+              }, 1200);
+            }
+          }
+        }).catch(function () { item._dirDetailPending = false; });
+      }
+    }
+    if (!item._infoLoaded && !item._infoPending && API.has('fs', 'info')) {
+      item._infoPending = true;
+      API.fs.info(fidStr).then(function (full) {
+        item._infoPending = false;
+        item._infoLoaded = true;
+        if (full && typeof full === 'object') {
+          Object.assign(item, full);
+          item._infoLoaded = true;
+          if (state.inspectorOpen && state.inspectorFid === fidStr) {
+            renderInspector(item);
+          }
+        }
+      }).catch(function () { item._infoPending = false; });
+    }
+  }
+
+  /* ================================================================== *
+   * 云解压 / 在线浏览压缩包（支持目录钻取、密码解锁、勾选解压与同名覆盖）
+   * ================================================================== */
+
+  function openArchiveModal(item) {
+    if (!item || !ensureLoggedInForWrite('云解压')) return;
+    if (!API.has('archive', 'preview')) {
+      toast('warn', '当前桥接层暂不支持云解压接口');
+      return;
+    }
+    var fid = String(item.fid);
+    var alive = true;
+    var previewSeq = 0;
+    var currentPathNo = '';
+    var crumbs = [{ pathNo: '', name: item.name }];
+    var currentEntries = [];
+    var checkedPaths = new Set();
+    var password = '';
+    var extracting = false;
+    var finishedToFid = '';
+    var target = {
+      fid: (item.pdirFid !== undefined && item.pdirFid !== null && String(item.pdirFid) !== '')
+        ? String(item.pdirFid)
+        : String(state.fid || ROOT_FID),
+      name: currentDirName()
+    };
+
+    openOverlay(function (ui) {
+      ui.setResolve(function () { alive = false; });
+      ui.panel.classList.add('dlg-archive');
+
+      var head = h('div', 'dlg-head');
+      head.appendChild(icon('file-archive', 'dlg-ic'));
+      head.appendChild(h('h3', 'dlg-title', '云解压 · ' + item.name));
+      ui.panel.appendChild(head);
+
+      var headMeta = h('div', 'archive-head-meta');
+      var sizeSpan = h('span', null, '压缩包大小：' + fmtSize(item.size));
+      var countSpan = h('span', null, '');
+      var rightPill = h('span', 'archive-right-pill');
+      rightPill.hidden = true;
+      headMeta.appendChild(sizeSpan);
+      headMeta.appendChild(countSpan);
+      headMeta.appendChild(rightPill);
+      ui.panel.appendChild(headMeta);
+
+      // 密码输入条（默认隐藏，遇到 27001 / 27002 时自动展开）
+      var pwdBar = h('div', 'archive-pwd-bar');
+      pwdBar.hidden = true;
+      pwdBar.appendChild(icon('lock'));
+      var pwdInput = h('input', 'input');
+      pwdInput.type = 'password';
+      pwdInput.id = 'archive-pwd-input';
+      pwdInput.placeholder = '输入压缩包解压密码';
+      pwdInput.autocomplete = 'off';
+      var pwdSubmit = h('button', 'btn btn-sm btn-primary', '解锁');
+      pwdSubmit.type = 'button';
+      pwdSubmit.id = 'archive-pwd-submit';
+      var pwdMsg = h('div', 'archive-pwd-msg', '该压缩包已加密，请输入解压密码后浏览或解压。');
+      pwdBar.appendChild(pwdInput);
+      pwdBar.appendChild(pwdSubmit);
+      pwdBar.appendChild(pwdMsg);
+      ui.panel.appendChild(pwdBar);
+
+      // 目录面包屑工具栏
+      var toolbar = h('div', 'picker-toolbar');
+      var upBtn = h('button', 'btn btn-sm btn-ghost');
+      upBtn.type = 'button';
+      upBtn.title = '返回上一级';
+      upBtn.disabled = true;
+      upBtn.appendChild(icon('arrow-up'));
+      upBtn.appendChild(h('span', null, '上一级'));
+      var crumbBox = h('div', 'picker-crumbs');
+      var refBtn = h('button', 'btn btn-sm btn-ghost');
+      refBtn.type = 'button';
+      refBtn.title = '刷新当前目录';
+      refBtn.appendChild(icon('refresh'));
+      toolbar.appendChild(upBtn);
+      toolbar.appendChild(crumbBox);
+      toolbar.appendChild(refBtn);
+      ui.panel.appendChild(toolbar);
+
+      var listBox = h('div', 'archive-list');
+      ui.panel.appendChild(listBox);
+
+      // 目标目录栏
+      var targetBar = h('div', 'archive-target');
+      var targetText = h('div', 'archive-target-path');
+      targetText.appendChild(document.createTextNode('解压到：'));
+      var targetStrong = h('strong', null, target.name);
+      targetText.appendChild(targetStrong);
+      var pickBtn = h('button', 'btn btn-sm', '更改目录…');
+      pickBtn.type = 'button';
+      pickBtn.id = 'archive-btn-pick-target';
+      targetBar.appendChild(targetText);
+      targetBar.appendChild(pickBtn);
+      ui.panel.appendChild(targetBar);
+
+      // 解压进度条
+      var progBox = h('div', 'archive-progress');
+      progBox.hidden = true;
+      var progHead = h('div', 'archive-progress-head');
+      var progLabel = h('span', null, '正在提交云解压任务…');
+      var progPct = h('span', null, '0%');
+      progHead.appendChild(progLabel);
+      progHead.appendChild(progPct);
+      var progBar = h('div', 'archive-progress-bar');
+      var progFill = h('i');
+      progBar.appendChild(progFill);
+      progBox.appendChild(progHead);
+      progBox.appendChild(progBar);
+      ui.panel.appendChild(progBox);
+
+      // 底部操作栏
+      var foot = h('div', 'dlg-foot');
+      var closeBtn = h('button', 'btn', '关闭');
+      closeBtn.type = 'button';
+      closeBtn.addEventListener('click', function () { ui.close(null); });
+
+      var extractSelBtn = h('button', 'btn', '解压选中');
+      extractSelBtn.type = 'button';
+      extractSelBtn.id = 'archive-btn-extract-sel';
+      extractSelBtn.hidden = true;
+
+      var extractAllBtn = h('button', 'btn btn-primary', '全部解压');
+      extractAllBtn.type = 'button';
+      extractAllBtn.id = 'archive-btn-extract-all';
+
+      var gotoBtn = h('button', 'btn btn-primary', '前往查看');
+      gotoBtn.type = 'button';
+      gotoBtn.id = 'archive-btn-goto';
+      gotoBtn.hidden = true;
+      gotoBtn.addEventListener('click', function () {
+        var destFid = finishedToFid || target.fid;
+        var destName = target.name || '解压目录';
+        ui.close(destFid);
+        setView('files');
+        navigate(destFid, destName);
+      });
+
+      foot.appendChild(closeBtn);
+      foot.appendChild(extractSelBtn);
+      foot.appendChild(extractAllBtn);
+      foot.appendChild(gotoBtn);
+      ui.panel.appendChild(foot);
+
+      function updateSelectionButtons() {
+        var n = checkedPaths.size;
+        extractSelBtn.hidden = n === 0 || !!finishedToFid;
+        extractSelBtn.textContent = '解压选中 (' + n + ')';
+        extractSelBtn.disabled = extracting || n === 0;
+        extractAllBtn.hidden = !!finishedToFid;
+        extractAllBtn.disabled = extracting;
+        pickBtn.disabled = extracting;
+      }
+
+      function renderArchiveCrumbs() {
+        upBtn.disabled = crumbs.length <= 1;
+        crumbBox.textContent = '';
+        crumbs.forEach(function (c, i) {
+          if (i > 0) crumbBox.appendChild(icon('chevron', 'crumb-sep'));
+          var b = h('button', 'crumb-item');
+          b.type = 'button';
+          b.textContent = c.name;
+          b.disabled = i === crumbs.length - 1;
+          b.addEventListener('click', function () {
+            crumbs = crumbs.slice(0, i + 1);
+            currentPathNo = c.pathNo;
+            checkedPaths.clear();
+            updateSelectionButtons();
+            loadPreview(c.pathNo, 1, false, 0);
+          });
+          crumbBox.appendChild(b);
+        });
+        crumbBox.scrollLeft = crumbBox.scrollWidth;
+      }
+
+      upBtn.addEventListener('click', function () {
+        if (crumbs.length <= 1) return;
+        crumbs = crumbs.slice(0, crumbs.length - 1);
+        var prev = crumbs[crumbs.length - 1];
+        currentPathNo = prev.pathNo;
+        checkedPaths.clear();
+        updateSelectionButtons();
+        loadPreview(prev.pathNo, 1, false, 0);
+      });
+
+      refBtn.addEventListener('click', function () {
+        loadPreview(currentPathNo, 1, false, 0);
+      });
+
+      function submitPassword() {
+        password = pwdInput.value;
+        if (!password) {
+          pwdMsg.textContent = '请输入解压密码';
+          pwdInput.focus();
+          return;
+        }
+        loadPreview(currentPathNo, 1, false, 0);
+      }
+      pwdSubmit.addEventListener('click', submitPassword);
+      pwdInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); submitPassword(); }
+      });
+
+      pickBtn.addEventListener('click', async function () {
+        var picked = await pickDirDialog({
+          title: '选择云解压目标目录',
+          confirmText: '解压到此处'
+        });
+        if (picked === null || picked === undefined) return;
+        target.fid = String(picked);
+        target.name = await dirNameOf(picked);
+        targetStrong.textContent = target.name;
+      });
+
+      function renderEntries(entries, hasMore, page) {
+        listBox.textContent = '';
+        if (!entries.length) {
+          listBox.appendChild(h('div', 'picker-empty', '当前层级为空'));
+          return;
+        }
+        entries.forEach(function (entry) {
+          var row = h('div', 'archive-row' + (checkedPaths.has(entry.pathNo) ? ' selected' : ''));
+          row.dataset.pathNo = entry.pathNo;
+
+          var cbWrap = h('label', 'cb');
+          var cb = h('input');
+          cb.type = 'checkbox';
+          cb.checked = checkedPaths.has(entry.pathNo);
+          cb.setAttribute('aria-label', '选择 ' + entry.name);
+          cb.addEventListener('change', function () {
+            if (cb.checked) checkedPaths.add(entry.pathNo);
+            else checkedPaths.delete(entry.pathNo);
+            row.classList.toggle('selected', cb.checked);
+            updateSelectionButtons();
+          });
+          cbWrap.appendChild(cb);
+          cbWrap.appendChild(h('i'));
+          row.appendChild(cbWrap);
+
+          var icName = entry.isFolder ? 'folder' : iconFor({ dir: false, name: entry.name, ext: (entry.name.split('.').pop() || '') });
+          row.appendChild(icon(icName, 'archive-row-ic' + (entry.isFolder ? ' dir' : '')));
+
+          var nameEl = h('span', 'archive-row-name', entry.name);
+          nameEl.title = entry.path || entry.name;
+          row.appendChild(nameEl);
+
+          row.appendChild(h('span', 'archive-row-size', entry.isFolder ? '文件夹' : fmtSize(entry.size)));
+
+          if (entry.isFolder) {
+            var enterBtn = h('button', 'picker-enter', '进入');
+            enterBtn.type = 'button';
+            var drill = function () {
+              crumbs = crumbs.concat([{ pathNo: entry.pathNo, name: entry.name }]);
+              currentPathNo = entry.pathNo;
+              checkedPaths.clear();
+              updateSelectionButtons();
+              loadPreview(entry.pathNo, 1, false, 0);
+            };
+            enterBtn.addEventListener('click', drill);
+            row.addEventListener('dblclick', drill);
+            row.appendChild(enterBtn);
+          } else {
+            row.appendChild(h('span', null, ''));
+          }
+          listBox.appendChild(row);
+        });
+
+        if (hasMore) {
+          var moreBtn = h('button', 'btn btn-sm picker-more', '加载更多条目');
+          moreBtn.type = 'button';
+          moreBtn.addEventListener('click', function () { loadPreview(currentPathNo, page + 1, true, 0); });
+          listBox.appendChild(moreBtn);
+        }
+      }
+
+      async function loadPreview(pathNo, page, append, pollAttempt) {
+        var seq = append ? previewSeq : ++previewSeq;
+        renderArchiveCrumbs();
+        if (!append) {
+          listBox.textContent = '';
+          listBox.appendChild(h('div', 'picker-loading', pollAttempt > 0 ? '云端正在解析压缩包目录，请稍候…' : '正在加载压缩包目录…'));
+        }
+        try {
+          var res = await API.archive.preview({
+            fid: fid,
+            pathNo: pathNo,
+            pwd: password,
+            page: page || 1,
+            size: 100
+          });
+          if (!alive || seq !== previewSeq) return;
+          pwdBar.hidden = true;
+          if (res && res.finish === false && pollAttempt < 12) {
+            var gap = Math.max(500, Math.min(2500, Number(res.tqGap) || 800));
+            setTimeout(function () {
+              if (alive && seq === previewSeq) loadPreview(pathNo, page, append, pollAttempt + 1);
+            }, gap);
+            return;
+          }
+          var list = (res && Array.isArray(res.list)) ? res.list : [];
+          currentEntries = append ? currentEntries.concat(list) : list;
+          if (res && res.totalFileCount > 0) {
+            countSpan.textContent = ' · 共 ' + fmtInt(res.totalFileCount) + ' 个文件';
+          }
+          var hasMore = !!(res && res.count > 0 && currentEntries.length < res.count);
+          renderEntries(currentEntries, hasMore, page || 1);
+        } catch (err) {
+          if (!alive || seq !== previewSeq) return;
+          var e = API.normalizeError(err, '读取压缩包目录失败');
+          if (e.code === 'ARCHIVE_NEED_PWD' || e.code === 'ARCHIVE_PWD_ERROR') {
+            pwdBar.hidden = false;
+            pwdMsg.textContent = e.code === 'ARCHIVE_PWD_ERROR'
+              ? '解压密码不正确，请重新输入。'
+              : '该压缩包已加密，请输入解压密码后浏览或解压。';
+            listBox.textContent = '';
+            listBox.appendChild(h('div', 'picker-empty', '输入正确密码后将展示压缩包内文件目录'));
+            setTimeout(function () { try { pwdInput.focus(); } catch (_) {} }, 20);
+            return;
+          }
+          listBox.textContent = '';
+          listBox.appendChild(h('div', 'picker-empty', e.message || '读取压缩包目录失败'));
+        }
+      }
+
+      async function startExtract(onlySelected, conflictMode) {
+        if (extracting) return;
+        extracting = true;
+        finishedToFid = '';
+        updateSelectionButtons();
+        progBox.hidden = false;
+        progBox.classList.remove('done', 'error');
+        progLabel.textContent = '正在提交云解压任务…';
+        progPct.textContent = '0%';
+        progFill.style.width = '4%';
+
+        var pathNos = onlySelected ? Array.from(checkedPaths) : [];
+        try {
+          var res = await API.archive.unarchive({
+            fid: fid,
+            toFid: target.fid,
+            pwd: password,
+            pathNos: pathNos,
+            currPathNo: onlySelected ? currentPathNo : '',
+            conflictMode: conflictMode || 1
+          });
+          if (!alive) return;
+          if (res && (res.finish || res.status === 'finish' || !res.taskId)) {
+            onExtractFinished();
+            return;
+          }
+          var taskId = String(res.taskId);
+          progLabel.textContent = '云端正在解压中…';
+          for (var i = 0; i < 180; i++) {
+            await sleep(600);
+            if (!alive) return;
+            var st = await API.archive.queryTask(taskId);
+            if (!alive) return;
+            var pct = Math.max(0, Math.min(100, Number(st && st.progress) || 0));
+            progPct.textContent = Math.round(pct) + '%';
+            progFill.style.width = Math.max(6, pct) + '%';
+            if (st && st.done) {
+              onExtractFinished();
+              return;
+            }
+            if (st && st.failed) {
+              throw API.normalizeError({ code: 'SERVER', message: st.message || '云端解压失败' });
+            }
+          }
+          progLabel.textContent = '解压任务仍在云端后台运行，稍后可前往目标目录查看。';
+          extracting = false;
+          updateSelectionButtons();
+        } catch (err) {
+          if (!alive) return;
+          var e = API.normalizeError(err, '云解压失败');
+          if (e.code === 'ARCHIVE_NEED_PWD' || e.code === 'ARCHIVE_PWD_ERROR') {
+            extracting = false;
+            progBox.hidden = true;
+            pwdBar.hidden = false;
+            pwdMsg.textContent = e.code === 'ARCHIVE_PWD_ERROR' ? '解压密码错误，请重新输入。' : '该压缩包需要解压密码。';
+            updateSelectionButtons();
+            pwdInput.focus();
+            return;
+          }
+          if ((e.code === 'CONFLICT' || e.bizCode === 23008) && (conflictMode || 1) === 1) {
+            extracting = false;
+            updateSelectionButtons();
+            var overwrite = await confirmDialog({
+              title: '目标目录存在同名文件',
+              message: '「' + target.name + '」中已存在同名文件或目录，是否覆盖解压？',
+              confirmText: '覆盖并继续解压',
+              danger: true
+            });
+            if (overwrite && alive) {
+              startExtract(onlySelected, 2);
+              return;
+            }
+            progBox.hidden = true;
+            return;
+          }
+          progBox.classList.add('error');
+          progLabel.textContent = e.message || '云解压失败';
+          progPct.textContent = '失败';
+          extracting = false;
+          updateSelectionButtons();
+        }
+      }
+
+      function onExtractFinished() {
+        extracting = false;
+        finishedToFid = target.fid;
+        progBox.classList.add('done');
+        progLabel.textContent = '云解压完成，文件已保存至「' + target.name + '」';
+        progPct.textContent = '100%';
+        progFill.style.width = '100%';
+        gotoBtn.hidden = false;
+        updateSelectionButtons();
+        invalidateDirCache(target.fid);
+        if (state.view === 'files' && String(state.fid) === String(target.fid)) {
+          reloadCurrent();
+        }
+        silentRefreshAccountAndQuota({ force: true });
+        toast('ok', '云解压已完成');
+      }
+
+      extractSelBtn.addEventListener('click', function () { startExtract(true, 1); });
+      extractAllBtn.addEventListener('click', function () { startExtract(false, 1); });
+
+      // 并发预拉取建议目录、权益提示与首层内容
+      if (API.has('archive', 'targetDir')) {
+        API.archive.targetDir(fid).then(function (td) {
+          if (!alive || !td || !td.dirFid) return;
+          target.fid = String(td.dirFid);
+          if (td.dirName) target.name = td.dirName;
+          targetStrong.textContent = target.name;
+        }).catch(function () { /* 静默 */ });
+      }
+      if (API.has('archive', 'rightTimes')) {
+        API.archive.rightTimes(fid).then(function (rt) {
+          if (!alive || !rt) return;
+          if (rt.baseEnough === false && rt.extendLeft > 0) {
+            rightPill.textContent = '体验次数剩余 ' + rt.extendLeft + ' 次';
+            rightPill.hidden = false;
+          } else if (rt.baseEnough === false) {
+            rightPill.textContent = '云解压受账号权益限制';
+            rightPill.hidden = false;
+          }
+        }).catch(function () { /* 静默 */ });
+      }
+      loadPreview('', 1, false, 0);
+    });
+  }
+
+  /* ================================================================== *
+   * 空间占用明细弹窗（点击侧边栏空间卡片打开）
+   * ================================================================== */
+
+  function openStorageDetailModal() {
+    if (!API.injected || needsLoginState()) return;
+    var alive = true;
+    openOverlay(function (ui) {
+      ui.setResolve(function () { alive = false; });
+      ui.panel.classList.add('dlg-storage');
+
+      var head = h('div', 'dlg-head');
+      head.appendChild(icon('cloud', 'dlg-ic'));
+      head.appendChild(h('h3', 'dlg-title', '云盘空间占用明细'));
+      ui.panel.appendChild(head);
+
+      var body = h('div', 'dlg-body');
+      var sumRow = h('div', 'storage-summary');
+      var statFree = h('div', 'storage-stat');
+      statFree.appendChild(h('span', 'storage-stat-k', '剩余可用空间'));
+      var statFreeVal = h('span', 'storage-stat-v primary', '—');
+      statFree.appendChild(statFreeVal);
+      var statUsed = h('div', 'storage-stat');
+      statUsed.appendChild(h('span', 'storage-stat-k', '已使用空间'));
+      var statUsedVal = h('span', 'storage-stat-v', '—');
+      statUsed.appendChild(statUsedVal);
+      var statTotal = h('div', 'storage-stat');
+      statTotal.appendChild(h('span', 'storage-stat-k', '账号总容量'));
+      var statTotalVal = h('span', 'storage-stat-v', '—');
+      statTotal.appendChild(statTotalVal);
+      sumRow.appendChild(statFree);
+      sumRow.appendChild(statUsed);
+      sumRow.appendChild(statTotal);
+      body.appendChild(sumRow);
+
+      var stack = h('div', 'storage-stack');
+      body.appendChild(stack);
+
+      var rowsBox = h('div', 'storage-rows');
+      rowsBox.appendChild(h('div', 'picker-loading', '正在读取各来源空间占用…'));
+      body.appendChild(rowsBox);
+      ui.panel.appendChild(body);
+
+      var foot = h('div', 'dlg-foot');
+      var recycleBtn = h('button', 'btn btn-sm', '打开回收站释放空间');
+      recycleBtn.type = 'button';
+      recycleBtn.id = 'storage-btn-recycle';
+      recycleBtn.addEventListener('click', function () {
+        ui.close(null);
+        setView('recycle');
+      });
+      var refreshBtn = h('button', 'btn btn-sm', '刷新数据');
+      refreshBtn.type = 'button';
+      refreshBtn.id = 'storage-btn-refresh';
+      var closeBtn = h('button', 'btn btn-primary', '关闭');
+      closeBtn.type = 'button';
+      closeBtn.addEventListener('click', function () { ui.close(null); });
+      foot.appendChild(recycleBtn);
+      foot.appendChild(refreshBtn);
+      foot.appendChild(closeBtn);
+      ui.panel.appendChild(foot);
+
+      function paintSummary() {
+        var q = state.quota;
+        if (q && q.total > 0) {
+          statFreeVal.textContent = fmtSize(freeBytesOf(q));
+          statUsedVal.textContent = fmtSize(Math.max(0, Number(q.used) || 0));
+          statTotalVal.textContent = fmtSize(q.total);
+        }
+      }
+
+      async function loadBreakdown() {
+        paintSummary();
+        refreshBtn.disabled = true;
+        rowsBox.textContent = '';
+        rowsBox.appendChild(h('div', 'picker-loading', '正在读取各来源空间占用…'));
+        var tasks = [
+          silentRefreshAccountAndQuota({ force: true, withAccount: true }),
+          API.has('fs', 'storageDetail') ? API.fs.storageDetail().catch(function () { return null; }) : Promise.resolve(null)
+        ];
+        var res = await Promise.all(tasks);
+        if (!alive) return;
+        refreshBtn.disabled = false;
+        paintSummary();
+        var detail = res[1];
+        var list = (detail && Array.isArray(detail.list)) ? detail.list.slice() : [];
+        list = list.filter(function (x) { return (Number(x.size) || 0) > 0 || (Number(x.count) || 0) > 0; });
+        list.sort(function (a, b) { return (Number(b.size) || 0) - (Number(a.size) || 0); });
+
+        stack.textContent = '';
+        rowsBox.textContent = '';
+        if (!list.length) {
+          rowsBox.appendChild(h('div', 'picker-empty', '暂无空间分类明细，已为你刷新最新剩余容量。'));
+          return;
+        }
+        var sumSize = list.reduce(function (acc, x) { return acc + (Number(x.size) || 0); }, 0);
+        var base = Math.max(sumSize, (state.quota && state.quota.used) || 0, 1);
+        list.forEach(function (entry) {
+          var meta = STORAGE_SRC_META[String(entry.srcName || '').toUpperCase()] || { label: entry.srcName || '其他', color: '#64748B' };
+          var sz = Number(entry.size) || 0;
+          var pct = (sz / base) * 100;
+          if (sz > 0) {
+            var seg = h('div', 'storage-stack-seg');
+            seg.style.width = Math.max(1.2, pct).toFixed(2) + '%';
+            seg.style.background = meta.color;
+            seg.title = meta.label + '：' + fmtSize(sz);
+            stack.appendChild(seg);
+          }
+          var row = h('div', 'storage-row');
+          var dot = h('span', 'storage-dot');
+          dot.style.background = meta.color;
+          row.appendChild(dot);
+          row.appendChild(h('span', 'storage-name', meta.label));
+          row.appendChild(h('span', 'storage-count', entry.count > 0 ? (fmtInt(entry.count) + ' 项') : ''));
+          row.appendChild(h('span', 'storage-size', sz > 0 ? fmtSize(sz) : '0 B'));
+          rowsBox.appendChild(row);
+        });
+      }
+
+      refreshBtn.addEventListener('click', loadBreakdown);
+      loadBreakdown();
+    });
+  }
+
+  /* ================================================================== *
+   * 回收站视图（极简查看、还原、彻底删除、清空释放空间）
+   * ================================================================== */
+
+  function updateRecycleControls() {
+    if (!el.recycleCheckAll) return;
+    var items = state.recycle.items || [];
+    var selCount = state.recycle.selected.size;
+    el.recycleCheckAll.checked = items.length > 0 && selCount >= items.length;
+    el.recycleCheckAll.indeterminate = selCount > 0 && selCount < items.length;
+    el.recycleCheckAll.disabled = items.length === 0;
+    if (el.btnRecycleRecover) el.btnRecycleRecover.disabled = selCount === 0;
+    if (el.btnRecycleRemove) el.btnRecycleRemove.disabled = selCount === 0;
+    if (el.btnRecycleClear) el.btnRecycleClear.disabled = items.length === 0 && !state.recycle.total;
+    if (el.recycleSummary) {
+      if (!API.injected) el.recycleSummary.textContent = '未连接后端';
+      else if (needsLoginState()) el.recycleSummary.textContent = '请先登录';
+      else if (selCount > 0) el.recycleSummary.textContent = '已选 ' + selCount + ' / ' + (state.recycle.total || items.length) + ' 项';
+      else if (state.recycle.loadedOnce) el.recycleSummary.textContent = '共 ' + (state.recycle.total || items.length) + ' 项 · 到期自动清理';
+      else el.recycleSummary.textContent = '';
+    }
+  }
+
+  function renderRecycle() {
+    if (!el.recycleList) return;
+    var box = el.recycleList;
+    box.textContent = '';
+    if (el.recycleFoot) el.recycleFoot.textContent = '';
+    updateRecycleControls();
+
+    if (!API.injected) {
+      var nb = h('div', 'empty');
+      nb.appendChild(icon('trash', 'empty-ic'));
+      nb.appendChild(h('div', 'empty-title', '未注入桥接层，无法访问回收站'));
+      box.appendChild(nb);
+      return;
+    }
+    if (needsLoginState()) {
+      var nl = h('div', 'empty');
+      nl.appendChild(icon('cloud', 'empty-ic'));
+      nl.appendChild(h('div', 'empty-title', '登录夸克账号后可查看并还原回收站文件'));
+      var lb = h('button', 'btn btn-primary empty-action', '登录夸克账号');
+      lb.type = 'button';
+      lb.addEventListener('click', doLogin);
+      nl.appendChild(lb);
+      box.appendChild(nl);
+      return;
+    }
+    if (state.recycle.loading && !state.recycle.items.length) {
+      box.appendChild(h('div', 'picker-loading', '正在加载回收站…'));
+      return;
+    }
+    var items = state.recycle.items || [];
+    if (!items.length) {
+      var em = h('div', 'empty');
+      em.appendChild(icon('trash', 'empty-ic'));
+      em.appendChild(h('div', 'empty-title', '回收站是空的'));
+      em.appendChild(h('div', 'empty-sub', '已删除的文件会暂存在这里，支持随时还原或彻底清理释放空间。'));
+      box.appendChild(em);
+      return;
+    }
+
+    items.forEach(function (it) {
+      var rid = String(it.recordId || it.fid);
+      var selected = state.recycle.selected.has(rid);
+      var row = h('div', 'recycle-row' + (selected ? ' selected' : ''));
+      row.dataset.recordId = rid;
+      row.setAttribute('role', 'listitem');
+
+      var cbCell = h('span', 'cb-cell');
+      var cbLabel = h('label', 'cb');
+      var cb = h('input');
+      cb.type = 'checkbox';
+      cb.checked = selected;
+      cb.setAttribute('aria-label', '选择 ' + it.name);
+      cb.addEventListener('change', function () {
+        if (cb.checked) state.recycle.selected.add(rid);
+        else state.recycle.selected.delete(rid);
+        row.classList.toggle('selected', cb.checked);
+        updateRecycleControls();
+      });
+      cbLabel.appendChild(cb);
+      cbLabel.appendChild(h('i'));
+      cbCell.appendChild(cbLabel);
+      row.appendChild(cbCell);
+
+      var nameCol = h('span', 'col-name');
+      var icWrap = h('span', 'fileicon ' + catClass(it));
+      icWrap.appendChild(icon(iconFor(it)));
+      var fname = h('span', 'fname', it.name);
+      fname.title = it.name;
+      nameCol.appendChild(icWrap);
+      nameCol.appendChild(fname);
+      row.appendChild(nameCol);
+
+      var originText = it.pdirName || '全部文件';
+      var originEl = h('span', 'recycle-origin', originText);
+      originEl.title = originText;
+      row.appendChild(originEl);
+
+      row.appendChild(h('span', 'col-size', it.dir ? '—' : fmtSize(it.size)));
+
+      var days = it.remainMs > 0 ? Math.max(1, Math.ceil(it.remainMs / 86400000)) : 0;
+      var remainText = days > 0 ? (days + ' 天') : '即将清理';
+      row.appendChild(h('span', 'recycle-remain' + (days <= 3 ? ' soon' : ''), remainText));
+
+      var ops = h('span', 'col-ops');
+      var recBtn = h('button', 'op');
+      recBtn.type = 'button';
+      recBtn.title = '还原到原位置';
+      recBtn.setAttribute('aria-label', '还原 ' + it.name);
+      recBtn.appendChild(icon('restore'));
+      recBtn.addEventListener('click', function () { doRecycleRecover([it]); });
+      ops.appendChild(recBtn);
+
+      var delBtn = h('button', 'op danger');
+      delBtn.type = 'button';
+      delBtn.title = '彻底删除';
+      delBtn.setAttribute('aria-label', '彻底删除 ' + it.name);
+      delBtn.appendChild(icon('trash'));
+      delBtn.addEventListener('click', function () { doRecycleRemove([it]); });
+      ops.appendChild(delBtn);
+      row.appendChild(ops);
+
+      box.appendChild(row);
+    });
+
+    if (el.recycleFoot) {
+      if (state.recycle.hasMore) {
+        var more = h('button', 'btn btn-sm', '加载更多');
+        more.type = 'button';
+        more.addEventListener('click', function () { loadRecycle({ append: true }); });
+        var wrap = h('div', 'foot-line');
+        wrap.appendChild(more);
+        el.recycleFoot.appendChild(wrap);
+      } else {
+        el.recycleFoot.appendChild(h('div', 'foot-line muted', '共 ' + items.length + ' 项'));
+      }
+    }
+  }
+
+  async function loadRecycle(opts) {
+    var o = opts || {};
+    if (!API.injected || needsLoginState() || !API.has('recycle', 'list')) {
+      renderRecycle();
+      return;
+    }
+    var seq = o.append ? recycleSeq : ++recycleSeq;
+    var nextPage = o.append ? (state.recycle.page + 1) : 1;
+    state.recycle.loading = true;
+    if (!o.append) {
+      state.recycle.selected.clear();
+      renderRecycle();
+    }
+    try {
+      var res = await API.recycle.list({ page: nextPage, size: 50 });
+      if (seq !== recycleSeq) return;
+      var list = (res && Array.isArray(res.list)) ? res.list : [];
+      state.recycle.items = o.append ? state.recycle.items.concat(list) : list;
+      state.recycle.page = nextPage;
+      state.recycle.total = (res && typeof res.total === 'number' && res.total > 0) ? res.total : state.recycle.items.length;
+      state.recycle.hasMore = !!(res && res.hasMore);
+      state.recycle.loadedOnce = true;
+    } catch (err) {
+      if (seq !== recycleSeq) return;
+      reportError(err, '读取回收站失败');
+    } finally {
+      if (seq === recycleSeq) {
+        state.recycle.loading = false;
+        renderRecycle();
+      }
+    }
+  }
+
+  async function doRecycleRecover(items) {
+    if (!ensureLoggedInForWrite('还原')) return;
+    var list = (items || []).filter(Boolean);
+    if (!list.length) return;
+    try {
+      await API.recycle.recover({ recordIds: list.map(function (x) { return x.recordId; }) });
+      invalidateDirCache();
+      toast('ok', '已还原 ' + list.length + ' 个项目到原目录');
+      loadRecycle({ reset: true });
+      silentRefreshAccountAndQuota({ force: true });
+    } catch (err) {
+      reportError(err, '还原失败');
+    }
+  }
+
+  async function doRecycleRemove(items) {
+    if (!ensureLoggedInForWrite('彻底删除')) return;
+    var list = (items || []).filter(Boolean);
+    if (!list.length) return;
+    var ok = await confirmDialog({
+      title: '确认彻底删除',
+      message: '即将彻底删除选中的 ' + list.length + ' 个项目，删除后无法找回。',
+      detail: '彻底删除将释放对应的云盘空间。',
+      confirmText: '彻底删除',
+      danger: true,
+      list: list.map(function (i) { return i.name + (i.dir ? '（文件夹）' : ''); })
+    });
+    if (!ok) return;
+    try {
+      await API.recycle.remove({ recordIds: list.map(function (x) { return x.recordId; }), clearAll: false });
+      toast('ok', '已彻底删除 ' + list.length + ' 个项目');
+      loadRecycle({ reset: true });
+      silentRefreshAccountAndQuota({ force: true });
+    } catch (err) {
+      reportError(err, '彻底删除失败');
+    }
+  }
+
+  async function doRecycleClearAll() {
+    if (!ensureLoggedInForWrite('清空回收站')) return;
+    var ok = await confirmDialog({
+      title: '确认清空回收站',
+      message: '即将永久清空回收站中的全部文件，此操作不可撤销！',
+      detail: '清空后所有文件将无法恢复，并会立即释放云盘占用空间。',
+      confirmText: '清空回收站',
+      danger: true
+    });
+    if (!ok) return;
+    try {
+      await API.recycle.remove({ clearAll: true });
+      toast('ok', '回收站已清空');
+      loadRecycle({ reset: true });
+      silentRefreshAccountAndQuota({ force: true });
+    } catch (err) {
+      reportError(err, '清空回收站失败');
     }
   }
 
@@ -2491,6 +3718,7 @@
    * ================================================================== */
 
   var OPS = [
+    { key: 'unarchive', title: '云解压 / 浏览', icon: 'file-archive' },
     { key: 'download', title: '下载', icon: 'download' },
     { key: 'rename', title: '重命名', icon: 'rename' },
     { key: 'move', title: '移动到', icon: 'move' },
@@ -2512,12 +3740,15 @@
   /** 目录分页加载：把一条异步任务受理结果轮询到结束，失效缓存并按需刷新当前目录。 */
   async function awaitTask(accepted, what, originFid, extraInvalidateFid) {
     var srcFid = originFid !== undefined ? String(originFid) : String(state.fid);
+    var originSeq = listSeq;
+    var accountSnap = state.account;
     var maybeRefresh = function () {
+      if (!sameAccountSession(accountSnap)) return;
       invalidateDirCache(srcFid);
       if (extraInvalidateFid !== undefined && extraInvalidateFid !== null) {
         invalidateDirCache(String(extraInvalidateFid));
       }
-      if (state.view === 'files' && (state.mode === 'search' || String(state.fid) === srcFid)) {
+      if (listSeq === originSeq && state.view === 'files' && (state.mode === 'search' || String(state.fid) === srcFid)) {
         reloadCurrent();
       }
       if (what === '删除' || what === '复制') {
@@ -5218,6 +6449,7 @@
       b.classList.toggle('active', b.dataset.view === view);
     });
     el.viewFiles.hidden = view !== 'files';
+    if (el.viewRecycle) el.viewRecycle.hidden = view !== 'recycle';
     el.viewTransfers.hidden = view !== 'transfers';
     el.viewSettings.hidden = view !== 'settings';
     if (el.viewChat) el.viewChat.hidden = view !== 'chat';
@@ -5232,6 +6464,9 @@
       }
       scheduleRows();
       if (pendingFilesRefresh) silentRefreshFiles();
+    }
+    if (view === 'recycle') {
+      loadRecycle({ reset: true });
     }
     if (view === 'transfers') {
       renderTransfers(true);
@@ -5374,15 +6609,48 @@
       el.subbarTransferLive.addEventListener('click', function () { setView('transfers'); });
     }
     if (el.sidebarQuota) {
-      var triggerQuotaSync = function () {
+      var openQuotaBreakdown = function () {
         if (!API.injected || needsLoginState()) return;
-        silentRefreshAccountAndQuota({ force: true, withAccount: true }).then(function () {
-          toast('info', '账号状态与剩余空间已刷新');
-        });
+        openStorageDetailModal();
       };
-      el.sidebarQuota.addEventListener('click', triggerQuotaSync);
+      el.sidebarQuota.addEventListener('click', openQuotaBreakdown);
       el.sidebarQuota.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); triggerQuotaSync(); }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openQuotaBreakdown(); }
+      });
+    }
+
+    // 回收站工具栏与全选
+    if (el.btnRecycleRefresh) {
+      el.btnRecycleRefresh.addEventListener('click', function () { loadRecycle({ reset: true }); });
+    }
+    if (el.btnRecycleRecover) {
+      el.btnRecycleRecover.addEventListener('click', function () {
+        var picked = (state.recycle.items || []).filter(function (x) {
+          return state.recycle.selected.has(String(x.recordId || x.fid));
+        });
+        if (picked.length) doRecycleRecover(picked);
+      });
+    }
+    if (el.btnRecycleRemove) {
+      el.btnRecycleRemove.addEventListener('click', function () {
+        var picked = (state.recycle.items || []).filter(function (x) {
+          return state.recycle.selected.has(String(x.recordId || x.fid));
+        });
+        if (picked.length) doRecycleRemove(picked);
+      });
+    }
+    if (el.btnRecycleClear) {
+      el.btnRecycleClear.addEventListener('click', doRecycleClearAll);
+    }
+    if (el.recycleCheckAll) {
+      el.recycleCheckAll.addEventListener('change', function () {
+        state.recycle.selected.clear();
+        if (el.recycleCheckAll.checked) {
+          (state.recycle.items || []).forEach(function (x) {
+            state.recycle.selected.add(String(x.recordId || x.fid));
+          });
+        }
+        renderRecycle();
       });
     }
 
@@ -5536,13 +6804,14 @@
           toggleSelect(fid, idx, e);
         } else {
           var alreadySole = state.selected.size === 1 && state.selected.has(String(fid));
+          state.lastIndex = idx;
+          state.inspectorFid = String(fid);
           if (!alreadySole) {
             clearSelection();
             setSelected(fid, true);
+          } else if (state.inspectorOpen) {
+            renderInspector();
           }
-          state.lastIndex = idx;
-          state.inspectorFid = String(fid);
-          if (state.inspectorOpen) renderInspector();
         }
       }
     });
@@ -5593,6 +6862,9 @@
       var downloadable = sel.filter(function (x) { return !x.dir; });
       var entries = [];
       if (!multi && item.dir) entries.push({ label: '打开', icon: 'folder-open', run: function () { openItem(item); } });
+      if (!multi && isArchiveItem(item) && API.has('archive', 'preview')) {
+        entries.push({ label: '云解压 / 浏览内容…', icon: 'file-archive', run: function () { openArchiveModal(item); } });
+      }
       if (downloadable.length) {
         entries.push({
           label: multi ? ('下载选中的 ' + downloadable.length + ' 个文件') : '下载',
@@ -5615,7 +6887,7 @@
       if (!multi) {
         entries.push({ label: '重命名', icon: 'rename', run: function () { onRename(item); } });
         entries.push({ label: '复制名称', icon: 'copy', run: function () { copyText(item.name, '文件名'); } });
-        entries.push({ label: '查看详情', icon: 'info', run: function () { state.inspectorFid = String(item.fid); setInspectorOpen(true); } });
+        entries.push({ label: item.dir ? '查看大小与详情' : '查看详情', icon: 'info', run: function () { state.inspectorFid = String(item.fid); setInspectorOpen(true); } });
       }
       entries.push({ sep: true });
       entries.push({ label: '移动到…', icon: 'move', run: function () { doTransferOp('move', sel); } });
@@ -5939,6 +7211,7 @@
 
   function runRowOp(op, item) {
     if (!item) return;
+    if (op === 'unarchive') return openArchiveModal(item);
     if (op === 'download') return downloadItems([item]);
     if (op === 'rename') return onRename(item);
     if (op === 'move') return doTransferOp('move', [item]);
@@ -6020,6 +7293,17 @@
     el.btnUpload = $('btn-upload');
     el.account = $('account');
     el.viewFiles = $('view-files');
+    el.viewRecycle = $('view-recycle');
+    el.navRecycle = $('nav-recycle');
+    el.recycleSummary = $('recycle-summary');
+    el.btnRecycleRefresh = $('btn-recycle-refresh');
+    el.btnRecycleRecover = $('btn-recycle-recover');
+    el.btnRecycleRemove = $('btn-recycle-remove');
+    el.btnRecycleClear = $('btn-recycle-clear');
+    el.recycleCheckAll = $('recycle-check-all');
+    el.recycleListwrap = $('recycle-listwrap');
+    el.recycleList = $('recycle-list');
+    el.recycleFoot = $('recycle-foot');
     el.viewTransfers = $('view-transfers');
     el.viewSettings = $('view-settings');
     el.viewFeedback = $('view-feedback');
@@ -6329,6 +7613,9 @@
     setSortBy: setSortBy,
     applyViewMode: applyViewMode,
     setInspectorOpen: setInspectorOpen,
+    openArchiveModal: openArchiveModal,
+    openStorageDetailModal: openStorageDetailModal,
+    loadRecycle: loadRecycle,
     getRowCount: function () { return rowMap.size; },
     version: '0.3.0-beta.1'
   };

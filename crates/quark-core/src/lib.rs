@@ -504,7 +504,12 @@ impl Core {
                 })?;
                 Ok(merged)
             }
-            _ if method.starts_with("fs.") => self.files_call(method, params).await,
+            _ if method.starts_with("fs.")
+                || method.starts_with("archive.")
+                || method.starts_with("recycle.") =>
+            {
+                self.files_call(method, params).await
+            }
             _ => Err(Error::new("INVALID_ARG", "未知核心方法")),
         }
     }
@@ -603,6 +608,26 @@ fn envelope_error(http_status: u16, env: &Value) -> Option<Error> {
             || !env["metadata"]["missing_capacity"].is_null());
     let (code, fallback) = if capacity {
         ("NO_SPACE", "网盘容量不足")
+    } else if biz == 27001 {
+        ("ARCHIVE_NEED_PWD", "该压缩包已加密，请输入解压密码")
+    } else if biz == 27002 {
+        ("ARCHIVE_PWD_ERROR", "解压密码不正确，请重新输入")
+    } else if biz == 23008 {
+        ("CONFLICT", "目标位置已存在同名文件或目录")
+    } else if biz == 26101 {
+        ("ARCHIVE_DAMAGED", "压缩包已损坏或无法读取")
+    } else if biz == 26102 || biz == 26106 || biz == 32030 {
+        ("ARCHIVE_TOO_LARGE", "压缩包或解压后体积超出云解压限制")
+    } else if biz == 26103 {
+        ("ARCHIVE_UNSUPPORTED", "暂不支持云解压该压缩包格式")
+    } else if biz == 26104 {
+        ("ARCHIVE_TOO_MANY_FILES", "压缩包内文件数量过多，超出云端预览或解压限制")
+    } else if biz == 26105 {
+        ("SERVER", "云解压服务繁忙，请稍后重试")
+    } else if biz == 32019 {
+        ("RATE_LIMIT", "同时进行的云解压任务数已达上限，请稍后再试")
+    } else if biz == 32020 {
+        ("FORBIDDEN", "当前账号免费云解压次数已用完（需会员权益）")
     } else if biz == 31001 || http_status == 401 || status == 401 {
         ("NEED_LOGIN", "登录状态已失效，请重新登录")
     } else if biz == 31002 || http_status == 403 || status == 403 {
@@ -749,6 +774,26 @@ mod tests {
         assert_eq!(
             envelope_error(200, &json!({"code":99999})).unwrap().code,
             "UNKNOWN"
+        );
+        assert_eq!(
+            envelope_error(400, &json!({"code":27001})).unwrap().code,
+            "ARCHIVE_NEED_PWD"
+        );
+        assert_eq!(
+            envelope_error(400, &json!({"code":27002})).unwrap().code,
+            "ARCHIVE_PWD_ERROR"
+        );
+        assert_eq!(
+            envelope_error(400, &json!({"code":23008})).unwrap().code,
+            "CONFLICT"
+        );
+        assert_eq!(
+            envelope_error(400, &json!({"code":26104})).unwrap().code,
+            "ARCHIVE_TOO_MANY_FILES"
+        );
+        assert_eq!(
+            envelope_error(400, &json!({"code":32020})).unwrap().code,
+            "FORBIDDEN"
         );
     }
     #[tokio::test]

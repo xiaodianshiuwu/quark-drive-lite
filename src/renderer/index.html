@@ -34,6 +34,10 @@
         <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-folder"></use></svg>
         <span>全部文件</span>
       </button>
+      <button type="button" class="nav-item" id="nav-recycle" data-view="recycle">
+        <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-trash"></use></svg>
+        <span>回收站</span>
+      </button>
       <button type="button" class="nav-item" data-view="transfers">
         <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-transfer"></use></svg>
         <span>传输列表</span>
@@ -60,8 +64,8 @@
       <span class="mini-text" id="sidebar-transfer-text">传输中…</span>
     </button>
 
-    <!-- 侧栏云盘空间用量卡（登录后展示，突出剩余可用额度，点击即时刷新） -->
-    <div class="sidebar-quota" id="sidebar-quota" hidden role="button" tabindex="0" title="点击刷新账号状态与剩余空间">
+    <!-- 侧栏云盘空间用量卡（登录后展示，突出剩余可用额度，点击查看空间明细并刷新） -->
+    <div class="sidebar-quota" id="sidebar-quota" hidden role="button" tabindex="0" title="点击查看空间占用明细与刷新">
       <div class="sidebar-quota-head">
         <span class="sidebar-quota-label">剩余可用空间</span>
         <span class="sidebar-quota-free" id="sidebar-quota-free"></span>
@@ -247,6 +251,48 @@
           </div>
           <div class="inspector-body" id="inspector-body"></div>
         </aside>
+      </div>
+    </section>
+
+    <!-- ======================= 视图：回收站 ======================= -->
+    <section class="view" id="view-recycle" hidden>
+      <div class="section-head">
+        <h2 class="section-title">回收站</h2>
+        <div class="section-actions">
+          <span class="muted" id="recycle-summary"></span>
+          <button type="button" class="btn btn-sm btn-ghost" id="btn-recycle-refresh">
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-refresh"></use></svg>
+            <span>刷新</span>
+          </button>
+          <button type="button" class="btn btn-sm" id="btn-recycle-recover" disabled>
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-restore"></use></svg>
+            <span>还原选中</span>
+          </button>
+          <button type="button" class="btn btn-sm" id="btn-recycle-remove" disabled>
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-trash"></use></svg>
+            <span>彻底删除</span>
+          </button>
+          <button type="button" class="btn btn-sm btn-danger" id="btn-recycle-clear">清空回收站</button>
+        </div>
+      </div>
+
+      <div class="file-card recycle-card">
+        <div class="recycle-head">
+          <span class="cb-cell">
+            <label class="cb" title="全选回收站项目">
+              <input type="checkbox" id="recycle-check-all" aria-label="全选回收站项目"><i></i>
+            </label>
+          </span>
+          <span class="col-name">文件名</span>
+          <span class="recycle-origin">原位置</span>
+          <span class="col-size">大小</span>
+          <span class="recycle-remain">剩余保留</span>
+          <span class="col-ops">操作</span>
+        </div>
+        <div class="recycle-listwrap" id="recycle-listwrap">
+          <div class="recycle-list" id="recycle-list" role="list"></div>
+          <div class="listfoot" id="recycle-foot"></div>
+        </div>
       </div>
     </section>
 
@@ -846,6 +892,9 @@
   <symbol id="i-feedback" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 5.8A2.3 2.3 0 0 1 6.8 3.5h10.4a2.3 2.3 0 0 1 2.3 2.3v8.4a2.3 2.3 0 0 1-2.3 2.3H11l-4.2 3.5v-3.5H6.8a2.3 2.3 0 0 1-2.3-2.3z"/><path d="M8.5 8.5h7M8.5 12h4.8"/></symbol>
   <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 5 6.4v5.3c0 4.5 3 8.1 7 9.3 4-1.2 7-4.8 7-9.3V6.4z"/><path d="M9.2 12.2 11.2 14.2 15.2 9.8"/></symbol>
   <symbol id="i-link-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 14.5 6.8 17.2a3.6 3.6 0 1 1-5-5l2.7-2.7"/><path d="M14.5 9.5l2.7-2.7a3.6 3.6 0 1 1 5 5l-2.7 2.7"/><path d="M4 4l16 16"/></symbol>
+  <symbol id="i-restore" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 10.5V5.5h5"/><path d="M5 10a7.5 7.5 0 1 1 1.7 8.4"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4.2l2.8 1.6"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9.5" rx="2.2"/><path d="M8.5 10.5V7.8a3.5 3.5 0 1 1 7 0v2.7"/></symbol>
 </svg>
 
 <script src="tauri-bridge.js" defer></script>

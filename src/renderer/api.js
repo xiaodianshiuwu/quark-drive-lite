@@ -257,7 +257,27 @@
       move: expose('fs', 'move'),
       copy: expose('fs', 'copy'),
       remove: expose('fs', 'remove'),
-      taskStatus: expose('fs', 'taskStatus')
+      taskStatus: expose('fs', 'taskStatus'),
+      dirDetail: expose('fs', 'dirDetail', { silent: true, fallback: null }),
+      revisions: expose('fs', 'revisions', { silent: true, fallback: { list: [] } }),
+      revertRevision: expose('fs', 'revertRevision'),
+      storageDetail: expose('fs', 'storageDetail', { silent: true, fallback: null })
+    },
+
+    /** 云解压（压缩包在线目录预览与云端解压；遵循服务端真实权益与错误码）。 */
+    archive: {
+      rightTimes: expose('archive', 'rightTimes', { silent: true, fallback: null }),
+      targetDir: expose('archive', 'targetDir', { silent: true, fallback: null }),
+      preview: expose('archive', 'preview'),
+      unarchive: expose('archive', 'unarchive'),
+      queryTask: expose('archive', 'queryTask')
+    },
+
+    /** 回收站（查看、还原、彻底删除、清空释放空间）。 */
+    recycle: {
+      list: expose('recycle', 'list'),
+      recover: expose('recycle', 'recover'),
+      remove: expose('recycle', 'remove')
     },
 
     transfer: {
@@ -415,7 +435,23 @@
       move: expose('fs', 'move'),
       copy: expose('fs', 'copy'),
       remove: expose('fs', 'remove'),
-      taskStatus: expose('fs', 'taskStatus')
+      taskStatus: expose('fs', 'taskStatus'),
+      dirDetail: expose('fs', 'dirDetail', { silent: true, fallback: null }),
+      revisions: expose('fs', 'revisions', { silent: true, fallback: { list: [] } }),
+      revertRevision: expose('fs', 'revertRevision'),
+      storageDetail: expose('fs', 'storageDetail', { silent: true, fallback: null })
+    };
+    api.archive = {
+      rightTimes: expose('archive', 'rightTimes', { silent: true, fallback: null }),
+      targetDir: expose('archive', 'targetDir', { silent: true, fallback: null }),
+      preview: expose('archive', 'preview'),
+      unarchive: expose('archive', 'unarchive'),
+      queryTask: expose('archive', 'queryTask')
+    };
+    api.recycle = {
+      list: expose('recycle', 'list'),
+      recover: expose('recycle', 'recover'),
+      remove: expose('recycle', 'remove')
     };
     api.app = {
       quit: expose('app', 'quit', { silent: true, fallback: null }),
@@ -833,7 +869,96 @@
               }));
             }, 150);
           });
+        },
+        dirDetail: function (fid) {
+          var walk = function (id) {
+            var list = kids[String(id)] || [];
+            var totalSize = 0;
+            var count = 0;
+            list.forEach(function (cid) {
+              var it = items[cid];
+              if (!it) return;
+              count += 1;
+              if (it.dir) {
+                var sub = walk(cid);
+                totalSize += sub.size;
+                count += sub.items;
+              } else {
+                totalSize += Number(it.size) || 0;
+              }
+            });
+            return { size: totalSize, items: count };
+          };
+          var stats = walk(fid);
+          return Promise.resolve({ fid: String(fid), finished: true, items: stats.items, size: stats.size });
+        },
+        revisions: function (fid) {
+          var it = findByFid(fid);
+          if (!it || it.dir) return Promise.resolve({ list: [] });
+          var now = Date.now();
+          return Promise.resolve({
+            list: [
+              { version: 2, fid: it.fid, name: it.name, size: it.size, updatedAt: it.updatedAt || now, current: true },
+              { version: 1, fid: it.fid, name: it.name, size: Math.max(1024, Math.round((it.size || 4096) * 0.85)), updatedAt: now - 86400 * 3000, current: false }
+            ]
+          });
+        },
+        revertRevision: function () { return Promise.resolve({ ok: true }); },
+        storageDetail: function () {
+          return Promise.resolve({
+            list: [
+              { srcName: 'UPLOAD', size: 180 * GB, count: 420, contribution: 180 * GB },
+              { srcName: 'SAVE_AS_ALL', size: 120 * GB, count: 215, contribution: 120 * GB },
+              { srcName: 'UNARCHIVE', size: 42 * GB, count: 88, contribution: 42 * GB },
+              { srcName: 'OTHER', size: 8 * GB, count: 16, contribution: 8 * GB }
+            ]
+          });
         }
+      },
+
+      archive: {
+        rightTimes: function () { return Promise.resolve({ baseEnough: true, extendLeft: 5 }); },
+        targetDir: function (fid) {
+          var it = findByFid(fid);
+          var base = it ? it.name.replace(/\.[^.]+$/, '') : '解压目录';
+          return Promise.resolve({ dirFid: '0', dirName: '全部文件 / ' + base, exists: true });
+        },
+        preview: function (p) {
+          p = p || {};
+          var pathNo = String(p.pathNo || '');
+          var entries = pathNo === '1'
+            ? [
+                { name: '说明.md', isFolder: false, path: 'docs/说明.md', pathNo: '1/1', size: 4210, updatedAt: Date.now() - 3600000 },
+                { name: '截图.png', isFolder: false, path: 'docs/截图.png', pathNo: '1/2', size: 325410, updatedAt: Date.now() - 3600000 }
+              ]
+            : [
+                { name: 'docs', isFolder: true, path: 'docs', pathNo: '1', size: 0, updatedAt: Date.now() - 7200000 },
+                { name: 'README.txt', isFolder: false, path: 'README.txt', pathNo: '2', size: 2048, updatedAt: Date.now() - 7200000 },
+                { name: 'app.bin', isFolder: false, path: 'app.bin', pathNo: '3', size: 12 * MB, updatedAt: Date.now() - 7200000 }
+              ];
+          return Promise.resolve({
+            finish: true, totalFileCount: entries.length, list: entries,
+            page: 1, size: 100, count: entries.length, tqGap: 500
+          });
+        },
+        unarchive: function () { return Promise.resolve({ taskId: 'mock-unzip-1', finish: false, status: 'running' }); },
+        queryTask: function (taskId) {
+          return Promise.resolve({ taskId: String(taskId || 'mock-unzip-1'), status: 'finish', statusCode: 2, progress: 100, done: true, failed: false, message: '' });
+        }
+      },
+
+      recycle: {
+        list: function () {
+          return Promise.resolve({
+            list: [
+              { recordId: 'rec-1', fid: 'rf-1', name: '旧版会议纪要.docx', dir: false, ext: 'docx', size: 185 * KB, pdirFid: '0', pdirName: '全部文件', deletedAt: Date.now() - 86400 * 1000, remainMs: 9 * 86400 * 1000 },
+              { recordId: 'rec-2', fid: 'rf-2', name: '临时归档', dir: true, ext: '', size: 0, pdirFid: '0', pdirName: '全部文件', deletedAt: Date.now() - 2 * 86400 * 1000, remainMs: 8 * 86400 * 1000 }
+            ],
+            total: 2, page: 1, size: 50, hasMore: false
+          });
+        },
+        recover: function () { return Promise.resolve({ taskId: '', done: true }); },
+        remove: function () { return Promise.resolve({ taskId: '', done: true }); }
       },
 
       transfer: {

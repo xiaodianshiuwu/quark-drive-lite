@@ -450,3 +450,75 @@ Chromium 版本取自本项目实际使用的 Electron 内置版本，保证自�
 - 相同内容上传会真实触发 `update/hash` 秒传，不发送分片 PUT；`pre.finish` 分支目前仅由离线测试覆盖，服务端未自然返回该路径。
 - 多 GB 文件的完整回读尚未执行；稀疏文件的偏移处理测试不能记为真实大文件传输。
 - HTTP UA 的协议后缀、产品版本与签名标识保持已取证的值。Electron 环境中使用实际的 `process.versions.chrome`，纯 Node 辅助工具保留已取证的固定版本值。
+
+---
+
+## 16. 云工具接口逆向与真实账号只读实测（2026-11 · Windows `QuarkCloudDrive 7.5.0.827`）
+
+> 证据来源：Windows 实机官方客户端 `C:\Program Files\QuarkCloudDrive\7.5.0.827\Resources\app.asar` 全量 75 份 JS 静态分析 + 真实夸克账号只读探测（零写操作、零 PII 落盘）。
+
+### 16.1 文件夹真实大小与内含项数
+
+- **端点**：`GET /1/clouddrive/dir/detail`
+- **关键参数**：`fid=<文件夹fid>&fetch_by_path=0&scene=pc_dir_detail`
+  - **关键避坑**：当传入 `fid` 时，`fetch_by_path` **必须为 `0`**；若传 `1`，服务端会返回 `14001` 参数错误。
+- **实测响应 `data`**：
+  ```json
+  { "dir_scan_finish": "true", "include_items": "7", "include_items_size": "190124525" }
+  ```
+  `dir_scan_finish` 可能为布尔或字符串 `"true"`/`"false"`，前端在 `false` 时短暂轮询复查即可。
+
+### 16.2 文件与文件夹增强元信息
+
+- **端点**：`GET /1/clouddrive/file/info`
+- **关键参数**：`fid=<fid>&_fetch_full_path=1&need_profile_tags=1&kkkk=1`
+- **实测新增可用字段**：`format_type`（MIME）、`obj_category`、`operated_at`、`duration`（秒）、`fps`、`include_items`、`source_display` / `file_source`、`cur_version_or_default`、`full_path`（数组或路径串）、`md5`、`sha1`。
+
+### 16.3 空间占用分类明细
+
+- **端点**：`GET /1/clouddrive/storage/detail`
+- **实测响应 `data.storage_data[]`**：元素含 `{ src_name, size, count, contribution }`，常见 `src_name` 包括 `SAVE_AS_ALL`、`UPLOAD`、`BACKUP_ALL`、`UNARCHIVE`、`AUTO`、`SAVE_TO`、`SECRET_SPACE`、`SHARED_ALBUM`、`OTHER`。
+
+### 16.4 云解压与压缩包在线目录预览
+
+| 功能 | 方法 | 路径 | 关键参数 / 响应要点 |
+|---|---|---|---|
+| 权益与体验次数 | GET | `/1/clouddrive/archive/right_times` | query: `fid` → `data.{ base_enough, extend_left }` |
+| 建议解压目录 | GET | `/1/clouddrive/archive/target_dir` | query: `fid` → `data.{ dir_fid, dir.file_name, exists }` |
+| 在线目录预览 | POST | `/1/clouddrive/archive/preview_tree` | body: `{ fid, path_no, pwd, remember_pwd: false, _page, _size }` → `data.{ finish, total_file_count, file_list[] }`, `metadata.{ _count, _page, _size, tq_gap }`（`finish=false` 时按 `tq_gap` 轮询） |
+| 发起云端解压 | POST | `/1/clouddrive/archive/unarchive` | body: `{ fid, pwd, select_mode: 0\|2, path_no_list, curr_path_no, remember_pwd: false, suffix_type: 0, to_pdir_fid, conflict_mode: 1\|2 }`（`select_mode`: `0`=全量解压、`2`=按 `path_no_list` 解压；`conflict_mode`: `1`=遇同名报错 `23008`、`2`=覆盖）→ `data.task_id` |
+| 查询解压进度 | GET | `/1/clouddrive/task` | query: `task_id` → `data.{ status (0=todo,1=running,2=finish,3=fail,4=pause), progress (0..1000), message }` |
+
+**云解压官方业务错误码（完整映射并直出中文提示，不绕过任何权益校验）**：
+
+| code | 含义 | 极简版处理 |
+|---|---|---|
+| `27001` | 压缩包已加密，需要解压密码 | `ARCHIVE_NEED_PWD` → 展开密码输入框 |
+| `27002` | 解压密码错误 | `ARCHIVE_PWD_ERROR` → 提示重新输入 |
+| `23008` | 目标目录存在同名文件冲突 | `CONFLICT` → 二次确认后以 `conflict_mode: 2` 重试 |
+| `26101` | 压缩包损坏无法解析 | `ARCHIVE_DAMAGED` |
+| `26102` / `26106` / `32030` | 压缩包或解压后文件过大超出限制 | `ARCHIVE_TOO_LARGE` |
+| `26103` | 不支持该压缩格式 | `ARCHIVE_UNSUPPORTED` |
+| `26104` | 压缩包内文件数超出云端解析上限（已实测命中） | `ARCHIVE_TOO_MANY_FILES` |
+| `26105` | 服务端临时繁忙可重试 | `SERVER` |
+| `32019` | 同时运行的云解压任务数达到上限 | `RATE_LIMIT` |
+| `32020` | 免费体验次数已用尽，需按账号权益使用 | `FORBIDDEN` |
+
+### 16.5 回收站（轻量版）
+
+| 功能 | 方法 | 路径 | 关键参数 |
+|---|---|---|---|
+| 回收站列表 | GET | `/1/clouddrive/file/recycle/list` | `_page`、`_size`、`fetch_pdir_file_name=1` → `data.list[]`（含 `record_id`, `fid`, `file_name`, `file_type`, `size`, `pdir_fid`, `pdir_file_name`, `move_recycle_at`, `invisible_remain`） |
+| 还原文件 | POST | `/1/clouddrive/file/recycle/recover` | `{ select_mode: 2, record_list: [...] }` |
+| 彻底删除 / 清空 | POST | `/1/clouddrive/file/recycle/remove` | 单选/多选：`{ select_mode: 2, record_list: [...] }`；全部清空：`{ select_mode: 1 }` |
+
+### 16.6 文件历史版本
+
+| 功能 | 方法 | 路径 | 关键参数 |
+|---|---|---|---|
+| 历史版本列表 | GET | `/1/clouddrive/file/revision/list` | `fid`、`_page`、`_size` |
+| 恢复指定版本 | POST | `/1/clouddrive/file/revision/revert` | `{ fid, version }` |
+
+### 16.7 明确不纳入的接口说明
+
+- `offline/download/*`（离线下载）：官方客户端强制依赖私有原生 `dsg.encryption`（请求头 `X-U-Content-Encoding: wg`），无法通过标准纯 HTTPS JSON 协议安全复现，且不符合极简版「无黑盒原生劫持」设计原则，故明确不纳入。

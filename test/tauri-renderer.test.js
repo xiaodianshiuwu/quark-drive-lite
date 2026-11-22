@@ -238,13 +238,101 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
             return [{fid:'0',name:'全部文件'}];
           }
           case 'fs.info': {
-            if (p.fid==='folder-deep') return {fid:'folder-deep',name:'二级目录',dir:true,pdirFid:'folder-A'};
-            if (p.fid==='folder-A') return {fid:'folder-A',name:'一级目录',dir:true,pdirFid:'0'};
-            return {fid:p.fid,name:fixture.names[p.fid] || ('项目-' + p.fid),dir:false,pdirFid:'0'};
+            if (p.fid==='folder-deep') return {fid:'folder-deep',name:'二级目录',dir:true,pdirFid:'folder-A',fullPath:'/全部文件/一级目录/二级目录'};
+            if (p.fid==='folder-A') return {fid:'folder-A',name:'一级目录',dir:true,pdirFid:'0',fullPath:[{fid:'0',name:'全部文件'},{fid:'folder-A',name:'一级目录'}],includeItems:3};
+            const fallbackName = fixture.names[p.fid] || (/^\\d+$/.test(String(p.fid)) ? ('fixture-' + p.fid + '.txt') : ('项目-' + p.fid));
+            return {
+              fid:p.fid, name:fallbackName, dir:false, pdirFid:'0',
+              size: Number(p.fid) || 2048, formatType:'text/plain', source:'UPLOAD',
+              fullPath:'/全部文件/' + fallbackName,
+              md5:'d41d8cd98f00b204e9800998ecf8427e', sha1:'da39a3ee5e6b4b0d3255bfef95601890afd80709',
+              duration: p.fid==='tool-video' ? 125 : 0, fps: p.fid==='tool-video' ? 60 : 0,
+              operatedAt: 1763817600000, createdAt: 1763810000000, updatedAt: 1763817600000
+            };
+          }
+          case 'fs.dirDetail': {
+            const sizes = { 'folder-A': { size: 190124525, items: 7 }, 'folder-B': { size: 41943040, items: 3 } };
+            const hit = sizes[p.fid] || { size: 1048576, items: 2 };
+            return { fid: p.fid, finished: true, size: hit.size, items: hit.items };
+          }
+          case 'fs.revisions': {
+            return {
+              list: [
+                { version: 3, fid: p.fid, name: 'doc.txt', size: 8192, updatedAt: 1763817600000, current: true },
+                { version: 2, fid: p.fid, name: 'doc.txt', size: 6144, updatedAt: 1763731200000, current: false }
+              ]
+            };
+          }
+          case 'fs.revertRevision': return { ok: true, fid: p.fid, version: p.version };
+          case 'fs.storageDetail': {
+            return {
+              list: [
+                { srcName: 'UPLOAD', size: 1200000000, count: 42, contribution: 1200000000 },
+                { srcName: 'SAVE_AS_ALL', size: 600000000, count: 19, contribution: 600000000 },
+                { srcName: 'UNARCHIVE', size: 200000000, count: 8, contribution: 200000000 }
+              ]
+            };
+          }
+          case 'archive.rightTimes': return { baseEnough: true, extendLeft: 3 };
+          case 'archive.targetDir': return { dirFid: 'folder-A', dirName: '一级目录', exists: true };
+          case 'archive.preview': {
+            if (fixture.archivePwdRequired && p.pwd !== 'secret123') {
+              throw { code: p.pwd ? 'ARCHIVE_PWD_ERROR' : 'ARCHIVE_NEED_PWD', message: p.pwd ? '解压密码错误' : '压缩包需要密码' };
+            }
+            if (p.pathNo === '1') {
+              return { finish: true, totalFileCount: 3, page: 1, size: 100, count: 1, tqGap: 500, list: [{ name: 'inside.md', isFolder: false, path: 'docs/inside.md', pathNo: '1/1', size: 2048, updatedAt: 1763817600000 }] };
+            }
+            return {
+              finish: true, totalFileCount: 3, page: 1, size: 100, count: 2, tqGap: 500,
+              list: [
+                { name: 'docs', isFolder: true, path: 'docs', pathNo: '1', size: 0, updatedAt: 1763817600000 },
+                { name: 'readme.txt', isFolder: false, path: 'readme.txt', pathNo: '2', size: 1024, updatedAt: 1763817600000 }
+              ]
+            };
+          }
+          case 'archive.unarchive': {
+            if (fixture.archiveConflictOnce && (p.conflictMode || 1) === 1) {
+              fixture.archiveConflictOnce = false;
+              throw { code: 'CONFLICT', bizCode: 23008, message: '目标目录已存在同名文件' };
+            }
+            return { taskId: 'unzip-task-1', finish: false, status: 'running' };
+          }
+          case 'archive.queryTask': {
+            return { taskId: p.taskId, status: 'finish', statusCode: 2, progress: 100, done: true, failed: false, message: '' };
+          }
+          case 'recycle.list': {
+            const rlist = fixture.recycleItems || [
+              { recordId: 'rec-1', fid: 'rf-1', name: '旧报告.pdf', dir: false, ext: 'pdf', size: 524288, pdirFid: '0', pdirName: '全部文件', deletedAt: 1763817600000, remainMs: 7 * 86400000 },
+              { recordId: 'rec-2', fid: 'rf-2', name: '草稿目录', dir: true, ext: '', size: 0, pdirFid: 'folder-A', pdirName: '一级目录', deletedAt: 1763817600000, remainMs: 2 * 86400000 }
+            ];
+            return { list: snapshot(rlist), total: rlist.length, page: 1, size: 50, hasMore: false };
+          }
+          case 'recycle.recover': {
+            const ids = new Set(p.recordIds || []);
+            if (fixture.recycleItems) fixture.recycleItems = fixture.recycleItems.filter(x => !ids.has(x.recordId));
+            return { taskId: '', done: true };
+          }
+          case 'recycle.remove': {
+            if (p.clearAll) {
+              fixture.recycleItems = [];
+            } else {
+              const ids = new Set(p.recordIds || []);
+              if (fixture.recycleItems) fixture.recycleItems = fixture.recycleItems.filter(x => !ids.has(x.recordId));
+            }
+            return { taskId: '', done: true };
           }
           case 'fs.list': {
             if (fixture.holdPage) return new Promise(resolve => fixture.releasePage=resolve);
             if (!fixture.account.loggedIn) throw {code:'NEED_LOGIN',message:'请先登录'};
+            if (fixture.cloudToolsMode) {
+              const list = [
+                {fid:'folder-A',name:'一级目录',dir:true,size:0,updatedAt:1763817600000,pdirFid:'0'},
+                {fid:'folder-B',name:'素材归档',dir:true,size:0,updatedAt:1763817600000,pdirFid:'0'},
+                {fid:'tool-zip',name:'工程源码包.zip',dir:false,size:15728640,updatedAt:1763817600000,ext:'zip',category:5,pdirFid:'0'},
+                {fid:'tool-video',name:'演示录屏.mp4',dir:false,size:52428800,updatedAt:1763817600000,ext:'mp4',category:1,pdirFid:'0'}
+              ];
+              return {list,total:list.length,page:1,size:p.size,hasMore:false};
+            }
             if (fixture.deepMode) {
               const map = {
                 '0': [{fid:'folder-1',name:'新建文件夹',dir:true,pdirFid:'0'}],
@@ -541,8 +629,8 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await until('QKUI.state.fid==="folder-deep" && !QKUI.state.loading', 'history forward to folder-deep');
 
     // 2. 切回丰富多类型列表验证分类筛选、排序、视图模式、右侧详情与多选
-    await evaluate('__fixture.navigationMode=false;__fixture.selfOnlyCrumbs=false;__fixture.directoryMode=false;QKUI.navigate("0")');
-    await until('QKUI.state.items.length>=100 && !QKUI.state.loading', 'rich root loaded');
+    await evaluate('__fixture.navigationMode=false;__fixture.selfOnlyCrumbs=false;__fixture.directoryMode=false;QKUI.navigate("0","全部文件",undefined,{skipCache:true})');
+    await until('QKUI.state.items.length>=100 && !QKUI.state.loading && !!document.querySelector(".row[data-fid=\\"1\\"] input[type=\\"checkbox\\"]")', 'rich root loaded');
 
     // 复选框多选为累加模式（点第 1 项再点第 2 项的 checkbox 应保留两项）
     await click('.row[data-fid="1"] input[type="checkbox"]');
@@ -597,7 +685,7 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
 
     // 760x520 最小窗口下全部视图零横向溢出
     await cdp('Emulation.setDeviceMetricsOverride', { width: 760, height: 520, deviceScaleFactor: 1, mobile: false });
-    for (const v of ['files', 'transfers', 'settings', 'feedback']) {
+    for (const v of ['files', 'recycle', 'transfers', 'settings', 'feedback']) {
       await evaluate('QKUI.setView(' + JSON.stringify(v) + ')');
       await new Promise(r => setTimeout(r, 30));
       assert.equal(await evaluate('document.documentElement.scrollWidth<=760'), true, v + ' must not overflow at 760px');
@@ -712,13 +800,96 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await evaluate('document.documentElement.setAttribute("data-theme","light");QKUI.setView("transfers")');
     await capture('transfers');
     await cdp('Emulation.setDeviceMetricsOverride', { width: 760, height: 520, deviceScaleFactor: 1, mobile: false });
-    for (const v of ['files', 'transfers', 'settings', 'feedback']) {
+    for (const v of ['files', 'recycle', 'transfers', 'settings', 'feedback']) {
       await evaluate('QKUI.setView(' + JSON.stringify(v) + ')');
       await new Promise(r => setTimeout(r, 40));
       assert.equal(await evaluate('document.documentElement.scrollWidth<=760'), true, v + ' must fit 760px');
     }
     await evaluate('QKUI.setView("files")');
     await capture('files-760');
+  });
+
+  await t.test('cloud tools: folder size, enriched details & revisions, cloud archive (pwd/conflict/progress), storage breakdown & recycle bin', async () => {
+    const screenshots = process.env.QCK_AUDIT_SCREENSHOTS;
+    async function capture(name) {
+      if (!screenshots) return;
+      await evaluate('document.querySelectorAll(".toast-close").forEach(b=>b.click())');
+      await new Promise(r => setTimeout(r, 180));
+      fs.mkdirSync(screenshots, { recursive: true });
+      const shot = await cdp('Page.captureScreenshot', { format: 'png' });
+      fs.writeFileSync(path.join(screenshots, name + '.png'), Buffer.from(shot.data, 'base64'));
+    }
+
+    await cdp('Emulation.setDeviceMetricsOverride', { width: 1200, height: 780, deviceScaleFactor: 1, mobile: false });
+    await evaluate('document.documentElement.setAttribute("data-theme","light");__fixture.cloudToolsMode=true;__fixture.directoryMode=false;__fixture.deepMode=false;__fixture.navigationMode=false;__fixture.archivePwdRequired=true;__fixture.archiveConflictOnce=true;__fixture.recycleItems=[{recordId:"rec-1",fid:"rf-1",name:"旧报告.pdf",dir:false,ext:"pdf",size:524288,pdirFid:"0",pdirName:"全部文件",deletedAt:1763817600000,remainMs:7*86400000},{recordId:"rec-2",fid:"rf-2",name:"草稿目录",dir:true,ext:"",size:0,pdirFid:"folder-A",pdirName:"一级目录",deletedAt:1763817600000,remainMs:2*86400000}];QKUI.setView("files");QKUI.navigate("0","全部文件",undefined,{skipCache:true})');
+    await until('QKUI.state.items.length===4 && !QKUI.state.loading && !!document.querySelector(".row[data-fid=\\"folder-A\\"]")', 'cloud tools list loaded');
+
+    // 1. 无需点开详情抽屉，主列表自动后台统计并直接显示文件夹真实大小；打开详情抽屉也正确格式化数组形式 fullPath
+    await until('document.querySelector(".row[data-fid=\\"folder-A\\"] .col-size").textContent.includes("181 MB") && document.querySelector(".row[data-fid=\\"folder-B\\"] .col-size").textContent.includes("40.0 MB")', 'folder sizes auto-populated in main file list without opening inspector');
+    await evaluate('QKUI.setInspectorOpen(true)');
+    await click('.row[data-fid="folder-A"]');
+    await until('document.getElementById("inspector-body").textContent.includes("181 MB") && document.getElementById("inspector-body").textContent.includes("7 项") && document.getElementById("inspector-body").textContent.includes("/全部文件/一级目录")', 'folder real size and formatted path displayed in inspector');
+    await capture('cloud-folder-inspector');
+
+    // 增量勾选第二个文件夹，触发多选总大小统计
+    await click('.row[data-fid="folder-B"] input[type="checkbox"]');
+    await until('!!document.getElementById("btn-inspector-calc-multi")', 'multi-select folder calc button visible');
+    await click('#btn-inspector-calc-multi');
+    await until('document.getElementById("inspector-body").textContent.includes("221 MB") && document.getElementById("inspector-body").textContent.includes("10 项")', 'multi-select folder total calculated');
+
+    // 2. 文件详细信息增强（时长/fps/来源/路径/摘要）+ 历史版本查看与恢复
+    await click('.row[data-fid="tool-video"]');
+    await until('document.getElementById("inspector-body").textContent.includes("02:05") && document.getElementById("inspector-body").textContent.includes("60 fps") && document.getElementById("inspector-body").textContent.includes("手动上传")', 'enriched media details shown');
+    await click('#btn-inspector-revisions');
+    await until('document.querySelectorAll(".inspector-rev-item").length===2', 'file revisions loaded');
+    await click('.inspector-rev-item button');
+    await until('!!document.querySelector(".overlay:not(.overlay-out) .dlg-confirm")', 'revision revert confirm dialog opened');
+    await click('.overlay:not(.overlay-out) .dlg-foot .btn:last-child');
+    await until('__fixtureCalls.some(c=>c.method==="fs.revertRevision" && c.params.fid==="tool-video" && c.params.version===2)', 'revision reverted');
+
+    // 3. 云解压弹窗：密码拦截 -> 正确密码解锁 -> 目录钻取 -> 同名覆盖确认 -> 任务完成与跳转
+    assert.equal(await evaluate('document.querySelector(".row[data-fid=\\"tool-zip\\"] .op[data-op=\\"unarchive\\"]").hidden'), false, 'archive row shows unarchive op button');
+    assert.equal(await evaluate('document.querySelector(".row[data-fid=\\"tool-video\\"] .op[data-op=\\"unarchive\\"]").hidden'), true, 'non-archive row hides unarchive op button');
+    await click('.row[data-fid="tool-zip"] .op[data-op="unarchive"]');
+    await until('!!document.getElementById("archive-pwd-input") && !document.querySelector(".archive-pwd-bar").hidden', 'password prompt shown for encrypted archive');
+    await evaluate('document.getElementById("archive-pwd-input").value="wrong"');
+    await click('#archive-pwd-submit');
+    await until('document.querySelector(".archive-pwd-msg").textContent.includes("不正确")', 'wrong password feedback shown');
+    await evaluate('document.getElementById("archive-pwd-input").value="secret123"');
+    await click('#archive-pwd-submit');
+    await until('document.querySelectorAll(".archive-row").length===2', 'archive root unlocked and listed');
+    await capture('cloud-archive-modal');
+    // 钻取子目录 docs
+    await click('.archive-row[data-path-no="1"] .picker-enter');
+    await until('document.querySelector(".archive-row-name")?.textContent==="inside.md"', 'drilled into archive subfolder');
+    // 勾选子文件并触发解压 -> 遭遇 CONFLICT 弹窗 -> 确认覆盖 -> 进度完成 -> 前往查看
+    await click('.archive-row[data-path-no="1/1"] input[type="checkbox"]');
+    await click('#archive-btn-extract-sel');
+    await until('!!document.querySelector(".overlay:not(.overlay-out) .dlg-confirm")', 'conflict overwrite confirm dialog shown');
+    await click('.overlay:not(.overlay-out) .dlg-foot .btn-danger');
+    await until('!document.getElementById("archive-btn-goto").hidden', 'archive extraction finished with goto button');
+    assert.ok(await evaluate('__fixtureCalls.some(c=>c.method==="archive.unarchive" && c.params.conflictMode===2)'), 'retried with overwrite conflictMode=2');
+    await click('#archive-btn-goto');
+    await until('QKUI.state.fid==="folder-A"', 'jumped to extracted target dir');
+
+    // 4. 空间占用明细弹窗（点击侧边栏空间卡片打开）
+    await click('#sidebar-quota');
+    await until('document.querySelectorAll(".storage-row").length===3', 'storage breakdown modal loaded');
+    assert.ok((await evaluate('document.querySelector(".dlg-storage").textContent')).includes('手动上传'), 'storage category label shown');
+    await capture('cloud-storage-modal');
+    await click('#storage-btn-recycle');
+
+    // 5. 回收站视图：列表渲染 -> 单项还原 -> 彻底删除 -> 760px 零溢出
+    await until('QKUI.state.view==="recycle" && document.querySelectorAll(".recycle-row").length===2', 'recycle view opened from storage modal');
+    await capture('cloud-recycle-view');
+    await click('.recycle-row[data-record-id="rec-1"] button[aria-label^="还原"]');
+    await until('__fixtureCalls.some(c=>c.method==="recycle.recover" && c.params.recordIds[0]==="rec-1") && document.querySelectorAll(".recycle-row").length===1', 'recycled item recovered');
+    await click('#btn-recycle-clear');
+    await until('!!document.querySelector(".overlay:not(.overlay-out) .dlg-confirm")', 'clear recycle confirm shown');
+    await click('.overlay:not(.overlay-out) .dlg-foot .btn-danger');
+    await until('__fixtureCalls.some(c=>c.method==="recycle.remove" && c.params.clearAll===true) && document.querySelectorAll(".recycle-row").length===0', 'recycle bin cleared');
+
+    await evaluate('__fixture.cloudToolsMode=false;QKUI.setInspectorOpen(false);QKUI.setView("files")');
   });
 
 });

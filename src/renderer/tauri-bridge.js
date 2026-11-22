@@ -38,7 +38,7 @@
   var platform = /Mac/i.test(global.navigator.platform) ? 'darwin' :
     (/Win/i.test(global.navigator.platform) ? 'win32' : 'linux');
   var api = {
-    auth: {}, fs: {}, transfer: {}, dialog: {}, settings: {},
+    auth: {}, fs: {}, archive: {}, recycle: {}, transfer: {}, dialog: {}, settings: {},
     agent: {}, chat: {}, hub: {},
     platform: platform, runtime: 'tauri',
     app: {
@@ -52,10 +52,14 @@
     api.auth[name] = method('auth.' + name);
   });
   api.auth.onChange = function (cb) { return listen('qk:auth-changed', cb); };
-  ['list', 'search', 'mkdir', 'rename', 'move', 'copy', 'remove', 'taskStatus'].forEach(function (name) {
+  ['list', 'search', 'mkdir', 'rename', 'move', 'copy', 'remove', 'taskStatus', 'revertRevision', 'storageDetail'].forEach(function (name) {
     api.fs[name] = method('fs.' + name);
   });
-  ['info', 'crumbs'].forEach(function (name) { api.fs[name] = method('fs.' + name, 'fid'); });
+  ['info', 'crumbs', 'dirDetail', 'revisions'].forEach(function (name) { api.fs[name] = method('fs.' + name, 'fid'); });
+  ['rightTimes', 'targetDir'].forEach(function (name) { api.archive[name] = method('archive.' + name, 'fid'); });
+  ['preview', 'unarchive'].forEach(function (name) { api.archive[name] = method('archive.' + name); });
+  api.archive.queryTask = method('archive.queryTask', 'taskId');
+  ['list', 'recover', 'remove'].forEach(function (name) { api.recycle[name] = method('recycle.' + name); });
   ['list', 'upload', 'download'].forEach(function (name) { api.transfer[name] = method('transfer.' + name); });
   ['pause', 'resume', 'retry', 'cancel', 'openItem'].forEach(function (name) {
     api.transfer[name] = method('transfer.' + name, 'id');
