@@ -1,19 +1,20 @@
 {
   "name": "quark-mini",
-  "version": "0.3.0-alpha.1",
+  "version": "0.3.0-beta.1",
   "private": true,
-  "description": "夸克网盘极简桌面客户端 — 仅保留文件浏览、搜索、新建、移动、复制、重命名、批量删除、上传、下载与传输任务管理",
+  "description": "夸克网盘极简桌面客户端（Tauri 2 + Rust）— 轻量高速的文件浏览、搜索、上传下载、传输任务管理与增量备份",
   "engines": {
     "node": ">=24.18.0"
   },
   "scripts": {
     "start": "node scripts/tauri.js dev",
     "build": "node scripts/tauri.js build",
-    "check": "node scripts/rust.js check",
+    "check:js": "node scripts/check.js",
+    "check": "node scripts/check.js && node scripts/rust.js check",
     "test": "node --test test/tauri*.test.js",
     "test:rust": "node scripts/rust.js test",
     "verify:native": "node scripts/native-smoke.js",
-    "test:legacy": "node --test test/*.test.js"
+    "verify:all": "npm run check && npm run test:rust && npm test && npm run verify:native"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.3"
