@@ -538,6 +538,23 @@
     else if (s.loggedIn === true) clearExpiredBanner();
     renderAccount();
     renderSettings();
+    if (s.loggedIn && !s.expired && (!state.quota || !(state.quota.total > 0))) {
+      refreshQuota();
+    }
+  }
+
+  function sameAccountSession(snapshot) {
+    var cur = state.account;
+    if (!cur || !cur.loggedIn || cur.expired) return false;
+    if (!snapshot || !snapshot.loggedIn) return false;
+    if (snapshot.userId && cur.userId && String(snapshot.userId) !== String(cur.userId)) return false;
+    return true;
+  }
+
+  function freeBytesOf(q) {
+    if (!q || !(q.total > 0)) return 0;
+    if (typeof q.free === 'number' && isFinite(q.free) && q.free >= 0) return q.free;
+    return Math.max(0, q.total - (Number(q.used) || 0));
   }
 
   function renderSidebarQuota() {
@@ -549,27 +566,48 @@
       return;
     }
     el.sidebarQuota.hidden = false;
-    var pct = Math.min(100, Math.max(0, (q.used / q.total) * 100));
+    var usedSpace = Math.max(0, Number(q.used) || 0);
+    var freeSpace = freeBytesOf(q);
+    var pct = Math.min(100, Math.max(0, (usedSpace / q.total) * 100));
+    var isWarn = pct >= 80 && pct < 95;
+    var isDanger = pct >= 95;
+    el.sidebarQuota.classList.toggle('warn', isWarn);
+    el.sidebarQuota.classList.toggle('danger', isDanger);
+    el.sidebarQuota.title = '剩余可用 ' + fmtSize(freeSpace) + ' · 已用 ' + fmtSize(usedSpace) + ' / 共 ' + fmtSize(q.total) + '（点击刷新）';
+    if (el.sidebarQuotaFree) el.sidebarQuotaFree.textContent = fmtSize(freeSpace);
     if (el.sidebarQuotaPct) el.sidebarQuotaPct.textContent = pct.toFixed(pct >= 10 ? 0 : 1) + '%';
     if (el.sidebarQuotaFill) {
       el.sidebarQuotaFill.style.width = (pct > 0 && pct < 1 ? 1 : pct).toFixed(2) + '%';
       var bar = el.sidebarQuotaFill.parentNode;
       if (bar && bar.classList) {
-        bar.classList.toggle('warn', pct >= 80 && pct < 95);
-        bar.classList.toggle('danger', pct >= 95);
+        bar.classList.toggle('warn', isWarn);
+        bar.classList.toggle('danger', isDanger);
       }
     }
     if (el.sidebarQuotaText) {
-      var freeSpace = Math.max(0, typeof q.free === 'number' ? q.free : (q.total - q.used));
-      el.sidebarQuotaText.textContent = '剩 ' + fmtSize(freeSpace) + ' · ' + fmtSize(q.used) + '/' + fmtSize(q.total);
-      el.sidebarQuotaText.title = '已用 ' + fmtSize(q.used) + ' / 总计 ' + fmtSize(q.total) + '（剩余 ' + fmtSize(freeSpace) + '）';
+      el.sidebarQuotaText.textContent = '已用 ' + fmtSize(usedSpace) + ' / ' + fmtSize(q.total);
     }
+  }
+
+  function renderSettingsAccountHint() {
+    if (!el.setAccountHint) return;
+    var a = state.account;
+    var q = state.quota;
+    var quotaSuffix = (q && q.total > 0)
+      ? (' · 剩余可用 ' + fmtSize(freeBytesOf(q)) + '（已用 ' + fmtSize(Math.max(0, Number(q.used) || 0)) + ' / 共 ' + fmtSize(q.total) + '）')
+      : '';
+    el.setAccountHint.textContent = !API.injected
+      ? '未注入桥接层，无法读取登录状态。'
+      : (a && a.expired ? '登录状态已失效，请点击「重新登录」。'
+        : (a && a.loggedIn ? '当前已登录：' + (a.nickname || '未知账号') + '（' + (a.memberLabel || '普通用户') + '）' + quotaSuffix
+          : '当前未登录。'));
   }
 
   function renderAccount() {
     // 登录态变化时顺带刷新 Agent 面板（仅在已开启 AI Beta 时渲染）
     renderAgent();
     renderSidebarQuota();
+    renderSettingsAccountHint();
     var box = el.account;
     box.textContent = '';
     var a = state.account;
@@ -616,15 +654,21 @@
     sub.appendChild(h('span', 'acct-tag', a.memberLabel || '普通用户'));
     var q = state.quota;
     if (q && q.total > 0) {
-      var freeTop = Math.max(0, typeof q.free === 'number' ? q.free : (q.total - q.used));
-      sub.appendChild(h('span', 'acct-quota-text',
-        '剩 ' + fmtSize(freeTop) + ' / ' + fmtSize(q.total)));
+      var freeTop = freeBytesOf(q);
+      var usedTop = Math.max(0, Number(q.used) || 0);
+      var pctTop = Math.min(100, Math.max(0, (usedTop / q.total) * 100));
+      var topCls = 'acct-quota-text' + (pctTop >= 95 ? ' danger' : (pctTop >= 80 ? ' warn' : ''));
+      var qt = h('span', topCls, '可用 ' + fmtSize(freeTop));
+      qt.title = '剩余可用 ' + fmtSize(freeTop) + ' · 已用 ' + fmtSize(usedTop) + ' / 共 ' + fmtSize(q.total);
+      sub.appendChild(qt);
     }
     meta.appendChild(sub);
     if (q && q.total > 0) {
-      var bar = h('div', 'quota-bar');
+      var usedBar = Math.max(0, Number(q.used) || 0);
+      var pct = Math.min(100, Math.max(0, (usedBar / q.total) * 100));
+      var bar = h('div', 'quota-bar' + (pct >= 95 ? ' danger' : (pct >= 80 ? ' warn' : '')));
+      bar.title = '已用 ' + pct.toFixed(pct >= 10 ? 0 : 1) + '%（剩余可用 ' + fmtSize(freeBytesOf(q)) + '）';
       var fill = h('i');
-      var pct = Math.min(100, Math.max(0, (q.used / q.total) * 100));
       fill.style.width = (pct < 0.6 && pct > 0 ? 0.6 : pct) + '%';
       bar.appendChild(fill);
       meta.appendChild(bar);
@@ -642,13 +686,15 @@
 
   async function refreshQuota() {
     var account = state.account;
+    if (!API.injected || !account || !account.loggedIn || account.expired) return;
     try {
       var q = await API.auth.quota();
-      if (state.account !== account || !account || !account.loggedIn) return;
-      if (q && typeof q.total === 'number') {
+      if (!sameAccountSession(account)) return;
+      if (q && typeof q.total === 'number' && q.total > 0) {
         state.quota = q;
         lastQuotaRefreshAt = Date.now();
         renderAccount();
+        if (state.view === 'settings') renderSettings();
       }
     } catch (e) { /* 容量信息失败不打扰用户 */ }
   }
@@ -672,11 +718,11 @@
         tasks.push(API.auth.getUserInfo().catch(function () { return null; }));
       }
       var res = await Promise.all(tasks);
-      if (state.account !== account || !state.account || !state.account.loggedIn) return;
+      if (!sameAccountSession(account)) return;
       var q = res[0];
       var info = res[1];
       var changed = false;
-      if (q && typeof q.total === 'number') {
+      if (q && typeof q.total === 'number' && q.total > 0) {
         state.quota = q;
         lastQuotaRefreshAt = Date.now();
         changed = true;
@@ -1525,8 +1571,8 @@
       renderListFoot();
       updateSelectAll();
       renderStatusBar();
-      // SWR：后台静默拉取最新列表，无闪屏
-      loadPage({ reset: true, silent: true, restoreScroll: targetScroll });
+      // SWR：后台静默拉取最新列表，无闪屏且保留用户刚刚做出的勾选
+      loadPage({ reset: true, silent: true, preserveSelection: true, restoreScroll: targetScroll });
       return;
     }
 
@@ -2310,33 +2356,41 @@
       body.appendChild(multiMeta);
 
       var mActs = h('div', 'inspector-actions');
-      if (files > 0) {
+      var selFiles = sel.filter(function (x) { return !x.dir; });
+      if (selFiles.length > 0) {
         var dlAll = h('button', 'btn btn-sm btn-primary');
         dlAll.type = 'button';
         dlAll.appendChild(icon('download'));
-        dlAll.appendChild(h('span', null, '下载已选文件 (' + files + ')'));
-        dlAll.addEventListener('click', function () { onDownload(sel); });
+        dlAll.appendChild(h('span', null, '下载已选文件 (' + selFiles.length + ')'));
+        dlAll.addEventListener('click', function () { downloadItems(selFiles); });
         mActs.appendChild(dlAll);
+
+        var dlAllPick = h('button', 'btn btn-sm');
+        dlAllPick.type = 'button';
+        dlAllPick.appendChild(icon('folder-open'));
+        dlAllPick.appendChild(h('span', null, '下载到指定位置…'));
+        dlAllPick.addEventListener('click', function () { downloadItems(selFiles, { pickDir: true }); });
+        mActs.appendChild(dlAllPick);
       }
       var mvAll = h('button', 'btn btn-sm');
       mvAll.type = 'button';
       mvAll.appendChild(icon('move'));
       mvAll.appendChild(h('span', null, '移动到…'));
-      mvAll.addEventListener('click', function () { onMoveOrCopy('move', sel); });
+      mvAll.addEventListener('click', function () { doTransferOp('move', sel); });
       mActs.appendChild(mvAll);
 
       var cpAll = h('button', 'btn btn-sm');
       cpAll.type = 'button';
       cpAll.appendChild(icon('copy'));
       cpAll.appendChild(h('span', null, '复制到…'));
-      cpAll.addEventListener('click', function () { onMoveOrCopy('copy', sel); });
+      cpAll.addEventListener('click', function () { doTransferOp('copy', sel); });
       mActs.appendChild(cpAll);
 
       var rmAll = h('button', 'btn btn-sm btn-danger');
       rmAll.type = 'button';
       rmAll.appendChild(icon('trash'));
       rmAll.appendChild(h('span', null, '删除已选'));
-      rmAll.addEventListener('click', function () { onRemove(sel); });
+      rmAll.addEventListener('click', function () { doRemove(sel, { bulk: true }); });
       mActs.appendChild(rmAll);
 
       body.appendChild(mActs);
@@ -4696,12 +4750,7 @@
     renderHubSettings();
     renderFeedbackView();
     renderAppVersion();
-    var a = state.account;
-    el.setAccountHint.textContent = !API.injected
-      ? '未注入桥接层，无法读取登录状态。'
-      : (a && a.expired ? '登录状态已失效，请点击「重新登录」。'
-        : (a && a.loggedIn ? '当前已登录：' + (a.nickname || '未知账号') + '（' + (a.memberLabel || '普通用户') + '）'
-          : '当前未登录。'));
+    renderSettingsAccountHint();
   }
 
   async function saveSettings(patch) {
@@ -5324,6 +5373,18 @@
     if (el.subbarTransferLive) {
       el.subbarTransferLive.addEventListener('click', function () { setView('transfers'); });
     }
+    if (el.sidebarQuota) {
+      var triggerQuotaSync = function () {
+        if (!API.injected || needsLoginState()) return;
+        silentRefreshAccountAndQuota({ force: true, withAccount: true }).then(function () {
+          toast('info', '账号状态与剩余空间已刷新');
+        });
+      };
+      el.sidebarQuota.addEventListener('click', triggerQuotaSync);
+      el.sidebarQuota.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); triggerQuotaSync(); }
+      });
+    }
 
     // 面包屑鼠标滚轮横向滚动 + 左右滚动按钮（兼顾 Windows 鼠标与 Mac 触控板）
     if (el.crumbs) {
@@ -5934,6 +5995,7 @@
     el.sidebarTransferMini = $('sidebar-transfer-mini');
     el.sidebarTransferText = $('sidebar-transfer-text');
     el.sidebarQuota = $('sidebar-quota');
+    el.sidebarQuotaFree = $('sidebar-quota-free');
     el.sidebarQuotaPct = $('sidebar-quota-pct');
     el.sidebarQuotaFill = $('sidebar-quota-fill');
     el.sidebarQuotaText = $('sidebar-quota-text');

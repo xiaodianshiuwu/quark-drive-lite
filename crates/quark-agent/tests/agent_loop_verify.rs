@@ -302,7 +302,11 @@ async fn agent_loop_verify() {
     h.record("move 移入自身子目录被拒", m["error"]["code"] == json!("AGENT_INVALID_ARG"), m.to_string());
 
     // 步骤 10：upload 本地路径不在授权目录 → OUT_OF_SCOPE（范围校验先于名称清洗，顺序正确）
-    let bad_up = h.call_tool("upload_file", json!({"local_path":"/tmp/x","name":"../evil"})).await;
+    let unauth_path = std::env::temp_dir()
+        .join("qdl-unauthorized-x")
+        .to_string_lossy()
+        .into_owned();
+    let bad_up = h.call_tool("upload_file", json!({"local_path":unauth_path,"name":"../evil"})).await;
     h.record("upload 未授权本地路径被拒", bad_up["error"]["code"] == json!("AGENT_OUT_OF_SCOPE"), bad_up.to_string());
 
     // 步骤 11：delete_entries 双阶段
@@ -362,7 +366,11 @@ async fn agent_loop_verify() {
     h.record("只读模式拦截全部 9 个写入口", ro_all_ok, "9 个写工具逐一验证".into());
 
     // 步骤 14：真实 Node CLI 子进程走网关
-    let script = format!("{}/../../tools/agent-cli.js", env!("CARGO_MANIFEST_DIR"));
+    let script = std::env::var_os("QDL_REPO_ROOT")
+        .map(|r| std::path::PathBuf::from(r).join("tools").join("agent-cli.js"))
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| format!("{}/../../tools/agent-cli.js", env!("CARGO_MANIFEST_DIR")));
     let sock = h.sock.clone();
     let token = h.token.clone();
     let out = tokio::task::spawn_blocking(move || {

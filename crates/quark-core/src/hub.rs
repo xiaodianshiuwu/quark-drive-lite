@@ -1132,9 +1132,14 @@ mod tests {
             return;
         }
 
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..");
+        let repo_root = std::env::var_os("QDL_REPO_ROOT")
+            .map(PathBuf::from)
+            .filter(|p| p.join("server").join("qdl-hub").join("server.mjs").exists())
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("..")
+            });
         let server_dir = repo_root.join("server").join("qdl-hub");
         let tmp = tempfile::tempdir().unwrap();
         let env_path = tmp.path().join("hub.env");

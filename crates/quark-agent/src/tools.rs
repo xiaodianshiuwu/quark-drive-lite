@@ -3008,7 +3008,11 @@ mod fake_tests {
         #[cfg(windows)] let sock=std::path::PathBuf::from(format!(r"\\.\pipe\qk-cli-test-{}",uuid::Uuid::new_v4()));
         gateway.clone().start(&sock.to_string_lossy()).await.unwrap();
 
-        let script = format!("{}/../../tools/agent-cli.js", env!("CARGO_MANIFEST_DIR"));
+        let script = std::env::var_os("QDL_REPO_ROOT")
+            .map(|r| std::path::PathBuf::from(r).join("tools").join("agent-cli.js"))
+            .filter(|p| p.exists())
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("{}/../../tools/agent-cli.js", env!("CARGO_MANIFEST_DIR")));
         let run_cli = |args: Vec<String>| {
             let sock = sock.to_string_lossy().to_string();
             let token = token.clone();

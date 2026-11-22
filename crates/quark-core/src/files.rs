@@ -4,7 +4,24 @@ use serde_json::{json, Value};
 pub(crate) fn number(value: &Value, fallback: i64) -> i64 {
     value
         .as_i64()
-        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+        .or_else(|| value.as_u64().and_then(|u| i64::try_from(u).ok()))
+        .or_else(|| {
+            value
+                .as_f64()
+                .filter(|f| f.is_finite() && *f >= i64::MIN as f64 && *f <= i64::MAX as f64)
+                .map(|f| f.round() as i64)
+        })
+        .or_else(|| {
+            value.as_str().and_then(|s| {
+                let t = s.trim();
+                t.parse::<i64>().ok().or_else(|| {
+                    t.parse::<f64>()
+                        .ok()
+                        .filter(|f| f.is_finite())
+                        .map(|f| f.round() as i64)
+                })
+            })
+        })
         .unwrap_or(fallback)
 }
 fn text(value: &Value) -> String {

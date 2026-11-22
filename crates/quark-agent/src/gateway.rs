@@ -405,8 +405,8 @@ impl AgentGateway {
 
         #[cfg(windows)]
         {
-            use tokio::net::windows::named_pipe::ServerOptions;
-            let mut server=ServerOptions::new().first_pipe_instance(true).reject_remote_clients(true).create(endpoint)
+            use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
+            let mut server=ServerOptions::new().first_pipe_instance(true).reject_remote_clients(true).pipe_mode(PipeMode::Byte).in_buffer_size(65536).out_buffer_size(65536).create(endpoint)
                 .map_err(|e|AgentToolError::new(AgentError::Internal,format!("无法创建本机命名管道：{e}")))?;
             *self.shared.endpoint.lock().unwrap()=endpoint.to_string();
             *self.shared.started_at.lock().unwrap()=(self.now_fn)();
@@ -423,7 +423,7 @@ impl AgentGateway {
                     // Keep one listening instance alive before handing the connected one off.
                     // This avoids a gap in which another process could squat on the pipe name.
                     let next=loop {
-                        match ServerOptions::new().reject_remote_clients(true).create(&endpoint) {
+                        match ServerOptions::new().reject_remote_clients(true).pipe_mode(PipeMode::Byte).in_buffer_size(65536).out_buffer_size(65536).create(&endpoint) {
                             Ok(next)=>break next,
                             Err(e)=>{*this.shared.last_error.lock().unwrap()=format!("命名管道实例创建失败：{e}");tokio::time::sleep(Duration::from_millis(100)).await;}
                         }
@@ -1077,15 +1077,13 @@ impl AgentGateway {
         close: bool,
     ) {
         use tokio::io::AsyncWriteExt;
-        let line = match serde_json::to_string(payload) {
+        let mut line = match serde_json::to_string(payload) {
             Ok(s) => s,
             Err(_) => return,
         };
+        line.push('\n');
         let mut guard = wr.lock().await;
         if guard.write_all(line.as_bytes()).await.is_err() {
-            return;
-        }
-        if guard.write_all(b"\n").await.is_err() {
             return;
         }
         let _ = guard.flush().await;
@@ -1209,11 +1207,13 @@ pub fn extract_request_id(raw_segment: &str) -> Value {
     if text.is_empty() {
         return Value::Null;
     }
-    // 1) 完整 JSON（队列超限时被丢弃的那一行就是完整的）
-    if let Ok(parsed) = serde_json::from_str::<Value>(text) {
-        if let Value::Object(obj) = &parsed {
-            if let Some(id) = obj.get("id") {
-                return id.clone();
+    // 1) 完整 JSON（队列超限时被丢弃的那一行就是完整的）；超长截断行直接跳过全量解析避免 DoS CPU 消耗
+    if text.len() <= 65_536 {
+        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+            if let Value::Object(obj) = &parsed {
+                if let Some(id) = obj.get("id") {
+                    return id.clone();
+                }
             }
         }
     }
@@ -1508,6 +1508,12 @@ mod tests {
     }
 
     impl Conn {
+        async fn try_send(&mut self, value: &Value) -> bool {
+            let mut line = serde_json::to_string(value).unwrap();
+            line.push('\n');
+            self.wr.write_all(line.as_bytes()).await.is_ok()
+        }
+
         async fn send(&mut self, value: &Value) {
             let mut line = serde_json::to_string(value).unwrap();
             line.push('\n');
@@ -1515,7 +1521,11 @@ mod tests {
         }
 
         async fn send_raw(&mut self, text: &str) {
-            self.wr.write_all(text.as_bytes()).await.unwrap();
+            for chunk in text.as_bytes().chunks(32 * 1024) {
+                if self.wr.write_all(chunk).await.is_err() {
+                    break;
+                }
+            }
         }
 
         async fn next(&mut self) -> Value {
@@ -1822,10 +1832,14 @@ mod tests {
                 ids.push(format!("r{seq}"));
             }
             for id in &ids {
-                c.send(&json!({ "id": id, "method": "ping" })).await;
+                if !c.try_send(&json!({ "id": id, "method": "ping" })).await {
+                    break;
+                }
             }
             for id in &ids {
-                let res = c.next().await;
+                let Some(res) = c.next_opt().await else {
+                    break;
+                };
                 if res["error"]["code"] == "AGENT_LIMIT" {
                     limit = Some((id.clone(), res));
                     break 'outer;

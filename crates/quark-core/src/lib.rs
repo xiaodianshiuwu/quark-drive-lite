@@ -444,11 +444,7 @@ impl Core {
                     );
                 }
                 let env = self.get("/1/clouddrive/member", &[]).await?;
-                let total = files::number(&env["data"]["total_capacity"], -1);
-                let used = files::number(&env["data"]["use_capacity"], -1);
-                Ok(
-                    json!({"total":total,"used":used,"free":if total>=0&&used>=0 {(total-used).max(0)} else {-1}}),
-                )
+                Ok(parse_member_quota(&env))
             }
             "auth.getUserInfo" => {
                 let generation = self.session_generation();
@@ -515,6 +511,36 @@ impl Core {
     fn call_status(&self) -> Value {
         session::account_state(&self.inner.state.lock().unwrap().document)
     }
+}
+
+fn parse_member_quota(env: &Value) -> Value {
+    let data = &env["data"];
+    let pick = |keys: &[&str]| -> i64 {
+        for container in [data, &data["member_info"], &data["quota"], env] {
+            if let Some(obj) = container.as_object() {
+                for &k in keys {
+                    if let Some(v) = obj.get(k) {
+                        let n = files::number(v, -1);
+                        if n >= 0 {
+                            return n;
+                        }
+                    }
+                }
+            }
+        }
+        -1
+    };
+    let total = pick(&["total_capacity", "total", "capacity", "space_total"]);
+    let used = pick(&["use_capacity", "used_capacity", "used", "space_used"]);
+    let explicit_free = pick(&["free_capacity", "remain_capacity", "free", "remain"]);
+    let free = if total >= 0 && used >= 0 {
+        (total - used).max(0)
+    } else if explicit_free >= 0 {
+        explicit_free
+    } else {
+        -1
+    };
+    json!({"total": total, "used": used, "free": free})
 }
 
 fn api_url(path: &str, query: &[(&str, String)]) -> Result<Url> {
@@ -673,6 +699,26 @@ mod tests {
         assert_ne!(core.account_key(), Some(first));
         core.call("auth.logout", Value::Null).await.unwrap();
         assert_eq!(core.account_key(), None);
+    }
+    #[test]
+    fn parse_member_quota_handles_ints_strings_floats_and_nested_fields() {
+        let q = parse_member_quota(&json!({
+            "data": { "total_capacity": 6597216567296_i64, "use_capacity": 4120287501079_i64 }
+        }));
+        assert_eq!(q["total"], 6597216567296_i64);
+        assert_eq!(q["used"], 4120287501079_i64);
+        assert_eq!(q["free"], 2476929066217_i64);
+
+        let q_str = parse_member_quota(&json!({
+            "data": { "total_capacity": "10737418240", "use_capacity": 2147483648.0 }
+        }));
+        assert_eq!(q_str["total"], 10737418240_i64);
+        assert_eq!(q_str["used"], 2147483648_i64);
+        assert_eq!(q_str["free"], 8589934592_i64);
+
+        let q_empty = parse_member_quota(&json!({"data": {}}));
+        assert_eq!(q_empty["total"], -1);
+        assert_eq!(q_empty["free"], -1);
     }
     #[test]
     fn api_url_rejects_credential_exfiltration_and_preserves_protocol() {

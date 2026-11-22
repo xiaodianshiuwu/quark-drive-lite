@@ -5,7 +5,7 @@
 | 平台 | 产品目标 | 本轮证据 |
 |---|---|---|
 | macOS Apple Silicon | 原生桌面、系统 WebView、应用包 | 以本轮独立审计报告为准：自动化、隐藏原生 WebView 与受控云端测试分别记录 |
-| Windows 10/11 x64 | 原生桌面、WebView2、高速并发传输、本机 Agent 命名管道 | 已交叉编译 x64 主程序、NSIS 安装包与绿色便携 ZIP，并通过 Windows 全目标编译检查；Windows 实机安装/运行验收请按 [WINDOWS_QA_CHECKLIST.md](WINDOWS_QA_CHECKLIST.md) 执行 |
+| Windows 10/11 x64 | 原生桌面、WebView2、高速并发传输、本机 Agent 命名管道 | 已在真实 Windows 11 家庭版 24H2（Build 26100，x64，WebView2 `157.0.4341.60`）完成实机验证：154/154 原生 Rust 测试（含 Windows `seek_write` 并发传输、`\\.\pipe\...` 命名管道网关与跨语言 Hub E2E）、65/65 Chrome/Node 前端测试、27/27 Edge WebView2 原生冒烟、SHA256 核验、中文空格路径便携版启动/单实例锁/真机截图/零残留退出，以及 NSIS 当前用户静默安装/启动/卸载清理；真机真实账号扫码登录与云端大文件传输入库见 [WINDOWS_QA_CHECKLIST.md](WINDOWS_QA_CHECKLIST.md) |
 | Linux x64 | Tauri 桌面与 Unix socket | 本轮未原生构建或运行 |
 | macOS Intel / Windows ARM64 | 非本轮实际验收平台 | 未验证 |
 

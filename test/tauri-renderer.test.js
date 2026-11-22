@@ -656,8 +656,12 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await until('__fixtureCalls.filter(c=>c.method==="fs.list").length > ' + listBefore, 'auto-refreshed after <10 transfer finished');
     assert.equal(await evaluate('document.getElementById("subbar-transfer-live").hidden'), true, 'live pill hides when no active tasks');
     await evaluate('__fixture.quota={total:10*1024*1024*1024,used:2*1024*1024*1024,free:8*1024*1024*1024};__fixture.account.memberLabel="SVIP";QKUI.silentRefreshAccountAndQuota({force:true,withAccount:true});void 0');
-    await until('document.getElementById("sidebar-quota-text").textContent.includes("8.00 GB")', 'quota remaining space refreshed');
+    await until('document.getElementById("sidebar-quota-free").textContent.includes("8.00 GB")', 'quota remaining space refreshed in sidebar');
+    assert.ok((await evaluate('document.getElementById("sidebar-quota-text").textContent')).includes('2.00 GB'), 'sidebar shows used/total');
     assert.ok((await evaluate('document.getElementById("account").textContent')).includes('SVIP'), 'account status refreshed');
+    assert.ok((await evaluate('document.getElementById("account").textContent')).includes('8.00 GB'), 'topbar shows remaining space at 1200px default width');
+    assert.notEqual(await evaluate('getComputedStyle(document.querySelector(".acct-quota-text")).display'), 'none', 'topbar remaining space must stay visible at 1200px');
+    assert.ok((await evaluate('document.getElementById("set-account-hint").textContent')).includes('剩余可用 8.00 GB'), 'settings account hint includes remaining quota');
 
     // 5. 下载目录：设置「每次询问目录」后单次下载可指定独立路径，且不覆盖默认目录
     await evaluate('QKUI.setView("settings")');

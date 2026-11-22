@@ -60,14 +60,17 @@
       <span class="mini-text" id="sidebar-transfer-text">传输中…</span>
     </button>
 
-    <!-- 侧栏云盘空间用量卡（登录后展示，窄窗口也清晰可见） -->
-    <div class="sidebar-quota" id="sidebar-quota" hidden>
+    <!-- 侧栏云盘空间用量卡（登录后展示，突出剩余可用额度，点击即时刷新） -->
+    <div class="sidebar-quota" id="sidebar-quota" hidden role="button" tabindex="0" title="点击刷新账号状态与剩余空间">
       <div class="sidebar-quota-head">
-        <span class="sidebar-quota-label">网盘空间</span>
-        <span class="sidebar-quota-pct" id="sidebar-quota-pct"></span>
+        <span class="sidebar-quota-label">剩余可用空间</span>
+        <span class="sidebar-quota-free" id="sidebar-quota-free"></span>
       </div>
       <div class="sidebar-quota-bar"><i id="sidebar-quota-fill"></i></div>
-      <div class="sidebar-quota-sub" id="sidebar-quota-text"></div>
+      <div class="sidebar-quota-foot">
+        <span class="sidebar-quota-sub" id="sidebar-quota-text"></span>
+        <span class="sidebar-quota-pct" id="sidebar-quota-pct"></span>
+      </div>
     </div>
 
     <div class="sidebar-foot" id="sidebar-foot"></div>

@@ -251,10 +251,18 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .sidebar-quota {
   margin: auto 2px 6px; padding: 10px 11px;
   border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border);
+  cursor: pointer; transition: border-color .16s ease, background-color .16s ease;
 }
-.sidebar-quota-head { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; }
-.sidebar-quota-label { color: var(--text-2); font-weight: 600; }
-.sidebar-quota-pct { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.sidebar-quota:hover { border-color: var(--border-strong); background: var(--panel); }
+.sidebar-quota:focus-visible { outline: none; box-shadow: var(--ring); }
+.sidebar-quota-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; font-size: 11.5px; }
+.sidebar-quota-label { color: var(--text-2); font-weight: 600; white-space: nowrap; }
+.sidebar-quota-free {
+  color: var(--primary); font-weight: 700; font-size: 12.5px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.sidebar-quota.warn .sidebar-quota-free { color: var(--warn); }
+.sidebar-quota.danger .sidebar-quota-free { color: var(--danger); }
 .sidebar-quota-bar {
   height: 5px; border-radius: 99px; background: var(--border);
   overflow: hidden; margin: 7px 0 6px;
@@ -266,7 +274,12 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 }
 .sidebar-quota-bar.warn > i { background: var(--warn); }
 .sidebar-quota-bar.danger > i { background: var(--danger); }
-.sidebar-quota-sub { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.sidebar-quota-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.sidebar-quota-sub {
+  font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sidebar-quota-pct { font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; flex: none; }
 
 .sidebar-foot { margin-top: auto; padding: 6px 10px 2px; font-size: 11.5px; color: var(--text-3); }
 .sidebar-quota:not([hidden]) ~ .sidebar-foot { margin-top: 0; }
@@ -413,17 +426,24 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
   font-size: 12.5px; font-weight: 600; max-width: 112px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.acct-sub { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-3); }
+.acct-sub { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-3); white-space: nowrap; }
 .acct-tag {
   padding: 0 5px; border-radius: 4px; background: var(--panel-2);
   border: 1px solid var(--border); color: var(--text-2);
 }
-.acct-quota-text { font-variant-numeric: tabular-nums; }
+.acct-quota-text {
+  font-variant-numeric: tabular-nums; color: var(--primary); font-weight: 600;
+  white-space: nowrap;
+}
+.acct-quota-text.warn { color: var(--warn); }
+.acct-quota-text.danger { color: var(--danger); }
 .quota-bar {
   height: 3px; border-radius: 99px; background: var(--border);
-  overflow: hidden; margin-top: 3px; width: 108px;
+  overflow: hidden; margin-top: 3px; width: 100%; min-width: 96px;
 }
 .quota-bar > i { display: block; height: 100%; background: var(--primary); transition: width .3s var(--ease-out); }
+.quota-bar.warn > i { background: var(--warn); }
+.quota-bar.danger > i { background: var(--danger); }
 
 /* ------------------------------- 视图容器 ------------------------------- */
 .view { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 18px 0; overflow-y: auto; }
@@ -1222,7 +1242,6 @@ select.input { padding-right: 6px; }
 
 /* ------------------------------- 响应式（含 760×520 零横向溢出保障） ------------------------------- */
 @media (max-width: 1320px) {
-  .acct-quota-text, .account .quota-bar { display: none; }
   .file-workspace:has(#file-inspector:not([hidden])) .listhead,
   .file-workspace:has(#file-inspector:not([hidden])) .row {
     grid-template-columns: 44px minmax(0, 1fr) 96px 172px;

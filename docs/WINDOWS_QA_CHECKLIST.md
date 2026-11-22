@@ -1,7 +1,13 @@
 # Windows 10/11 x64 实机验收清单（v0.3.0-beta.1）
 
-本文档用于在真实 Windows 10/11 x64 机器上对 **夸克网盘极简版 v0.3.0-beta.1（Tauri 2 + Rust）** 进行发布前实机验收。  
-注：macOS 交叉编译阶段仅验证静态编译、PE/子系统、DLL 导入表、NSIS/ZIP 完整性与 SHA256，**不可替代 Windows 实机运行验收**。
+本文档用于在真实 Windows 10/11 x64 机器上对 **夸克网盘极简版 v0.3.0-beta.1（Tauri 2 + Rust）** 进行发布前实机验收。
+
+> **2026-11-22 实机验收记录（Windows 11 家庭版 24H2 / Build 26100 x64 / Edge WebView2 `157.0.4341.60` / Node.js `v24.19.0`）**：
+> - ✅ **原生 Rust 全套测试**：`154/154` 零跳过通过（`quark_agent` 97/97 真实命名管道 + `agent_loop_verify` 16/16 + `quark_core` 34/34 含跨语言 Rust↔Node `qdl-hub` X25519/AES-GCM/Ed25519 E2E + `quark_transfer` 21/21 真实 `FileExt::seek_write` 并发分片下载/上传/断点续传 + `quark_drive_lite_tauri` 1/1）。
+> - ✅ **原生 Edge WebView2 27 项冒烟**：`27/27` 全部通过（首启连接弹窗、拒绝零外传硬阻断、反馈页、备份移除、宽松限流 `48` 持久化、AI Beta 默认关闭与热切换开关、MCP 适配路径等）。
+> - ✅ **前端语法与无头 Chrome DOM 测试**：`node scripts/check.js` 通过；`node --test test/tauri*.test.js` 实机 `65/65` 通过（注：连续回归中曾观测到 1 次 `tauri-renderer.test.js` 多选复选框时序抖动）。
+> - ✅ **交付物与安装/卸载实机验收**：`SHA256SUMS.txt` 逐字节匹配；`portable.zip` 解压至中文空格路径（`C:\Users\18602\QDL-QA\测试 工具\夸克极简版`）启动成功（主进程内存 83.5 MB，150% DPI 真机窗口截图核验图标与首启弹窗清晰，单实例互斥锁生效，优雅退出 0 残留）；`setup.exe /S` 当前用户静默安装无需管理员权限，自动创建安装目录与开始菜单/桌面快捷方式，启动与优雅关闭正常，`uninstall.exe /S` 卸载后目录与快捷方式 0 残留。
+> - ⏳ **待用户手动交互验收项**：真实夸克账号扫码登录、真实云端目录写操作与实盘大文件传输及 Explorer 定位高亮（见下方未勾选条目）。
 
 ## 1. 交付产物核对
 
