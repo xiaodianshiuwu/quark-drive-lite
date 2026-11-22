@@ -815,6 +815,31 @@ fn validate_owned(task: &Task, cp: &Checkpoint) -> Result<()> {
     }
     Ok(())
 }
+fn is_hard_link_fallback_err(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::Unsupported {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        matches!(
+            e.raw_os_error(),
+            Some(libc::EPERM) | Some(libc::ENOTSUP) | Some(libc::EXDEV) | Some(libc::EINVAL)
+        )
+    }
+    #[cfg(windows)]
+    {
+        // ERROR_INVALID_FUNCTION(1), ERROR_ACCESS_DENIED(5), ERROR_NOT_SAME_DEVICE(17),
+        // ERROR_NOT_SUPPORTED(50), ERROR_INVALID_PARAMETER(87), ERROR_DIRECTORY(267)
+        matches!(
+            e.raw_os_error(),
+            Some(1) | Some(5) | Some(17) | Some(50) | Some(87) | Some(267)
+        )
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
 async fn publish(temp: &Path, target: &Path, token: &CancellationToken) -> Result<()> {
     check(token)?;
     match fs::hard_link(temp, target).await {
@@ -822,12 +847,7 @@ async fn publish(temp: &Path, target: &Path, token: &CancellationToken) -> Resul
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             return Err(err("CONFLICT", "目标文件已存在，下载没有覆盖它"));
         }
-        Err(e)
-            if matches!(
-                e.raw_os_error(),
-                Some(libc::EPERM) | Some(libc::ENOTSUP) | Some(libc::EXDEV) | Some(libc::EINVAL)
-            ) =>
-        {
+        Err(e) if is_hard_link_fallback_err(&e) => {
             let source = temp.to_owned();
             let destination = target.to_owned();
             tokio::task::spawn_blocking(move || rename_no_replace(&source, &destination))

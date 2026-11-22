@@ -69,15 +69,26 @@ struct State {
 
 impl Core {
     pub fn open(profile: impl AsRef<Path>) -> Result<Self> {
+        Self::open_inner(profile, false)
+    }
+    /// Open Core with an HTTP client that bypasses environment/system proxies (for loopback tests).
+    pub fn open_no_proxy(profile: impl AsRef<Path>) -> Result<Self> {
+        Self::open_inner(profile, true)
+    }
+    fn open_inner(profile: impl AsRef<Path>, no_proxy: bool) -> Result<Self> {
         let profile = profile.as_ref().to_owned();
         let (store, document) = store::LocalStore::open(&profile)?;
-        let client = Client::builder()
+        let mut builder = Client::builder()
             .user_agent(USER_AGENT)
             .redirect(Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .retry(reqwest::retry::never())
             .tcp_keepalive(Duration::from_secs(30))
-            .pool_max_idle_per_host(16)
+            .pool_max_idle_per_host(16);
+        if no_proxy {
+            builder = builder.no_proxy();
+        }
+        let client = builder
             .build()
             .map_err(|_| Error::new("NETWORK", "网络客户端初始化失败"))?;
         Ok(Self {

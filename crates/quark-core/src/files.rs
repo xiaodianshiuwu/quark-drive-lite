@@ -147,6 +147,22 @@ pub(crate) fn file_item(raw: &Value) -> Value {
     }
     item
 }
+fn parse_crumbs(env: &Value) -> Vec<Value> {
+    list(env)
+        .into_iter()
+        .flatten()
+        .filter_map(|v| {
+            let fid = text(v.get("fid").unwrap_or(&v["id"]));
+            if fid.is_empty() {
+                None
+            } else {
+                let raw_name = text(v.get("file_name").unwrap_or(&v["name"]));
+                let name = html_escape::decode_html_entities(&raw_name).into_owned();
+                Some(json!({"fid": fid, "name": name}))
+            }
+        })
+        .collect()
+}
 fn page_result(env: &Value, page: i64, size: i64) -> Value {
     let entries = list(env)
         .into_iter()
@@ -262,12 +278,12 @@ impl Core {
                 let fid=if params.is_string(){text(&params)}else{text(&params["fid"])};
                 let root=json!([{"fid":"0","name":"全部文件"}]);if fid.is_empty()||fid=="0"{return Ok(root);}
                 match self.get_in_session(generation,"/1/clouddrive/file/info/path_list",&[("fid",fid)]).await {
-                    Ok(env)=>{let out=list(&env).into_iter().flatten().filter_map(|v|{let fid=text(v.get("fid").unwrap_or(&v["id"]));if fid.is_empty(){None}else{Some(json!({"fid":fid,"name":text(v.get("file_name").unwrap_or(&v["name"]))}))}}).collect::<Vec<_>>();Ok(if out.is_empty(){root}else{json!(out)})}
+                    Ok(env)=>{let out=parse_crumbs(&env);Ok(if out.is_empty(){root}else{json!(out)})}
                     Err(e) if e.code=="NEED_LOGIN"||e.code=="ABORTED"=>Err(e),Err(_)=>Ok(root)
                 }
             }
             "fs.mkdir"=>Ok(accepted(&self.post_in_session(generation,"/1/clouddrive/file",json!({"pdir_fid":params["pdirFid"].as_str().filter(|s|!s.is_empty()).unwrap_or("0"),"file_name":required(&params["name"],"文件夹名称")?,"dir_path":"","dir_init_lock":false})).await?)),
-            "fs.rename"=>{required(&params["name"],"新名称")?;Ok(accepted(&self.post_in_session(generation,"/1/clouddrive/file/rename",json!({"fid":required(&params["fid"],"文件 fid")?,"file_name":params["name"]})).await?))},
+            "fs.rename"=>{let name=required(&params["name"],"新名称")?;Ok(accepted(&self.post_in_session(generation,"/1/clouddrive/file/rename",json!({"fid":required(&params["fid"],"文件 fid")?,"file_name":name})).await?))},
             "fs.move"=>Ok(accepted(&self.post_in_session(generation,"/1/clouddrive/file/move",json!({"action_type":1,"to_pdir_fid":required(&params["toFid"],"目标目录 fid")?,"filelist":ids(&params["fids"])? ,"exclude_fids":[]})).await?)),
             "fs.copy"=>Ok(accepted(&self.post_in_session(generation,"/1/clouddrive/file/copy",json!({"action_type":2,"to_pdir_fid":required(&params["toFid"],"目标目录 fid")?,"filelist":ids(&params["fids"])? ,"copy_source":1})).await?)),
             "fs.remove"=>Ok(accepted(&self.post_in_session(generation,"/1/clouddrive/file/delete",json!({"action_type":2,"filelist":ids(&params["fids"])? ,"exclude_fids":[]})).await?)),
@@ -359,5 +375,21 @@ mod tests {
             task_entry(&json!({"task_id":"t","finish":true,"success":true})).unwrap()["done"],
             true
         );
+    }
+    #[test]
+    fn crumbs_unescapes_html_entities_and_required_trims_rename_name() {
+        let env = json!({
+            "data": {
+                "list": [
+                    {"fid": "0", "file_name": "全部文件"},
+                    {"fid": "d1", "file_name": "R&amp;D &lt;2026&gt; &quot;Alpha&quot;"}
+                ]
+            }
+        });
+        let crumbs = parse_crumbs(&env);
+        assert_eq!(crumbs.len(), 2);
+        assert_eq!(crumbs[1]["fid"], "d1");
+        assert_eq!(crumbs[1]["name"], "R&D <2026> \"Alpha\"");
+        assert_eq!(required(&json!("  trimmed.txt  "), "新名称").unwrap(), "trimmed.txt");
     }
 }

@@ -12,15 +12,19 @@ fn millis(value: &Value) -> Option<i64> {
     let n = value
         .as_f64()
         .or_else(|| value.as_str().and_then(|s| s.parse().ok()))?;
-    if !n.is_finite() || n <= 0.0 {
-        None
-    } else {
-        Some(if n < 1e11 {
-            (n * 1000.0).round() as i64
-        } else {
-            n.round() as i64
-        })
+    if !n.is_finite() {
+        return None;
     }
+    if n <= 0.0 {
+        // Explicit non-positive expiry (e.g. epoch 0 or negative timestamp) represents
+        // an already-expired cookie, never an eternal session cookie.
+        return Some(0);
+    }
+    Some(if n < 1e11 {
+        (n * 1000.0).round() as i64
+    } else {
+        n.round() as i64
+    })
 }
 fn trusted_domain(domain: &str) -> bool {
     domain.is_empty() || domain == "quark.cn" || domain.ends_with(".quark.cn")
@@ -67,7 +71,7 @@ fn cookie_header_matching(doc: &Value, request_host: &str, request_path: &str) -
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|c| c["expires"].as_i64().map_or(true, |v| v <= 0 || v > now))
+        .filter(|c| c["expires"].as_i64().map_or(true, |v| v > now))
         .filter(|c| {
             let Some(name) = c["name"].as_str() else {
                 return false;
@@ -487,5 +491,32 @@ mod tests {
         assert_eq!(info["nickname"], "new-name");
         assert_eq!(info["userId"], "stable-id");
         assert!(info.get("cookie").is_none());
+    }
+    #[test]
+    fn non_positive_expires_never_becomes_eternal_cookie() {
+        assert_eq!(millis(&json!(0)), Some(0));
+        assert_eq!(millis(&json!(-1)), Some(0));
+        assert_eq!(millis(&Value::Null), None);
+        let out = normalize_external(json!([
+            {"name":"zero","value":"1","domain":"quark.cn","expires":0},
+            {"name":"neg","value":"2","domain":"quark.cn","expires":-1},
+            {"name":"session","value":"3","domain":"quark.cn","expires":null},
+            {"name":"future","value":"4","domain":"quark.cn","expires":now_ms()/1000+60}
+        ]))
+        .unwrap();
+        let names: Vec<_> = out
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["session", "future"]);
+        // Stored cookies with expires <= 0 are also rejected when building headers.
+        let stored = json!({"cookies":[
+            {"name":"stale0","value":"1","domain":"quark.cn","path":"/","expires":0},
+            {"name":"staleneg","value":"2","domain":"quark.cn","path":"/","expires":-100},
+            {"name":"valid","value":"3","domain":"quark.cn","path":"/","expires":null}
+        ]});
+        assert_eq!(cookie_header(&stored), "valid=3");
     }
 }

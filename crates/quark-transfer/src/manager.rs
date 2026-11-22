@@ -233,28 +233,42 @@ impl TransferManager {
     }
     pub fn resumable_upload(&self, path: &str, parent: &str) -> Option<String> {
         let account = self.inner.core.account_key();
-        self.inner
-            .tasks
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|t| {
-                t.kind == "upload"
+        let current = current_file_stamp(path);
+        let mut found = None;
+        let mut changed = false;
+        {
+            let active = self.inner.active.lock().unwrap();
+            let mut tasks = self.inner.tasks.lock().unwrap();
+            let mut stale_ids = Vec::new();
+            for t in tasks.iter() {
+                if !(t.kind == "upload"
                     && t.local_path.as_deref() == Some(path)
                     && t.pdir_fid.as_deref() == Some(parent)
                     && t.account_key == account
-                    && matches!(t.status.as_str(), "paused" | "error")
-            })
-            .map(|t| t.id.clone())
+                    && matches!(t.status.as_str(), "paused" | "error"))
+                {
+                    continue;
+                }
+                if is_upload_checkpoint_fresh(t, current.as_ref()) {
+                    if found.is_none() {
+                        found = Some(t.id.clone());
+                    }
+                } else if !active.contains_key(&t.id) {
+                    stale_ids.push(t.id.clone());
+                }
+            }
+            if !stale_ids.is_empty() {
+                tasks.retain(|t| !stale_ids.contains(&t.id));
+                changed = true;
+            }
+        }
+        if changed {
+            let _ = self.persist();
+        }
+        found
     }
     pub fn attributable_upload(&self, path: &str, parent: &str, fid: &str) -> Option<String> {
-        let metadata = std::fs::metadata(path).ok()?;
-        let modified = metadata
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_nanos();
+        let (size, modified, identity) = current_file_stamp(path)?;
         let account = self.inner.core.account_key();
         self.inner
             .tasks
@@ -267,8 +281,12 @@ impl TransferManager {
                     && t.pdir_fid.as_deref() == Some(parent)
                     && t.fid.as_deref() == Some(fid)
                     && t.account_key == account
-                    && t.checkpoint["size"].as_u64() == Some(metadata.len())
-                    && t.checkpoint["modified"].as_u64().map(u128::from) == Some(modified)
+                    && t.checkpoint["size"].as_u64() == Some(size)
+                    && checkpoint_u128(&t.checkpoint["modified"]) == Some(modified)
+                    && t.checkpoint
+                        .get("identity")
+                        .and_then(Value::as_str)
+                        .is_none_or(|saved| identity.as_deref() == Some(saved))
                     && matches!(t.status.as_str(), "done" | "paused" | "error")
             })
             .map(|t| t.id.clone())
@@ -644,6 +662,53 @@ impl TransferManager {
         Ok(())
     }
 }
+fn checkpoint_u128(v: &Value) -> Option<u128> {
+    v.as_u64()
+        .map(u128::from)
+        .or_else(|| serde_json::from_value::<u128>(v.clone()).ok())
+}
+fn current_file_stamp(path: &str) -> Option<(u64, u128, Option<String>)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    #[cfg(unix)]
+    let identity = {
+        use std::os::unix::fs::MetadataExt;
+        Some(format!("{}:{}", metadata.dev(), metadata.ino()))
+    };
+    #[cfg(not(unix))]
+    let identity = None;
+    Some((metadata.len(), modified, identity))
+}
+fn is_upload_checkpoint_fresh(task: &Task, current: Option<&(u64, u128, Option<String>)>) -> bool {
+    if task.error_code.as_deref() == Some("CONFLICT") {
+        return false;
+    }
+    let has_stamp = task.checkpoint.get("size").is_some()
+        || task.checkpoint.get("modified").is_some()
+        || task.checkpoint.get("identity").is_some();
+    if !has_stamp {
+        return true;
+    }
+    let Some((size, modified, identity)) = current else {
+        return false;
+    };
+    let size_ok = task.checkpoint["size"].as_u64() == Some(*size);
+    let modified_ok = checkpoint_u128(&task.checkpoint["modified"]) == Some(*modified);
+    let identity_ok = task
+        .checkpoint
+        .get("identity")
+        .and_then(Value::as_str)
+        .is_none_or(|saved| identity.as_deref() == Some(saved));
+    size_ok && modified_ok && identity_ok
+}
 fn param_id(params: &Value) -> Result<String> {
     params
         .as_str()
@@ -654,7 +719,7 @@ fn param_id(params: &Value) -> Result<String> {
 
 #[cfg(test)]
 pub(crate) fn fixture(dir: &Path) -> (TransferManager, String) {
-    let core = Core::open(dir.join("profile")).unwrap();
+    let core = Core::open_no_proxy(dir.join("profile")).unwrap();
     // Synthetic local-only cookies must never be sent to the loopback download host.
     core.replace_cookies(json!([{"name":"fixture","value":"synthetic","domain":"quark.cn"}]))
         .unwrap();
@@ -742,5 +807,80 @@ mod tests {
         drop(control);
         assert_eq!(enqueue.await.unwrap().unwrap_err().code, "ABORTED");
         assert!(manager.snapshot().as_array().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn resumable_upload_discards_stale_or_conflicted_task_and_reuses_matching_checkpoint() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = Core::open_no_proxy(temp.path().join("profile")).unwrap();
+        core.replace_cookies(json!([{"name":"fixture","value":"synthetic","domain":"quark.cn"}]))
+            .unwrap();
+        let manager = TransferManager::open(core.clone()).unwrap();
+        let file_path = temp.path().join("doc.txt");
+        std::fs::write(&file_path, b"version-1").unwrap();
+        let (size1, mod1, id1) = current_file_stamp(file_path.to_str().unwrap()).unwrap();
+        let account = core.account_key();
+
+        let make_task = |id: &str, status: &str, err_code: Option<&str>, cp: Value| Task {
+            id: id.into(),
+            kind: "upload".into(),
+            name: "doc.txt".into(),
+            size: size1,
+            transferred: 0,
+            status: status.into(),
+            attempts: 1,
+            created_at: now(),
+            updated_at: now(),
+            local_path: Some(file_path.to_string_lossy().into()),
+            local_dir: None,
+            fid: None,
+            pdir_fid: Some("p1".into()),
+            error: err_code.map(|_| "err".into()),
+            error_code: err_code.map(str::to_owned),
+            speed: 0,
+            eta: -1,
+            checkpoint: cp,
+            account_key: account.clone(),
+            rate_limit_bps: 0,
+            sample: None,
+        };
+
+        // 1) Matching paused checkpoint is reused.
+        let cp_v1 = json!({"size": size1, "modified": mod1, "identity": id1});
+        manager
+            .inner
+            .tasks
+            .lock()
+            .unwrap()
+            .push(make_task("t-match", "paused", None, cp_v1.clone()));
+        assert_eq!(
+            manager.resumable_upload(file_path.to_str().unwrap(), "p1"),
+            Some("t-match".into())
+        );
+
+        // 2) Source file changes -> stale task is discarded and None is returned so backup creates a fresh upload.
+        std::fs::write(&file_path, b"version-2-much-longer").unwrap();
+        assert_eq!(
+            manager.resumable_upload(file_path.to_str().unwrap(), "p1"),
+            None
+        );
+        assert!(manager.task("t-match").is_err(), "stale task should be removed");
+
+        // 3) Errored CONFLICT task is never reused even if checkpoint matches.
+        let (size2, mod2, id2) = current_file_stamp(file_path.to_str().unwrap()).unwrap();
+        let cp_v2 = json!({"size": size2, "modified": mod2, "identity": id2});
+        manager
+            .inner
+            .tasks
+            .lock()
+            .unwrap()
+            .push(make_task("t-conflict", "error", Some("CONFLICT"), cp_v2));
+        assert_eq!(
+            manager.resumable_upload(file_path.to_str().unwrap(), "p1"),
+            None
+        );
+        assert!(
+            manager.task("t-conflict").is_err(),
+            "CONFLICT task should be removed"
+        );
     }
 }
