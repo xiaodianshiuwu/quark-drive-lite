@@ -224,10 +224,34 @@ test('base 桥（真实 alpha 过渡形态）下 chat.* 返回 NO_BRIDGE，onEve
  * C. 真实渲染与交互
  * ==================================================================== */
 
+test('AI 对话默认关闭（Beta 测试功能）：隐藏入口并拦截直达，手动在设置开启后才可进入对话', async () => {
+  const navChatMatch = html.match(/id="nav-chat"[\s\S]*?<\/button>/);
+  assert.ok(navChatMatch && navChatMatch[0].includes('Beta'), 'index.html 侧边栏对话入口应标注 Beta');
+  const viewChatIdx = html.indexOf('id="view-chat"');
+  assert.ok(viewChatIdx > 0 && html.slice(viewChatIdx, viewChatIdx + 1200).includes('Beta 测试功能'), 'index.html 对话视图应明确标注 Beta 测试功能');
+
+  const app = await bootApp({ chatStatus: CONFIGURED_CHAT, history: BASE_HISTORY });
+  assert.equal(app.$('nav-chat').hidden, true, '默认应隐藏侧边栏「对话」导航项');
+
+  // 未开启时尝试切入 chat 视图，应被拦回设置页且不发任何 chat.* 调用
+  await app.openChat();
+  assert.equal(app.ui.state.view, 'settings', '未开启 AI Beta 时进入对话应引导回设置页');
+  assert.equal(app.$('view-chat').hidden, true);
+  assert.deepEqual(app.chatCalls(), [], 'AI Beta 关闭时不得发起 chat.* 调用');
+
+  // 在设置页手动开启 AI Beta 后即可正常进入对话
+  await app.enableAiBeta();
+  assert.equal(app.$('nav-chat').hidden, false);
+  await app.openChat();
+  assert.equal(app.ui.state.view, 'chat');
+  assert.equal(app.$('view-chat').hidden, false);
+  assert.equal(app.text('chat-card-status'), 'deepseek-chat · api.deepseek.com/v1');
+});
+
 test('未注入桥接层：对话视图整块降级，输入禁用，不发起任何 chat 调用', async () => {
   const app = await bootApp({ bridge: 'none' });
-  await app.openChat();
 
+  assert.equal(app.$('nav-chat').hidden, true);
   assert.ok(app.$('chat-card').hasClass('chat-off'));
   assert.equal(app.text('chat-card-status'), '未注入桥接层');
   assert.ok(app.text('chat-card-hint').includes('window.qk 不存在'));
@@ -243,7 +267,7 @@ test('未注入桥接层：对话视图整块降级，输入禁用，不发起�
 });
 
 test('base 桥（命令未接线）：显示「对话命令未接线」，不发起 chat 调用', async () => {
-  const app = await bootApp({ bridge: 'base' });
+  const app = await bootApp({ bridge: 'base', aiBetaEnabled: true });
   await app.openChat();
 
   assert.ok(app.$('chat-card').hasClass('chat-off'));
@@ -255,7 +279,7 @@ test('base 桥（命令未接线）：显示「对话命令未接线」，不发
 });
 
 test('未配置：配置表单展开、输入禁用、状态行给出配置引导', async () => {
-  const app = await bootApp({ chatStatus: UNCONFIGURED_CHAT });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: UNCONFIGURED_CHAT });
   await app.openChat();
 
   assert.equal(app.$('chat-card-status').textContent, '尚未配置');
@@ -273,7 +297,7 @@ test('未配置：配置表单展开、输入禁用、状态行给出配置引�
 });
 
 test('已配置：折叠为一行状态（模型名 + Base URL 尾段），历史按形状渲染', async () => {
-  const app = await bootApp({ chatStatus: CONFIGURED_CHAT, history: BASE_HISTORY });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: CONFIGURED_CHAT, history: BASE_HISTORY });
   await app.openChat();
 
   assert.equal(app.text('chat-card-status'), 'deepseek-chat · api.deepseek.com/v1');
@@ -305,6 +329,7 @@ test('Enter 发送：调用 send、用户气泡上屏、工具事件实时更新
   let resolveSend = null;
   const pending = new Promise((resolve) => { resolveSend = resolve; });
   const app = await bootApp({
+    aiBetaEnabled: true,
     chatStatus: CONFIGURED_CHAT,
     sendImpl: () => pending
   });
@@ -389,7 +414,7 @@ test('Enter 发送：调用 send、用户气泡上屏、工具事件实时更新
 });
 
 test('工具卡片配对：同名 running 行原地更新；找不到配对时追加新行', async () => {
-  const app = await bootApp({ chatStatus: CONFIGURED_CHAT, sendImpl: () => new Promise(() => {}) });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: CONFIGURED_CHAT, sendImpl: () => new Promise(() => {}) });
   await app.openChat();
   await app.typeAndSend(app.$('chat-input'), '测试配对');
   app.emitChat({ type: 'round', round: 1, maxRounds: 8 });
@@ -419,6 +444,7 @@ test('工具卡片配对：同名 running 行原地更新；找不到配对时�
 
 test('事件流缺席：用 send() 返回值兜底渲染，不会卡在「处理中…」', async () => {
   const app = await bootApp({
+    aiBetaEnabled: true,
     chatStatus: CONFIGURED_CHAT,
     sendResult: {
       reply: '兜底回复',
@@ -449,7 +475,7 @@ test('事件流缺席：用 send() 返回值兜底渲染，不会卡在「处理
 });
 
 test('达到轮次上限：done 事件带 max_rounds 时给出「回复可能不完整」提示', async () => {
-  const app = await bootApp({ chatStatus: CONFIGURED_CHAT, sendImpl: () => new Promise(() => {}) });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: CONFIGURED_CHAT, sendImpl: () => new Promise(() => {}) });
   await app.openChat();
   await app.typeAndSend(app.$('chat-input'), '上限测试');
   app.emitChat({ type: 'round', round: 8, maxRounds: 8 });
@@ -463,7 +489,7 @@ test('达到轮次上限：done 事件带 max_rounds 时给出「回复可能不
 });
 
 test('保存配置：Key 留空不提交 apiKey；保存后折叠表单并清空 Key 输入；填了 Key 才提交', async () => {
-  const app = await bootApp({ chatStatus: CONFIGURED_CHAT, history: [] });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: CONFIGURED_CHAT, history: [] });
   await app.openChat();
 
   // 展开表单
@@ -496,7 +522,7 @@ test('保存配置：Key 留空不提交 apiKey；保存后折叠表单并清空
 });
 
 test('获取模型列表：填充 datalist、保留已输入值、按钮文案切换', async () => {
-  const app = await bootApp({ chatStatus: CONFIGURED_CHAT, models: ['deepseek-chat', 'deepseek-reasoner'] });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: CONFIGURED_CHAT, models: ['deepseek-chat', 'deepseek-reasoner'] });
   await app.openChat();
   await app.click('chat-btn-settings');
 
@@ -514,6 +540,7 @@ test('获取模型列表：填充 datalist、保留已输入值、按钮文案�
 test('失败路径：send reject 与 error 事件都在气泡和状态行给出原因', async () => {
   // send reject
   const rejected = await bootApp({
+    aiBetaEnabled: true,
     chatStatus: CONFIGURED_CHAT,
     sendError: { code: 'NETWORK', message: '模型服务不可达', hint: '检查 Base URL' }
   });
@@ -526,7 +553,7 @@ test('失败路径：send reject 与 error 事件都在气泡和状态行给出�
   assert.equal(rejected.$('chat-btn-send').disabled, false);
 
   // error 事件（先 start 再 error）
-  const app = await bootApp({ chatStatus: CONFIGURED_CHAT, sendImpl: () => new Promise(() => {}) });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: CONFIGURED_CHAT, sendImpl: () => new Promise(() => {}) });
   await app.openChat();
   await app.typeAndSend(app.$('chat-input'), '事件失败');
   app.emitChat({ type: 'round', round: 1, maxRounds: 8 });
@@ -543,6 +570,7 @@ test('清空对话：走 chat.clear 并回到空态；发送中按钮禁用', as
   let resolveSend = null;
   const pending = new Promise((resolve) => { resolveSend = resolve; });
   const app = await bootApp({
+    aiBetaEnabled: true,
     chatStatus: CONFIGURED_CHAT,
     history: BASE_HISTORY,
     sendImpl: () => pending
@@ -564,7 +592,7 @@ test('清空对话：走 chat.clear 并回到空态；发送中按钮禁用', as
 });
 
 test('清除配置：二次确认后才调用 clearConfig，并回到展开的未配置表单', async () => {
-  const app = await bootApp({ chatStatus: CONFIGURED_CHAT, history: BASE_HISTORY });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: CONFIGURED_CHAT, history: BASE_HISTORY });
   await app.openChat();
 
   app.setConfirmed(false);
@@ -591,7 +619,7 @@ test('清除配置：二次确认后才调用 clearConfig，并回到展开的�
 });
 
 test('系统确认框缺失：清除配置回落应用内确认框，取消不执行', async () => {
-  const app = await bootApp({ chatStatus: CONFIGURED_CHAT, confirmSupported: false });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: CONFIGURED_CHAT, confirmSupported: false });
   await app.openChat();
 
   await app.click('chat-btn-clear-config');
@@ -608,7 +636,7 @@ test('系统确认框缺失：清除配置回落应用内确认框，取消不�
 
 test('XSS 红线：工具名/参数/摘要中的 HTML 只作为文本渲染，不产生元素节点', async () => {
   const evil = '<img src=x onerror="window.__pwned=1">';
-  const app = await bootApp({ chatStatus: CONFIGURED_CHAT, sendImpl: () => new Promise(() => {}) });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: CONFIGURED_CHAT, sendImpl: () => new Promise(() => {}) });
   await app.openChat();
   await app.typeAndSend(app.$('chat-input'), '恶意内容测试');
   app.emitChat({ type: 'round', round: 1, maxRounds: 8 });
@@ -634,7 +662,7 @@ test('XSS 红线：工具名/参数/摘要中的 HTML 只作为文本渲染，�
 });
 
 test('再次进入对话视图会重读配置：外部改动不显示过期状态', async () => {
-  const app = await bootApp({ chatStatus: CONFIGURED_CHAT });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: CONFIGURED_CHAT });
   await app.openChat();
   assert.equal(app.text('chat-card-status'), 'deepseek-chat · api.deepseek.com/v1');
 
@@ -647,7 +675,7 @@ test('再次进入对话视图会重读配置：外部改动不显示过期状�
 });
 
 test('配置状态读取失败：红色状态点与错误原因，表单保持展开', async () => {
-  const app = await bootApp({ chatStatusError: '配置文件损坏' });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatusError: '配置文件损坏' });
   await app.openChat();
 
   assert.equal(app.text('chat-card-status'), '状态读取失败');
@@ -658,7 +686,7 @@ test('配置状态读取失败：红色状态点与错误原因，表单保持�
 });
 
 test('已配置状态加载与展开设置表单时回填 Base URL 与模型名', async () => {
-  const app = await bootApp({ chatStatus: CONFIGURED_CHAT });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: CONFIGURED_CHAT });
   await app.openChat();
 
   assert.equal(app.$('chat-base-url').value, CONFIGURED_CHAT.baseUrl);
@@ -674,7 +702,7 @@ test('已配置状态加载与展开设置表单时回填 Base URL 与模型名'
 });
 
 test('退出登录清空对话历史并重置会话视图', async () => {
-  const app = await bootApp({ chatStatus: CONFIGURED_CHAT, history: BASE_HISTORY });
+  const app = await bootApp({ aiBetaEnabled: true, chatStatus: CONFIGURED_CHAT, history: BASE_HISTORY });
   await app.openChat();
   assert.equal(app.findAll('.chat-msg').length, 3);
 

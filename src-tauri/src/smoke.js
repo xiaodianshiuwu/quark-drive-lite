@@ -7,6 +7,10 @@
     check('visible interface', document.querySelector('.sidebar')?.getBoundingClientRect().width > 100 && document.querySelector('.topbar')?.getBoundingClientRect().height > 0);
     const settings = await window.qk.settings.get();
     check('Rust settings command', typeof settings.downloadDir === 'string');
+    check('AI Beta defaults off', settings.aiBetaEnabled === false);
+    check('AI entries hidden when Beta off', document.getElementById('nav-chat')?.hidden === true && document.getElementById('agent-card')?.hidden === true);
+    const appInfo = await window.qk.app.info();
+    check('Rust app info command', typeof appInfo?.version === 'string' && appInfo.version.length > 0);
     const changed = await window.qk.settings.set({theme: 'dark'});
     check('Rust settings persist', changed.theme === 'dark' && (await window.qk.settings.get()).theme === 'dark');
     await window.qk.settings.set({theme: settings.theme});
@@ -28,8 +32,16 @@
     check('backup cannot spoof unauthenticated account',backupCode==='NEED_LOGIN');
     const agent=await window.qk.agent.status();check('Rust agent status',typeof agent.enabled==='boolean');
     const mcp=await window.qk.agent.mcpConfig();check('packaged MCP adapter path',mcp.mcpServers['quark-mini'].args[0].includes('adapters'));
+    document.querySelector('[data-view="settings"]').click();
+    document.querySelector('#set-ai-beta [data-ai-beta="on"]').click();
+    await new Promise(r => setTimeout(r, 120));
+    check('AI Beta opt-in reveals chat and agent', document.getElementById('nav-chat')?.hidden === false && document.getElementById('agent-card')?.hidden === false);
     document.querySelector('[data-view="chat"]').click();check('chat view',!document.getElementById('view-chat').hidden);
     const chat=await window.qk.chat.status();check('Rust chat status',chat.configured===false);
+    document.querySelector('[data-view="settings"]').click();
+    document.querySelector('#set-ai-beta [data-ai-beta="off"]').click();
+    await new Promise(r => setTimeout(r, 120));
+    check('AI Beta opt-out restores minimal mode', document.getElementById('nav-chat')?.hidden === true && document.getElementById('agent-card')?.hidden === true);
     document.querySelector('[data-view="files"]').click();
     check('no mock data', !location.search.includes('mock=1'));
   } catch(e) { checks.push({name:'exception',ok:false,code:e.code || 'JS',message:String(e.message).slice(0,180)}); }

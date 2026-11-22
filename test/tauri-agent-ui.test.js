@@ -230,6 +230,31 @@ test('base 桥（真实 alpha 过渡形态）下 agent.* 返回 NO_BRIDGE 拒绝
  * C. 真实渲染与交互
  * ==================================================================== */
 
+test('AI 实验室默认关闭（Beta 测试功能）：默认隐藏 Agent 面板与对话入口，手动开启后才加载并展示', async () => {
+  assert.ok(html.includes('id="ai-beta-card"') && html.includes('Beta 测试功能'), 'index.html 的 AI 实验室必须明确标注 Beta 测试功能');
+  const app = await bootApp();
+  await app.openSettings();
+
+  assert.equal(app.$('nav-chat').hidden, true, '默认应隐藏侧边栏 AI 对话入口');
+  assert.equal(app.$('agent-card').hidden, true, '默认应隐藏设置页 Agent 面板');
+  assert.ok(app.text('ai-beta-hint').includes('默认关闭'), '关闭态说明应提示默认关闭');
+  assert.deepEqual(app.agentCalls(), [], 'AI Beta 关闭时不得发起任何 agent.* 调用');
+
+  // 手动在设置页开启 AI Beta
+  await app.enableAiBeta();
+  const setCall = app.calls.filter((c) => c.ns === 'settings' && c.name === 'set').pop();
+  assert.deepEqual(plain(setCall.args), [{ aiBetaEnabled: true }], '开启后应持久化 aiBetaEnabled: true');
+  assert.equal(app.$('nav-chat').hidden, false, '开启后侧边栏应显示对话 Beta 入口');
+  assert.equal(app.$('agent-card').hidden, false, '开启后应展示 Agent 接入卡片');
+  assert.ok(app.text('ai-beta-hint').includes('Beta 测试功能'), '开启态说明应明确标注 Beta 测试功能');
+  assert.equal(app.text('agent-status-text'), '运行中', '开启后应立即拉取 Agent 状态');
+
+  // 手动关闭恢复极简模式
+  await app.disableAiBeta();
+  assert.equal(app.$('nav-chat').hidden, true, '关闭后应重新隐藏对话入口');
+  assert.equal(app.$('agent-card').hidden, true, '关闭后应重新隐藏 Agent 面板');
+});
+
 test('未注入桥接层：整卡降级（agent-off）、全部按钮禁用、不发起任何 agent 调用', async () => {
   const app = await bootApp({ bridge: 'none' });
   await app.openSettings();
@@ -251,7 +276,7 @@ test('未注入桥接层：整卡降级（agent-off）、全部按钮禁用、�
 });
 
 test('base 桥（命令未接线）：面板降级为「接入命令未接线」，且不发起 agent 调用', async () => {
-  const app = await bootApp({ bridge: 'base' });
+  const app = await bootApp({ bridge: 'base', aiBetaEnabled: true });
   await app.openSettings();
 
   assert.ok(app.$('agent-card').hasClass('agent-off'));
@@ -263,7 +288,7 @@ test('base 桥（命令未接线）：面板降级为「接入命令未接线」
 });
 
 test('运行中：状态点、状态摘要、按钮矩阵、journal 与 MCP 配置全部按主进程形状渲染', async () => {
-  const app = await bootApp();
+  const app = await bootApp({ aiBetaEnabled: true });
   await app.openSettings();
 
   assert.equal(app.text('agent-status-text'), '运行中');
@@ -331,6 +356,7 @@ test('运行中：状态点、状态摘要、按钮矩阵、journal 与 MCP 配�
 
 test('已启用未运行（黄）与未启用（灰）：状态点与按钮矩阵随状态切换', async () => {
   const paused = await bootApp({
+    aiBetaEnabled: true,
     agentStatus: Object.assign({}, BASE_AGENT_STATUS, { running: false, connections: 0, callsServed: 0 })
   });
   await paused.openSettings();
@@ -344,6 +370,7 @@ test('已启用未运行（黄）与未启用（灰）：状态点与按钮矩�
   assert.equal(paused.$('agent-btn-rotate').disabled, false);
 
   const off = await bootApp({
+    aiBetaEnabled: true,
     agentStatus: Object.assign({}, BASE_AGENT_STATUS, { enabled: false, running: false, endpoint: '' })
   });
   await off.openSettings();
@@ -360,7 +387,7 @@ test('已启用未运行（黄）与未启用（灰）：状态点与按钮矩�
 });
 
 test('状态读取失败：红色状态点、错误详情行、操作按钮禁用', async () => {
-  const app = await bootApp({ agentStatusError: '授权范围文件损坏' });
+  const app = await bootApp({ aiBetaEnabled: true, agentStatusError: '授权范围文件损坏' });
   await app.openSettings();
 
   assert.equal(app.text('agent-status-text'), '状态读取失败');
@@ -375,21 +402,21 @@ test('状态读取失败：红色状态点、错误详情行、操作按钮禁�
 });
 
 test('journal 空态/读取失败与 MCP 读取失败各自给出文案', async () => {
-  const empty = await bootApp({ journal: [] });
+  const empty = await bootApp({ aiBetaEnabled: true, journal: [] });
   await empty.openSettings();
   assert.equal(empty.text('agent-journal').trim(), '暂无记录');
 
-  const journalErr = await bootApp({ journalFails: '记录文件不可读' });
+  const journalErr = await bootApp({ aiBetaEnabled: true, journalFails: '记录文件不可读' });
   await journalErr.openSettings();
   assert.ok(journalErr.text('agent-journal').includes('读取失败：记录文件不可读'));
 
-  const mcpErr = await bootApp({ mcpFails: '配置读取失败' });
+  const mcpErr = await bootApp({ aiBetaEnabled: true, mcpFails: '配置读取失败' });
   await mcpErr.openSettings();
   assert.ok(mcpErr.text('agent-mcp-config').includes('读取失败：配置读取失败'));
 });
 
 test('写入模式：点击分段按钮提交 setScope({writeMode}) 并就地刷新状态', async () => {
-  const app = await bootApp();
+  const app = await bootApp({ aiBetaEnabled: true });
   await app.openSettings();
   const before = app.agentCalls().filter((n) => n === 'status').length;
 
@@ -408,7 +435,7 @@ test('写入模式：点击分段按钮提交 setScope({writeMode}) 并就地刷
 });
 
 test('网盘授权目录：按数据属性移除、根目录拒绝、添加当前目录', async () => {
-  const app = await bootApp();
+  const app = await bootApp({ aiBetaEnabled: true });
   await app.openSettings();
 
   // 移除：按钮带 data-agent-remove / data-agent-kind，事件委托到列表容器
@@ -440,7 +467,7 @@ test('网盘授权目录：按数据属性移除、根目录拒绝、添加当�
 });
 
 test('本地授权目录：pickDirs 结果合并去重后提交 setScope', async () => {
-  const app = await bootApp({ pickedDirs: ['/Users/tester/图片', '/Users/tester/Downloads'] });
+  const app = await bootApp({ aiBetaEnabled: true, pickedDirs: ['/Users/tester/图片', '/Users/tester/Downloads'] });
   await app.openSettings();
 
   await app.click('agent-btn-add-read');
@@ -459,7 +486,7 @@ test('本地授权目录：pickDirs 结果合并去重后提交 setScope', async
 });
 
 test('停用与重新生成凭据：系统确认框参数正确，取消时不执行', async () => {
-  const app = await bootApp();
+  const app = await bootApp({ aiBetaEnabled: true });
   await app.openSettings();
 
   // 取消停用
@@ -495,7 +522,7 @@ test('停用与重新生成凭据：系统确认框参数正确，取消时不�
 });
 
 test('系统确认框缺失：回落应用内确认框（danger 红色），取消不执行、确认才执行', async () => {
-  const app = await bootApp({ confirmSupported: false });
+  const app = await bootApp({ aiBetaEnabled: true, confirmSupported: false });
   await app.openSettings();
 
   await app.click('agent-btn-disable');
@@ -518,7 +545,7 @@ test('系统确认框缺失：回落应用内确认框（danger 红色），取�
 
 test('复制 MCP 配置：后端回配置时由渲染层写剪贴板；NO_BRIDGE 回落面板文本；失败/空态各有提示', async () => {
   // Tauri 形态：copyMcpConfig 只返回配置对象，渲染层写剪贴板
-  const app = await bootApp();
+  const app = await bootApp({ aiBetaEnabled: true });
   await app.openSettings();
   const mcpBefore = app.agentCalls().filter((n) => n === 'mcpConfig').length;
   await app.click('agent-btn-copy-mcp');
@@ -530,7 +557,7 @@ test('复制 MCP 配置：后端回配置时由渲染层写剪贴板；NO_BRIDGE
   assert.ok(app.agentCalls().filter((n) => n === 'mcpConfig').length > mcpBefore, '复制后应重读 MCP 配置');
 
   // 后端命令不可用（NO_BRIDGE）：回落到面板已读到的配置文本
-  const fallback = await bootApp({ copyFails: true });
+  const fallback = await bootApp({ aiBetaEnabled: true, copyFails: true });
   await fallback.openSettings();
   await fallback.click('agent-btn-copy-mcp');
   const fallbackClip = fallback.calls.find((c) => c.ns === 'clipboard');
@@ -539,20 +566,20 @@ test('复制 MCP 配置：后端回配置时由渲染层写剪贴板；NO_BRIDGE
   assert.ok(fallback.text('toasts').includes('MCP 配置已复制到剪贴板'));
 
   // 渲染层剪贴板也失败：提示手动复制
-  const broken = await bootApp({ clipboardFails: true });
+  const broken = await bootApp({ aiBetaEnabled: true, clipboardFails: true });
   await broken.openSettings();
   await broken.click('agent-btn-copy-mcp');
   assert.ok(broken.text('toasts').includes('复制失败：请手动选中 MCP 配置文本复制'));
 
   // 配置为空（后端返回 null）：给出「没有可复制」提示
-  const blank = await bootApp({ mcp: null });
+  const blank = await bootApp({ aiBetaEnabled: true, mcp: null });
   await blank.openSettings();
   await blank.click('agent-btn-copy-mcp');
   assert.ok(blank.text('toasts').includes('没有可复制的 MCP 配置'));
 });
 
 test('安全文案准确表达只读与删除边界，删除权限默认关闭且开启需二次确认', async () => {
-  const app = await bootApp();
+  const app = await bootApp({ aiBetaEnabled: true });
   await app.openSettings();
 
   // 只读模式文案准确：不能下载、上传或修改；删除开启按钮禁用

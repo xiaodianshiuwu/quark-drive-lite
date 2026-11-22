@@ -507,13 +507,21 @@ async function bootApp(opts = {}) {
     qk.auth.login = () => Promise.resolve(clone(BASE_ACCOUNT));
     qk.auth.logout = () => Promise.resolve(null);
     qk.auth.quota = () => Promise.resolve({ total: 1024, used: 10 });
-    qk.settings.get = () => Promise.resolve({
+    const settingsState = Object.assign({
       downloadDir: '/tmp/dl', uploadConcurrency: 2, downloadConcurrency: 2,
-      downloadParallel: 16, downloadStrategy: 'auto', uploadPartConcurrency: 3, theme: 'light'
-    });
-    qk.settings.set = (patch) => Promise.resolve(Object.assign({
-      downloadDir: '/tmp/dl', theme: 'light'
-    }, patch));
+      downloadParallel: 16, downloadStrategy: 'auto', uploadPartConcurrency: 3,
+      theme: 'light', aiBetaEnabled: !!opts.aiBetaEnabled,
+      viewMode: 'list', sortBy: 'file_type:asc,updated_at:desc'
+    }, opts.settings || {});
+    qk.settings.get = (...args) => {
+      calls.push({ ns: 'settings', name: 'get', args });
+      return Promise.resolve(clone(settingsState));
+    };
+    qk.settings.set = (patch) => {
+      calls.push({ ns: 'settings', name: 'set', args: [patch] });
+      Object.assign(settingsState, clone(patch || {}));
+      return Promise.resolve(clone(settingsState));
+    };
     qk.fs.list = (p) => Promise.resolve({ list: [], total: 0, page: (p && p.page) || 1, size: 100, hasMore: false });
     qk.fs.search = (p) => Promise.resolve({ list: [], total: 0, page: (p && p.page) || 1, size: 100, hasMore: false });
     qk.fs.crumbs = () => Promise.resolve([{ fid: '0', name: '全部文件' }]);
@@ -823,6 +831,18 @@ async function bootApp(opts = {}) {
     chatListeners: () => listeners.chat.length,
     openSettings: async () => { ui.setView('settings'); await flush(); await flush(); await flush(); },
     openChat: async () => { ui.setView('chat'); await flush(); await flush(); await flush(); },
+    enableAiBeta: async () => {
+      ui.setView('settings'); await flush();
+      const onBtn = $('set-ai-beta').querySelector('[data-ai-beta="on"]');
+      assert.ok(onBtn, '缺少 AI Beta 开启按钮');
+      await click(onBtn);
+    },
+    disableAiBeta: async () => {
+      ui.setView('settings'); await flush();
+      const offBtn = $('set-ai-beta').querySelector('[data-ai-beta="off"]');
+      assert.ok(offBtn, '缺少 AI Beta 关闭按钮');
+      await click(offBtn);
+    },
     /** 当前仍在挂着的周期回调数（app.js 的 setInterval 句柄）。 */
     timerCount: () => timers.size,
     /** 手动把所有挂着的周期回调各触发一次（等价于时间前进一步），返回触发次数。 */

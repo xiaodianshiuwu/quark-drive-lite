@@ -210,8 +210,14 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
           case 'fs.crumbs': {
             if (fixture.holdCrumbs && p.fid==='folder-A') return new Promise(resolve=>fixture.releaseCrumbs=resolve);
             if (fixture.crumbFailure) throw {code:'NETWORK',message:'路径服务暂不可用'};
+            if (fixture.selfOnlyCrumbs && p.fid==='folder-deep') return [{fid:'folder-deep',name:'二级目录'}];
             if (fixture.ancestorCrumbs && p.fid==='folder-deep') return [{fid:'0',name:'全部文件'},{fid:'folder-A',name:'一级目录'}];
             return [{fid:'0',name:'全部文件'}];
+          }
+          case 'fs.info': {
+            if (p.fid==='folder-deep') return {fid:'folder-deep',name:'二级目录',dir:true,pdirFid:'folder-A'};
+            if (p.fid==='folder-A') return {fid:'folder-A',name:'一级目录',dir:true,pdirFid:'0'};
+            return {fid:p.fid,name:fixture.names[p.fid] || ('项目-' + p.fid),dir:false,pdirFid:'0'};
           }
           case 'fs.list': {
             if (fixture.holdPage) return new Promise(resolve => fixture.releasePage=resolve);
@@ -246,10 +252,23 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
             emitTasks();return null;
           }
           case 'transfer.clear': fixture.tasks=fixture.tasks.filter(task=>!p.ids.includes(task.id));emitTasks();return null;
+          case 'transfer.pauseAll': {
+            let count=0;fixture.tasks.forEach(t=>{if(t.status==='running'||t.status==='queued'){t.status='paused';t.speed=0;count++;}});
+            emitTasks();return {count};
+          }
+          case 'transfer.resumeAll': {
+            let count=0;fixture.tasks.forEach(t=>{if(t.status==='paused'){t.status='running';t.speed=2048;count++;}});
+            emitTasks();return {count};
+          }
+          case 'transfer.retryFailed': {
+            let count=0;fixture.tasks.forEach(t=>{if(t.status==='error'){t.status='running';t.error='';t.speed=2048;count++;}});
+            emitTasks();return {count};
+          }
           case 'transfer.openItem': return null;
           case 'dialog.pickDirs': return ['/fixture/local-backup'];
           case 'dialog.pickFiles': return ['/fixture/local-upload.bin'];
           case 'dialog.saveDir': return '/fixture';
+          case 'app.info': return {version:'0.3.0-beta.1',runtime:'Tauri 2 + Rust (Fixture)',platform:'test',arch:'x64'};
           case 'dialog.openPath': case 'dialog.showInFolder': case 'app.quit': return null;
           default: throw {code:'FIXTURE_UNEXPECTED',message:request.method};
         }
@@ -469,12 +488,120 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await click('#account .btn');
     await until('QKUI.state.account.loggedIn && QKUI.state.loadedOnce && !QKUI.state.loading && QKUI.state.items.length===2', 'login reload');
   });
+  await t.test('file workspace upgrades: history, self-only crumbs, filters, sort, grid, inspector, additive checkbox, batch transfers and 760px layout', async () => {
+    await cdp('Emulation.setDeviceMetricsOverride', { width: 1200, height: 780, deviceScaleFactor: 1, mobile: false });
+    await evaluate('document.documentElement.setAttribute("data-theme","light");__fixture.navigationMode=true;__fixture.selfOnlyCrumbs=true;QKUI.setView("files");QKUI.navigate("0")');
+    await until('QKUI.state.fid==="0" && !QKUI.state.loading', 'workspace root loaded');
+
+    // 1. 自包含面包屑（仅返回 [cur]）绝不能冲掉父目录 folder-A；前进/后退历史可用
+    await evaluate('document.querySelector(".row[data-fid=\\"folder-A\\"]").dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
+    await until('QKUI.state.fid==="folder-A" && !QKUI.state.loading', 'enter folder-A');
+    await evaluate('document.querySelector(".row[data-fid=\\"folder-deep\\"]").dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
+    await until('QKUI.state.fid==="folder-deep" && !QKUI.state.loading', 'enter folder-deep');
+    assert.deepEqual(await evaluate('QKUI.state.crumbs.map(c=>c.fid)'), ['0', 'folder-A', 'folder-deep'], 'self-only crumbs must preserve local ancestor chain');
+    assert.equal(await evaluate('document.getElementById("btn-back").disabled'), false);
+    await click('#btn-back');
+    await until('QKUI.state.fid==="folder-A" && !QKUI.state.loading', 'history back to folder-A');
+    assert.equal(await evaluate('document.getElementById("btn-forward").disabled'), false);
+    await click('#btn-forward');
+    await until('QKUI.state.fid==="folder-deep" && !QKUI.state.loading', 'history forward to folder-deep');
+
+    // 2. 切回丰富多类型列表验证分类筛选、排序、视图模式、右侧详情与多选
+    await evaluate('__fixture.navigationMode=false;__fixture.selfOnlyCrumbs=false;__fixture.directoryMode=false;QKUI.navigate("0")');
+    await until('QKUI.state.items.length>=100 && !QKUI.state.loading', 'rich root loaded');
+
+    // 复选框多选为累加模式（点第 1 项再点第 2 项的 checkbox 应保留两项）
+    await click('.row[data-fid="1"] input[type="checkbox"]');
+    await click('.row[data-fid="2"] input[type="checkbox"]');
+    assert.equal(await evaluate('QKUI.state.selected.size'), 2, 'checkbox clicks must be additive multi-select');
+
+    // 右侧详情面板展示已选汇总 / 单选详情
+    await click('#btn-inspector');
+    assert.equal(await evaluate('document.getElementById("file-inspector").hidden'), false, 'inspector drawer opens');
+    assert.ok((await evaluate('document.getElementById("inspector-body").textContent')).includes('已选中 2 个项目'));
+    await click('.row[data-fid="1"]');
+    assert.equal(await evaluate('QKUI.state.selected.size'), 1, 'plain row click selects single item');
+    assert.ok((await evaluate('document.getElementById("inspector-body").textContent')).includes('fixture-1.txt'));
+
+    // 网格模式与排序切换持久化到设置
+    await click('#view-mode-seg [data-mode="grid"]');
+    assert.ok(await evaluate('document.getElementById("list").classList.contains("view-grid")'));
+    assert.equal(await evaluate('__fixture.settings.viewMode'), 'grid');
+    await click('#view-mode-seg [data-mode="list"]');
+    assert.equal(await evaluate('document.getElementById("list").classList.contains("view-grid")'), false);
+
+    // 分类筛选（全部 → 文件夹 → 恢复全部）
+    await click('#filter-pills [data-filter="dir"]');
+    assert.equal(await evaluate('QKUI.state.filter'), 'dir');
+    assert.ok((await evaluate('document.getElementById("statusbar-summary").textContent')).includes('筛选'));
+    await click('#filter-pills [data-filter="all"]');
+    assert.equal(await evaluate('QKUI.state.filter'), 'all');
+
+    // 目录选择器：工具栏「上一级」与「新建文件夹」可用
+    await evaluate('__fixture.navigationMode=true');
+    await click('.row[data-fid="1"] [data-op="move"]');
+    await until('!!document.querySelector(".overlay:not(.overlay-out) .picker-row[data-fid=\\"folder-A\\"]")', 'picker opened');
+    await evaluate('document.querySelector(".overlay:not(.overlay-out) .picker-row[data-fid=\\"folder-A\\"]").dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
+    await until('!!document.querySelector(".overlay:not(.overlay-out) .picker-row[data-fid=\\"folder-deep\\"]")', 'picker drilled into folder-A');
+    await click('.overlay:not(.overlay-out) .picker-toolbar .btn:first-child');
+    await until('!!document.querySelector(".overlay:not(.overlay-out) .picker-row[data-fid=\\"folder-A\\"]")', 'picker up button returned to root');
+    await click('.overlay:not(.overlay-out) .dlg-foot .btn:first-child');
+    await evaluate('__fixture.navigationMode=false;__fixture.directoryMode=true');
+
+    // 传输中心筛选与批量暂停/继续
+    await evaluate('__fixture.tasks=[{id:"bt1",kind:"download",name:"a.zip",status:"running",size:100,transferred:40,speed:1024,eta:10},{id:"bt2",kind:"upload",name:"b.mp4",status:"error",size:200,transferred:20,speed:0,error:"超时"}];__fixtureEmit("qk:transfer-update",__fixture.tasks);QKUI.setView("transfers")');
+    await until('document.querySelectorAll(".trow").length===2', 'two transfer rows');
+    await click('#transfer-filters [data-tfilter="error"]');
+    assert.equal(await evaluate('document.querySelectorAll(".trow").length'), 1, 'error filter narrows rows');
+    await click('#transfer-filters [data-tfilter="all"]');
+    await click('#btn-pause-all');
+    await until('QKUI.state.transfers.find(x=>x.id==="bt1").status==="paused"', 'pauseAll paused running task');
+    await click('#btn-resume-all');
+    await until('QKUI.state.transfers.find(x=>x.id==="bt1").status==="running"', 'resumeAll resumed paused task');
+    await click('#btn-retry-failed');
+    await until('QKUI.state.transfers.find(x=>x.id==="bt2").status==="running"', 'retryFailed retried errored task');
+
+    // 760x520 最小窗口下全部视图零横向溢出
+    await cdp('Emulation.setDeviceMetricsOverride', { width: 760, height: 520, deviceScaleFactor: 1, mobile: false });
+    for (const v of ['files', 'transfers', 'backup', 'settings']) {
+      await evaluate('QKUI.setView(' + JSON.stringify(v) + ')');
+      await new Promise(r => setTimeout(r, 30));
+      assert.equal(await evaluate('document.documentElement.scrollWidth<=760'), true, v + ' must not overflow at 760px');
+    }
+    await evaluate('__fixture.tasks=[];__fixtureEmit("qk:transfer-update",[]);QKUI.setInspectorOpen(false);QKUI.setView("files");QKUI.navigate("0")');
+    await until('QKUI.state.loadedOnce && !QKUI.state.loading', 'restored after workspace tests');
+  });
+
   await t.test('backup workflow: direct incremental start, native folder selection, pause/resume, paginated errors and full verification',async()=>{
     const screenshots=process.env.QCK_AUDIT_SCREENSHOTS;
     async function capture(name){if(!screenshots)return;await evaluate('document.querySelectorAll(".toast-close").forEach(b=>b.click())');await new Promise(r=>setTimeout(r,180));fs.mkdirSync(screenshots,{recursive:true});const shot=await cdp('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(screenshots,name+'.png'),Buffer.from(shot.data,'base64'));}
+    await evaluate('document.documentElement.setAttribute("data-theme","light");__fixture.directoryMode=false;QKUI.setView("files");QKUI.navigate("0")');
+    await until('QKUI.state.loadedOnce && !QKUI.state.loading','files ready for capture');
+    await cdp('Emulation.setDeviceMetricsOverride',{width:1200,height:780,deviceScaleFactor:1,mobile:false});
+    await capture('files-light');
+    await evaluate('QKUI.setInspectorOpen(true);document.querySelector(".row[data-fid=\\"1\\"]").click()');
+    await capture('files-inspector');
+    await evaluate('QKUI.applyViewMode("grid",false)');
+    await capture('files-grid');
+    await evaluate('QKUI.applyViewMode("list",false);QKUI.setInspectorOpen(false)');
+    await evaluate('document.documentElement.setAttribute("data-theme","dark")');
+    await capture('files-dark');
     await evaluate('document.documentElement.setAttribute("data-theme","light")');
-    await cdp('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
-    for(const view of ['files','transfers','settings','chat']){await evaluate('QKUI.setView('+JSON.stringify(view)+')');await new Promise(r=>setTimeout(r,40));await capture(view);}
+    await evaluate('__fixture.tasks=[{id:"s1",kind:"download",name:"设计素材包_2026.zip",status:"running",size:524288000,transferred:286000000,speed:14200000,eta:16},{id:"s2",kind:"upload",name:"项目复盘视频.mp4",status:"paused",size:180000000,transferred:62000000,speed:0},{id:"s3",kind:"download",name:"季度报表.xlsx",status:"done",size:4200000,transferred:4200000,speed:0,localPath:"/fixture/季度报表.xlsx"}];__fixtureEmit("qk:transfer-update",__fixture.tasks);QKUI.setView("transfers")');
+    await new Promise(r=>setTimeout(r,40));
+    await capture('transfers');
+    await evaluate('QKUI.setView("settings")');
+    await new Promise(r=>setTimeout(r,40));
+    await capture('settings-default');
+    await click('#set-ai-beta [data-ai-beta="on"]');
+    await new Promise(r=>setTimeout(r,60));
+    await capture('settings-ai-beta');
+    await evaluate('QKUI.setView("chat")');
+    await new Promise(r=>setTimeout(r,60));
+    await capture('chat-beta');
+    await click('[data-view="settings"]');
+    await click('#set-ai-beta [data-ai-beta="off"]');
+    await evaluate('__fixture.tasks=[];__fixtureEmit("qk:transfer-update",[])');
     await evaluate('document.documentElement.setAttribute("data-theme","light")');
     await click('[data-view="backup"]');await click('#backup-pick-dir');
     assert.equal(await evaluate('document.getElementById("backup-start").disabled'),false);
@@ -501,6 +628,10 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     assert.equal(await evaluate('document.documentElement.scrollWidth<=760'),true,'minimum desktop window must not overflow horizontally');
     assert.equal(await evaluate('document.getElementById("view-backup").scrollWidth<=document.getElementById("view-backup").clientWidth'),true,'backup content must fit its pane');
     await capture('backup-760');
+    await evaluate('QKUI.setView("files")');
+    await new Promise(r=>setTimeout(r,40));
+    await capture('files-760');
+    await evaluate('QKUI.setView("backup")');
     await click('#backup-cancel');await until('document.getElementById("backup-run").hidden','cancellation closes only its run view');
   });
 

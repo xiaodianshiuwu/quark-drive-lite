@@ -1,16 +1,17 @@
-# 开发说明：Tauri 迁移分支
+# 开发说明（Tauri 2 + Rust 主线）
 
-当前基线、验证范围和未完成项以根目录 MIGRATION_STATUS.md 为准。历史 Electron 开发说明可从基线提交读取；src/main 仅用于协议对照。
+本项目主线已全量替换为 Tauri 2 + Rust 原生架构；历史 Electron 归档可从基线提交查阅。
 
 ## 命令
 
 ```sh
-npm ci
+npm ci --ignore-scripts
 npm start
 npm run check
 npm run test:rust
 npm test
 npm run verify:native
+npm run verify:all
 npm run build
 ```
 
