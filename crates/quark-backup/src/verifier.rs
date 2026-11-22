@@ -179,14 +179,27 @@ pub async fn verify_manifest(
         std::collections::HashMap::new();
     let mut reported_dir_errors: std::collections::HashSet<String> =
         std::collections::HashSet::new();
-    if let Err(e) = load_remote_dir(&mut dir_cache, &ops, target_fid).await {
-        issue(
-            &store,
-            &mut report,
-            json!({"kind":"target_unavailable","detail":e}),
-        );
-        report.status = "failed".into();
-        return report;
+    match load_remote_dir(&mut dir_cache, &ops, target_fid).await {
+        Err(e) => {
+            issue(
+                &store,
+                &mut report,
+                json!({"kind":"target_unavailable","detail":e}),
+            );
+            report.status = "failed".into();
+            return report;
+        }
+        Ok(cached) => {
+            if cached.invalid_pagination
+                && reported_dir_errors.insert(format!("page:{target_fid}"))
+            {
+                issue(
+                    &store,
+                    &mut report,
+                    json!({"kind":"invalid_pagination","dir":""}),
+                );
+            }
+        }
     }
     match store.counts(account) {
         Ok(counts) => {
@@ -356,12 +369,32 @@ pub async fn verify_manifest(
             };
             let mut found = false;
             if let Some(fid) = parent_fid {
-                if let Ok(cached) = load_remote_dir(&mut dir_cache, &ops, &fid).await {
-                    let want_key = crate::nfc(name);
-                    if let Some(candidates) = cached.by_name.get(&want_key) {
-                        found = candidates
-                            .iter()
-                            .any(|e| e.is_dir && e.fid == want_fid);
+                match load_remote_dir(&mut dir_cache, &ops, &fid).await {
+                    Ok(cached) => {
+                        if cached.invalid_pagination
+                            && reported_dir_errors.insert(format!("page:{fid}"))
+                        {
+                            issue(
+                                &store,
+                                &mut report,
+                                json!({"kind":"invalid_pagination","dir":parent}),
+                            );
+                        }
+                        let want_key = crate::nfc(name);
+                        if let Some(candidates) = cached.by_name.get(&want_key) {
+                            found = candidates
+                                .iter()
+                                .any(|e| e.is_dir && e.fid == want_fid);
+                        }
+                    }
+                    Err(e) => {
+                        if reported_dir_errors.insert(format!("err:{fid}")) {
+                            issue(
+                                &store,
+                                &mut report,
+                                json!({"kind":"list_error","dir":parent,"detail":e}),
+                            );
+                        }
                     }
                 }
             }
@@ -933,5 +966,56 @@ mod tests {
         assert_eq!(report2.status, "partial");
         assert_eq!(report2.warning_count, 2);
         assert_eq!(report2.exclusion_count, 1);
+    }
+
+    #[tokio::test]
+    async fn target_dir_invalid_pagination_is_reported_even_without_files() {
+        struct BadPageVerify;
+        impl VerifyOps for BadPageVerify {
+            fn list_dir<'a>(
+                &'a self,
+                _fid: &'a str,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = anyhow_lite::Result<Vec<RemoteEntry>, String>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async move { Ok(Vec::new()) })
+            }
+            fn list_page<'a>(
+                &'a self,
+                _fid: &'a str,
+                _page: u64,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<(Vec<RemoteEntry>, bool), String>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                // 空页但 hasMore=true -> invalid_pagination
+                Box::pin(async move { Ok((Vec::new(), true)) })
+            }
+            fn download_bytes<'a>(
+                &'a self,
+                _fid: &'a str,
+                _max: u64,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = anyhow_lite::Result<Vec<u8>, String>> + Send + 'a>,
+            > {
+                Box::pin(async move { Ok(Vec::new()) })
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&dir.path().join("t.db")).unwrap());
+        let report = verify_manifest(store, Arc::new(BadPageVerify), "acc", "target").await;
+        assert_eq!(report.status, "partial");
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i["kind"] == "invalid_pagination"));
     }
 }

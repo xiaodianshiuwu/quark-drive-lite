@@ -446,10 +446,10 @@ function main() {
   });
 
   rl.on('close', () => {
-    // stdin EOF：等待队列中已入队的请求全部完成并写出后再退出，避免管道输入截断响应。
+    // stdin EOF：等待队列中已入队的请求全部完成并刷新 stdout 缓冲区后再退出，避免大响应被截断。
     queue.finally(() => {
       session.shutdown();
-      process.exit(0);
+      process.stdout.write('', () => process.exit(0));
     });
   });
 

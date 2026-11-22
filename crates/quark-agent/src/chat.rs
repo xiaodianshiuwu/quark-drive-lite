@@ -161,8 +161,9 @@ impl AgentChat {
             return Err(AgentToolError::new(AgentError::InvalidArg, "尚未配置大模型")
                 .with_hint("请在「对话」页面填写 Base URL、API Key 与模型名"));
         }
-        {
+        let generation = {
             let mut st = self.state.lock().unwrap();
+            let current_gen = self.source.generation();
             st.last_error.clear();
             st.transcript.push(json!({
                 "role": "user",
@@ -175,24 +176,26 @@ impl AgentChat {
             }
             st.messages.push(json!({ "role": "user", "content": input }));
             trim_history(&mut st.messages);
-        }
+            current_gen
+        };
         let started = Instant::now();
         let mut tool_calls: Vec<Value> = Vec::new();
-        let generation=self.source.generation();
-        match self.run_loop(&cfg, started, &mut tool_calls, on_event.as_ref(),generation).await {
+        match self.run_loop(&cfg, started, &mut tool_calls, on_event.as_ref(), generation).await {
             Ok(outcome) => Ok(outcome),
             Err(e) => {
-                // 若期间账号已切换并被 reset_for_account_change 清空，不把旧账号错误回写进新账号记录。
-                if self.source.generation() == generation {
+                // 在持锁临界区内检查 generation，与 reset_for_account_change() 严格互斥，消除 TOCTOU。
+                {
                     let mut st = self.state.lock().unwrap();
-                    st.last_error = e.message.clone();
-                    st.transcript.push(json!({
-                        "role": "assistant",
-                        "text": format!("❌ {}", e.message),
-                        "at": crate::journal::now_ms(),
-                        "toolCalls": tool_calls,
-                        "error": true,
-                    }));
+                    if self.source.generation() == generation {
+                        st.last_error = e.message.clone();
+                        st.transcript.push(json!({
+                            "role": "assistant",
+                            "text": format!("❌ {}", e.message),
+                            "at": crate::journal::now_ms(),
+                            "toolCalls": tool_calls,
+                            "error": true,
+                        }));
+                    }
                 }
                 emit(
                     on_event.as_ref(),
@@ -231,7 +234,7 @@ impl AgentChat {
                 break;
             }
             let remaining = TOTAL_TIMEOUT_MS - elapsed;
-            let message = self.call_model(cfg, remaining).await?;
+            let message = self.call_model(cfg, remaining, generation).await?;
             self.ensure_generation(generation)?;
             let calls = message
                 .get("tool_calls")
@@ -249,6 +252,7 @@ impl AgentChat {
                 let ms = started.elapsed().as_millis() as u64;
                 {
                     let mut st = self.state.lock().unwrap();
+                    self.ensure_generation(generation)?;
                     st.messages.push(json!({ "role": "assistant", "content": reply }));
                     trim_history(&mut st.messages);
                     st.transcript.push(json!({
@@ -330,11 +334,11 @@ impl AgentChat {
                 if !normalized_calls.is_empty() {
                     assistant.insert("tool_calls".into(), json!(normalized_calls));
                 }
-                self.state
-                    .lock()
-                    .unwrap()
-                    .messages
-                    .push(Value::Object(assistant));
+                {
+                    let mut st = self.state.lock().unwrap();
+                    self.ensure_generation(generation)?;
+                    st.messages.push(Value::Object(assistant));
+                }
             }
 
             // 单轮工具数量上限：防止一次返回几十个调用把上游打爆。
@@ -403,18 +407,21 @@ impl AgentChat {
                 end_event["type"] = json!("tool_end");
                 emit(on_event, end_event);
                 let call_id = call.get("id").and_then(|v| v.as_str()).map(|x| x.to_string());
-                self.state
-                    .lock()
-                    .unwrap()
-                    .messages
-                    .push(tool_message(call_id.as_deref(), &name, packed));
+                {
+                    let mut st = self.state.lock().unwrap();
+                    self.ensure_generation(generation)?;
+                    st.messages
+                        .push(tool_message(call_id.as_deref(), &name, packed));
+                }
             }
             // ⚠️ 被丢弃的调用**必须**补一条 tool 响应：OpenAI 兼容接口要求
             // assistant.tool_calls 里每一条都有对应的 role:'tool' 消息，缺一条下一轮请求直接 400
             // （qck 测试实测抓出：保留 20 条 tool_calls 只回 8 条 tool 消息）。
             for call in executable_calls.iter().skip(MAX_TOOL_CALLS_PER_ROUND) {
                 let call_id = call.get("id").and_then(|v| v.as_str()).map(|x| x.to_string());
-                self.state.lock().unwrap().messages.push(tool_message(
+                let mut st = self.state.lock().unwrap();
+                self.ensure_generation(generation)?;
+                st.messages.push(tool_message(
                     call_id.as_deref(),
                     &tool_call_name(call),
                     json!({
@@ -427,6 +434,7 @@ impl AgentChat {
             tool_calls.extend(records);
             {
                 let mut st = self.state.lock().unwrap();
+                self.ensure_generation(generation)?;
                 trim_history(&mut st.messages);
             }
         }
@@ -439,6 +447,7 @@ impl AgentChat {
         let ms = started.elapsed().as_millis() as u64;
         {
             let mut st = self.state.lock().unwrap();
+            self.ensure_generation(generation)?;
             st.messages.push(json!({ "role": "assistant", "content": reply }));
             st.transcript.push(json!({
                 "role": "assistant",
@@ -474,8 +483,13 @@ impl AgentChat {
         &self,
         cfg: &ChatConfig,
         remaining_ms: u64,
+        generation: u64,
     ) -> Result<Value, AgentToolError> {
-        let messages = self.state.lock().unwrap().messages.clone();
+        let messages = {
+            let st = self.state.lock().unwrap();
+            self.ensure_generation(generation)?;
+            st.messages.clone()
+        };
         self.call_model_with(cfg, &messages, remaining_ms).await
     }
 

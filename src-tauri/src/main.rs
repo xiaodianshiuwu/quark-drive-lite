@@ -115,7 +115,6 @@ async fn qk_call(
             let _ = login.clear_all_browsing_data();
             let _ = login.close();
         }
-        state.agent.reset_for_account_change();
     }
     let result = if method.starts_with("backup.") {
         let core = state.core.clone();
@@ -188,6 +187,11 @@ async fn qk_call(
     } else {
         state.core.call(&method, params).await
     };
+    if method == "auth.logout" && result.is_ok() {
+        // 必须在 state.core.call("auth.logout") 递增 session_generation 之后再清空 Agent 内存态，
+        // 消除在途 chat.send() 在登出窗口内回写旧账号消息的竞态。
+        state.agent.reset_for_account_change();
+    }
     if method.starts_with("auth.")
         || result
             .as_ref()
@@ -282,13 +286,37 @@ async fn login(app: tauri::AppHandle, state: State) -> Result<Value> {
 #[cfg(any(target_os = "windows", test))]
 fn windows_explorer_select_arg(path: &std::path::Path) -> Result<String> {
     let raw = path.to_string_lossy();
-    if raw.contains('"') || raw.contains('\0') {
+    if raw.is_empty()
+        || raw.contains('"')
+        || raw.contains('\0')
+        || raw.contains('\r')
+        || raw.contains('\n')
+    {
         return Err(Error::new(
             "INVALID_ARG",
             "路径包含非法字符，无法在资源管理器中定位",
         ));
     }
-    Ok(format!("/select,\"{raw}\""))
+    // 剥离非根路径的尾随反斜杠/斜杠，避免 `...\"` 触发 Windows CommandLineToArgvW 引号转义。
+    let trimmed = raw.trim_end_matches(['\\', '/']);
+    let bytes = trimmed.as_bytes();
+    if bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        // 盘符根（如 C:\）不含空格/逗号，直接不加引号传 /select,C:\ 避免尾部裸 \" 转义。
+        return Ok(format!("/select,{trimmed}\\"));
+    }
+    if trimmed.is_empty() {
+        return Err(Error::new(
+            "INVALID_ARG",
+            "路径无效，无法在资源管理器中定位",
+        ));
+    }
+    Ok(format!("/select,\"{trimmed}\""))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_explorer_exit_ok(code: Option<i32>) -> bool {
+    // Windows explorer.exe 委派给已运行外壳进程时正常返回退出码 1。
+    matches!(code, Some(0) | Some(1))
 }
 
 async fn open_local(path: PathBuf, reveal: bool) -> Result<Value> {
@@ -320,7 +348,7 @@ async fn open_local(path: PathBuf, reveal: bool) -> Result<Value> {
                     .raw_arg(&arg)
                     .status()
                     .map_err(shell_error)?;
-                if !status.success() {
+                if !(status.success() || windows_explorer_exit_ok(status.code())) {
                     return Err(Error::new(
                         "SYSTEM",
                         format!(
@@ -571,17 +599,46 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::windows_explorer_select_arg;
+    use super::{windows_explorer_exit_ok, windows_explorer_select_arg};
     use std::path::Path;
 
     #[test]
-    fn explorer_select_arg_quotes_spaces_and_commas_and_rejects_embedded_quotes() {
+    fn explorer_select_arg_handles_spaces_commas_trailing_slashes_roots_and_rejects_bad_chars() {
         let with_space_comma = Path::new(r"C:\Users\Alice Smith\Docs,2026\report 1.pdf");
         assert_eq!(
             windows_explorer_select_arg(with_space_comma).unwrap(),
             r#"/select,"C:\Users\Alice Smith\Docs,2026\report 1.pdf""#
         );
-        let bad = Path::new(r#"C:\Users\bad"name.txt"#);
-        assert!(windows_explorer_select_arg(bad).is_err());
+        // 尾随反斜杠应被剥离，避免触发 CommandLineToArgvW 引号转义
+        assert_eq!(
+            windows_explorer_select_arg(Path::new(r"C:\Users\")).unwrap(),
+            r#"/select,"C:\Users""#
+        );
+        assert_eq!(
+            windows_explorer_select_arg(Path::new(r"C:\Users\Alice Smith\\\")).unwrap(),
+            r#"/select,"C:\Users\Alice Smith""#
+        );
+        // 盘符根目录不使用尾部裸 \"
+        assert_eq!(
+            windows_explorer_select_arg(Path::new(r"C:\")).unwrap(),
+            r"/select,C:\"
+        );
+        // 拒绝内嵌引号、换行、回车与 NUL
+        for bad in [
+            r#"C:\Users\bad"name.txt"#,
+            "C:\\Users\\bad\nname.txt",
+            "C:\\Users\\bad\rname.txt",
+            "C:\\Users\\bad\0name.txt",
+        ] {
+            assert!(
+                windows_explorer_select_arg(Path::new(bad)).is_err(),
+                "must reject {bad:?}"
+            );
+        }
+        // Windows explorer.exe 退出码 0 与 1 均视为成功，其余失败
+        assert!(windows_explorer_exit_ok(Some(0)));
+        assert!(windows_explorer_exit_ok(Some(1)));
+        assert!(!windows_explorer_exit_ok(Some(2)));
+        assert!(!windows_explorer_exit_ok(None));
     }
 }

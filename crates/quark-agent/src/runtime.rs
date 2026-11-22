@@ -64,11 +64,17 @@ pub fn resolve_bridge_endpoint(profile_dir: &Path, token: &str) -> String {
         let dir = base.join(format!("qk-agent-{tag}"));
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+            use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
             let mut builder = std::fs::DirBuilder::new();
             builder.recursive(true).mode(0o700);
             let _ = builder.create(&dir);
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            // 共享 /tmp 下必须用 symlink_metadata 校验非符号链接、为目录且属主为当前 UID，避免误改他人目录或符号链接目标权限。
+            if let Ok(meta) = std::fs::symlink_metadata(&dir) {
+                let my_uid = unsafe { libc::geteuid() };
+                if !meta.file_type().is_symlink() && meta.is_dir() && meta.uid() == my_uid {
+                    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+                }
+            }
         }
         #[cfg(not(unix))]
         {

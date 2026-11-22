@@ -305,10 +305,14 @@ impl AgentConfigManager {
                 return Err(AgentToolError::new(AgentError::InvalidArg, "写入模式只能是 read-only 或 scoped-write"));
             }
             cur.write_mode = wm.to_string();
+            if wm == "read-only" {
+                // 最小惊喜原则：切回只读时同步关闭删除开关，避免日后重新切回可写时悄悄恢复删除权限。
+                cur.allow_delete = false;
+            }
         }
         if let Some(v) = patch.get("allowDelete") {
             if let Some(b) = v.as_bool() {
-                cur.allow_delete = b;
+                cur.allow_delete = if cur.write_mode == "scoped-write" { b } else { false };
             }
         }
         if let Some(v) = patch.get("remoteRoots") {
@@ -628,6 +632,26 @@ mod tests {
         std::fs::write(manager.dir().join("access.bin"),b"damaged").unwrap();
         assert!(manager.update(&json!({"enabled":true}),2).is_err());
         assert_eq!(std::fs::read(manager.dir().join("access.bin")).unwrap(),b"damaged");
+    }
+
+    #[test]
+    fn switching_to_read_only_resets_allow_delete_to_false() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut mgr = AgentConfigManager::open(temp.path()).unwrap();
+        // 只读下不能单独打开 allowDelete
+        let c0 = mgr.update(&json!({"allowDelete": true}), 1).unwrap();
+        assert!(!c0.allow_delete);
+        // 切可写并开启 allowDelete
+        let c1 = mgr
+            .update(&json!({"writeMode": "scoped-write", "allowDelete": true}), 2)
+            .unwrap();
+        assert!(c1.allow_delete);
+        // 切回只读：同步重置 allow_delete = false（最小惊喜原则）
+        let c2 = mgr.update(&json!({"writeMode": "read-only"}), 3).unwrap();
+        assert!(!c2.allow_delete);
+        // 再次切回可写不会悄悄复活删除权限
+        let c3 = mgr.update(&json!({"writeMode": "scoped-write"}), 4).unwrap();
+        assert!(!c3.allow_delete);
     }
 
 }
