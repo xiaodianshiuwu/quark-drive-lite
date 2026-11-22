@@ -79,6 +79,7 @@ pub struct VerifyReport {
     pub total_success: usize,
     pub incomplete: usize,
     pub warning_count: usize,
+    pub exclusion_count: usize,
     pub directories_checked: usize,
     pub issue_total: usize,
     pub listed_ok: usize,
@@ -114,8 +115,52 @@ fn issue(store: &Store, report: &mut VerifyReport, value: serde_json::Value) {
     }
 }
 
-/// Verify bounded pages of local tasks against paginated remote directory listings.
-/// Memory is bounded by 500 expected tasks, one remote page and 200 issue summaries.
+struct CachedDir {
+    by_name: std::collections::HashMap<String, Vec<RemoteEntry>>,
+    invalid_pagination: bool,
+}
+
+async fn load_remote_dir<'a>(
+    cache: &'a mut std::collections::HashMap<String, Result<CachedDir, String>>,
+    ops: &Arc<dyn VerifyOps>,
+    fid: &str,
+) -> &'a Result<CachedDir, String> {
+    if !cache.contains_key(fid) {
+        let mut by_name: std::collections::HashMap<String, Vec<RemoteEntry>> =
+            std::collections::HashMap::new();
+        let mut invalid_pagination = false;
+        let mut page = 1u64;
+        let result = loop {
+            match ops.list_page(fid, page).await {
+                Err(e) => break Err(e),
+                Ok((entries, more)) => {
+                    if entries.is_empty() && more {
+                        invalid_pagination = true;
+                        break Ok(CachedDir {
+                            by_name,
+                            invalid_pagination,
+                        });
+                    }
+                    for entry in entries {
+                        let key = crate::nfc(&entry.name);
+                        by_name.entry(key).or_default().push(entry);
+                    }
+                    if !more {
+                        break Ok(CachedDir {
+                            by_name,
+                            invalid_pagination,
+                        });
+                    }
+                    page += 1;
+                }
+            }
+        };
+        cache.insert(fid.to_string(), result);
+    }
+    cache.get(fid).expect("dir cached above")
+}
+
+/// Verify bounded pages of local tasks against cached remote directory listings (each remote dir listed once).
 pub async fn verify_manifest(
     store: Arc<Store>,
     ops: Arc<dyn VerifyOps>,
@@ -130,7 +175,11 @@ pub async fn verify_manifest(
         report.status = "failed".into();
         return report;
     }
-    if let Err(e) = ops.list_page(target_fid, 1).await {
+    let mut dir_cache: std::collections::HashMap<String, Result<CachedDir, String>> =
+        std::collections::HashMap::new();
+    let mut reported_dir_errors: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    if let Err(e) = load_remote_dir(&mut dir_cache, &ops, target_fid).await {
         issue(
             &store,
             &mut report,
@@ -166,12 +215,13 @@ pub async fn verify_manifest(
         }
     }
     report.warning_count = store.issue_count().unwrap_or(1) as usize;
-    let warning_count = report.warning_count;
-    if warning_count > 0 {
+    report.exclusion_count = store.exclusion_count().unwrap_or(1) as usize;
+    let exclusion_count = report.exclusion_count;
+    if exclusion_count > 0 {
         issue(
             &store,
             &mut report,
-            json!({"kind":"scan_exclusions","count":warning_count,"detail":store.issue_page(0,20).unwrap_or_default()}),
+            json!({"kind":"scan_exclusions","count":exclusion_count,"detail":store.exclusion_page(0,20).unwrap_or_default()}),
         );
     }
     let mut offset = 0;
@@ -216,65 +266,70 @@ pub async fn verify_manifest(
                 );
                 continue;
             };
-            let mut expected: std::collections::HashMap<_, _> = tasks
-                .into_iter()
-                .map(|t| (t.rel_path.rsplit('/').next().unwrap_or("").to_string(), t))
-                .collect();
-            let mut page = 1;
-            loop {
-                match ops.list_page(&fid, page).await {
-                    Err(e) => {
+            match load_remote_dir(&mut dir_cache, &ops, &fid).await {
+                Err(e) => {
+                    if reported_dir_errors.insert(format!("err:{fid}")) {
                         issue(
                             &store,
                             &mut report,
                             json!({"kind":"list_error","dir":parent,"detail":e}),
                         );
-                        break;
                     }
-                    Ok((entries, more)) => {
-                        if entries.is_empty() && more {
+                    for t in tasks {
+                        report.listed_missing += 1;
+                        issue(
+                            &store,
+                            &mut report,
+                            json!({"kind":"missing","rel_path":t.rel_path}),
+                        );
+                    }
+                }
+                Ok(cached) => {
+                    if cached.invalid_pagination
+                        && reported_dir_errors.insert(format!("page:{fid}"))
+                    {
+                        issue(
+                            &store,
+                            &mut report,
+                            json!({"kind":"invalid_pagination","dir":parent}),
+                        );
+                    }
+                    for t in tasks {
+                        let name = t.rel_path.rsplit('/').next().unwrap_or("");
+                        let want_key = crate::nfc(name);
+                        if let Some(candidates) = cached.by_name.get(&want_key) {
+                            if candidates.iter().any(|entry| {
+                                !entry.is_dir
+                                    && entry.size == t.size
+                                    && t.remote_fid.as_deref() == Some(entry.fid.as_str())
+                            }) {
+                                report.listed_ok += 1;
+                            } else {
+                                let entry = candidates
+                                    .iter()
+                                    .find(|e| !e.is_dir)
+                                    .unwrap_or(&candidates[0]);
+                                report.size_mismatch += 1;
+                                issue(
+                                    &store,
+                                    &mut report,
+                                    json!({"kind":"identity_or_size_mismatch","rel_path":t.rel_path,"expected_size":t.size,"remote_size":entry.size,"expected_fid":t.remote_fid,"remote_fid":entry.fid}),
+                                );
+                            }
+                        } else {
+                            report.listed_missing += 1;
                             issue(
                                 &store,
                                 &mut report,
-                                json!({"kind":"invalid_pagination","dir":parent}),
+                                json!({"kind":"missing","rel_path":t.rel_path}),
                             );
-                            break;
                         }
-                        for entry in entries {
-                            if let Some(t) = expected.remove(&entry.name) {
-                                if !entry.is_dir
-                                    && entry.size == t.size
-                                    && t.remote_fid.as_deref() == Some(entry.fid.as_str())
-                                {
-                                    report.listed_ok += 1;
-                                } else {
-                                    report.size_mismatch += 1;
-                                    issue(
-                                        &store,
-                                        &mut report,
-                                        json!({"kind":"identity_or_size_mismatch","rel_path":t.rel_path,"expected_size":t.size,"remote_size":entry.size,"expected_fid":t.remote_fid,"remote_fid":entry.fid}),
-                                    );
-                                }
-                            }
-                        }
-                        if !more || expected.is_empty() {
-                            break;
-                        }
-                        page += 1;
                     }
                 }
             }
-            for (_, t) in expected {
-                report.listed_missing += 1;
-                issue(
-                    &store,
-                    &mut report,
-                    json!({"kind":"missing","rel_path":t.rel_path}),
-                );
-            }
         }
     }
-    // Empty directories also matter: check each directory mapping in its parent's listing.
+    // Empty directories also matter: check each directory mapping in its parent's cached listing.
     let mut offset = 0;
     loop {
         let dirs = match store.dir_page(account, target_fid, offset, 500) {
@@ -301,23 +356,12 @@ pub async fn verify_manifest(
             };
             let mut found = false;
             if let Some(fid) = parent_fid {
-                let mut page = 1;
-                loop {
-                    match ops.list_page(&fid, page).await {
-                        Ok((entries, more)) => {
-                            if entries
-                                .iter()
-                                .any(|e| e.is_dir && e.name == name && e.fid == want_fid)
-                            {
-                                found = true;
-                                break;
-                            }
-                            if !more || entries.is_empty() {
-                                break;
-                            }
-                            page += 1;
-                        }
-                        Err(_) => break,
+                if let Ok(cached) = load_remote_dir(&mut dir_cache, &ops, &fid).await {
+                    let want_key = crate::nfc(name);
+                    if let Some(candidates) = cached.by_name.get(&want_key) {
+                        found = candidates
+                            .iter()
+                            .any(|e| e.is_dir && e.fid == want_fid);
                     }
                 }
             }
@@ -738,5 +782,156 @@ mod tests {
         let report = verify_manifest(store, ops, "acc", "t").await;
         assert_ne!(report.status, "verified");
         assert_eq!(report.incomplete, 1);
+    }
+
+    #[tokio::test]
+    async fn manifest_verify_caches_remote_dirs_normalizes_nfc_and_separates_advisory_warnings() {
+        struct CountingVerify {
+            tree: HashMap<String, Vec<RemoteEntry>>,
+            list_calls: Mutex<HashMap<String, usize>>,
+        }
+        impl VerifyOps for CountingVerify {
+            fn list_dir<'a>(
+                &'a self,
+                fid: &'a str,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = anyhow_lite::Result<Vec<RemoteEntry>, String>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async move {
+                    *self
+                        .list_calls
+                        .lock()
+                        .unwrap()
+                        .entry(fid.to_string())
+                        .or_insert(0) += 1;
+                    Ok(self.tree.get(fid).cloned().unwrap_or_default())
+                })
+            }
+            fn download_bytes<'a>(
+                &'a self,
+                _fid: &'a str,
+                _max: u64,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = anyhow_lite::Result<Vec<u8>, String>> + Send + 'a>,
+            > {
+                Box::pin(async move { Ok(Vec::new()) })
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&dir.path().join("t.db")).unwrap());
+        let mut target_entries = Vec::new();
+        let mut batch = Vec::new();
+        // 520 files in root (spans >1 task_page of 500) + NFD file & NFD dir matched against NFC cloud names.
+        for i in 0..520 {
+            let name = format!("f{i:04}.txt");
+            let fid = format!("rf-{i}");
+            target_entries.push(entry(&name, &fid, 10));
+            batch.push(crate::Task {
+                account: "acc".into(),
+                root_dir: "/src".into(),
+                target_fid: "target".into(),
+                rel_path: name.clone(),
+                local_path: format!("/src/{name}"),
+                size: 10,
+                mtime_ms: 0,
+                state: TaskState::Discovered,
+                remote_fid: Some(fid),
+                attempts: 0,
+                last_error: None,
+                chunk_progress: None,
+                updated_at_ms: 0,
+            });
+        }
+        let nfd_dir = "re\u{0301}pertoire";
+        let nfc_dir = "r\u{00e9}pertoire";
+        let nfd_file = "cafe\u{0301}.txt";
+        let nfc_file = "caf\u{00e9}.txt";
+        assert_ne!(nfd_dir, nfc_dir);
+        assert_ne!(nfd_file, nfc_file);
+        store.put_dir("acc", "target", nfd_dir, "fid-dir-nfc").unwrap();
+        target_entries.push(RemoteEntry {
+            name: nfc_dir.into(),
+            fid: "fid-dir-nfc".into(),
+            size: 0,
+            is_dir: true,
+        });
+        for d in 0..5 {
+            let dname = format!("empty-{d}");
+            let dfid = format!("fid-empty-{d}");
+            store.put_dir("acc", "target", &dname, &dfid).unwrap();
+            target_entries.push(RemoteEntry {
+                name: dname,
+                fid: dfid,
+                size: 0,
+                is_dir: true,
+            });
+        }
+        batch.push(crate::Task {
+            account: "acc".into(),
+            root_dir: "/src".into(),
+            target_fid: "target".into(),
+            rel_path: format!("{nfd_dir}/{nfd_file}"),
+            local_path: format!("/src/{nfd_dir}/{nfd_file}"),
+            size: 42,
+            mtime_ms: 0,
+            state: TaskState::Discovered,
+            remote_fid: Some("rf-cafe".into()),
+            attempts: 0,
+            last_error: None,
+            chunk_progress: None,
+            updated_at_ms: 0,
+        });
+        store.upsert_discovered(&batch).unwrap();
+        let mut claimed = 0;
+        while claimed < batch.len() {
+            let c = store.claim_batch("acc", 200).unwrap();
+            assert!(!c.is_empty());
+            claimed += c.len();
+        }
+        for t in &batch {
+            store.transition(t, TaskState::Uploading, None).unwrap();
+            store.transition(t, TaskState::Verifying, None).unwrap();
+            store.transition(t, TaskState::Success, None).unwrap();
+        }
+        // Advisory warning (excluded = false) must NOT degrade verified status.
+        store
+            .add_scan_issue("CON.txt", "Windows 兼容性提示", false)
+            .unwrap();
+
+        let ops = Arc::new(CountingVerify {
+            tree: HashMap::from([
+                ("target".to_string(), target_entries),
+                (
+                    "fid-dir-nfc".to_string(),
+                    vec![entry(nfc_file, "rf-cafe", 42)],
+                ),
+            ]),
+            list_calls: Mutex::new(HashMap::new()),
+        });
+        let report = verify_manifest(store.clone(), ops.clone(), "acc", "target").await;
+        assert_eq!(report.status, "verified");
+        assert_eq!(report.listed_ok, 521);
+        assert_eq!(report.directories_checked, 6);
+        assert_eq!(report.warning_count, 1);
+        assert_eq!(report.exclusion_count, 0);
+        // Each remote directory listed EXACTLY ONCE (O(N), not O(N^2))!
+        let calls = ops.list_calls.lock().unwrap();
+        assert_eq!(calls.get("target"), Some(&1));
+        assert_eq!(calls.get("fid-dir-nfc"), Some(&1));
+        drop(calls);
+
+        // Adding a real exclusion (excluded = true) MUST degrade status.
+        store
+            .add_scan_issue("symlink", "跳过符号链接", true)
+            .unwrap();
+        let report2 = verify_manifest(store, ops, "acc", "target").await;
+        assert_eq!(report2.status, "partial");
+        assert_eq!(report2.warning_count, 2);
+        assert_eq!(report2.exclusion_count, 1);
     }
 }

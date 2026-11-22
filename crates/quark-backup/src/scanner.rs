@@ -21,10 +21,11 @@ pub enum ScanItem {
     File(Task),
     /// 相对目录路径（含根本身 = ""）
     Dir(String),
-    /// 不可读等 per-entry 错误（不中断）
+    /// 不可读/排除项（excluded=true）或跨平台兼容性提示（excluded=false，文件仍正常备份）。
     Warning {
         rel_path: String,
         message: String,
+        excluded: bool,
     },
 }
 
@@ -55,6 +56,7 @@ pub struct ScanStats {
     pub files: u64,
     pub dirs: u64,
     pub warnings: u64,
+    pub exclusions: u64,
     pub batches: u64,
     pub total_bytes: u64,
 }
@@ -146,8 +148,10 @@ pub fn scan_controlled(
                 batch.push(ScanItem::Warning {
                     rel_path: String::new(),
                     message: format!("目录项不可读：{e}"),
+                    excluded: true,
                 });
                 stats.warnings += 1;
+                stats.exclusions += 1;
                 if batch.len() >= batch_size {
                     send_batch(&tx, &mut batch, &mut stats, batch_size)?;
                 }
@@ -164,8 +168,10 @@ pub fn scan_controlled(
             batch.push(ScanItem::Warning {
                 rel_path: String::new(),
                 message: "无法无损表示相对路径，已排除".into(),
+                excluded: true,
             });
             stats.warnings += 1;
+            stats.exclusions += 1;
             if batch.len() >= batch_size {
                 send_batch(&tx, &mut batch, &mut stats, batch_size)?;
             }
@@ -176,14 +182,17 @@ pub fn scan_controlled(
                 batch.push(ScanItem::Warning {
                     rel_path: rel,
                     message: format!("元数据不可读：{e}"),
+                    excluded: true,
                 });
                 stats.warnings += 1;
+                stats.exclusions += 1;
             }
             Ok(meta) => {
                 if path.as_os_str().to_string_lossy().encode_utf16().count() > 248 {
                     batch.push(ScanItem::Warning {
                         rel_path: rel.clone(),
                         message: "Windows长路径：恢复前需启用长路径支持并在Windows真机核验".into(),
+                        excluded: false,
                     });
                     stats.warnings += 1;
                 }
@@ -192,6 +201,7 @@ pub fn scan_controlled(
                     batch.push(ScanItem::Warning {
                         rel_path: rel.clone(),
                         message: risk.into(),
+                        excluded: false,
                     });
                     stats.warnings += 1;
                 }
@@ -199,8 +209,10 @@ pub fn scan_controlled(
                     batch.push(ScanItem::Warning {
                         rel_path: rel,
                         message: "链接/重解析点已排除，未跟随".into(),
+                        excluded: true,
                     });
                     stats.warnings += 1;
+                    stats.exclusions += 1;
                 } else if meta.is_dir() {
                     batch.push(ScanItem::Dir(rel.clone()));
                     stats.dirs += 1;
@@ -208,8 +220,10 @@ pub fn scan_controlled(
                         batch.push(ScanItem::Warning {
                             rel_path: rel,
                             message: "超过128层目录深度限制，未继续扫描".into(),
+                            excluded: true,
                         });
                         stats.warnings += 1;
+                        stats.exclusions += 1;
                     } else {
                         match std::fs::read_dir(&path) {
                             Ok(iter) => stack.push(iter),
@@ -217,8 +231,10 @@ pub fn scan_controlled(
                                 batch.push(ScanItem::Warning {
                                     rel_path: rel,
                                     message: format!("目录不可读：{e}"),
+                                    excluded: true,
                                 });
                                 stats.warnings += 1;
+                                stats.exclusions += 1;
                             }
                         }
                     }
@@ -249,8 +265,10 @@ pub fn scan_controlled(
                     batch.push(ScanItem::Warning {
                         rel_path: rel,
                         message: "非普通文件，已排除".into(),
+                        excluded: true,
                     });
                     stats.warnings += 1;
+                    stats.exclusions += 1;
                 }
             }
         }
@@ -386,9 +404,14 @@ mod tests {
                                     }
                                 }
                                 ScanItem::Dir(_) => dirs += 1,
-                                ScanItem::Warning { rel_path, message } => {
+                                ScanItem::Warning {
+                                    rel_path,
+                                    message,
+                                    excluded,
+                                } => {
                                     warnings += 1;
-                                    if rel_path.contains("locked") || message.contains("不可读")
+                                    if (rel_path.contains("locked") || message.contains("不可读"))
+                                        && excluded
                                     {
                                         saw_locked_warning = true;
                                     }

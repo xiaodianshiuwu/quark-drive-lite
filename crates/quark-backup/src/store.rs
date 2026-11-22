@@ -79,7 +79,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS verification_issues (id INTEGER PRIMARY KEY, json TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS idx_tasks_recent ON tasks(account,state,updated_at_ms);
             CREATE TABLE IF NOT EXISTS scan_issues (
-                rel_path TEXT NOT NULL, message TEXT NOT NULL, PRIMARY KEY(rel_path, message)
+                rel_path TEXT NOT NULL, message TEXT NOT NULL, excluded INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(rel_path, message)
             );
             CREATE TABLE IF NOT EXISTS dirs (
                 account      TEXT NOT NULL,
@@ -90,9 +90,12 @@ impl Store {
             );
             "#,
         )?;
-        // 存量库迁移：next_retry_at_ms 列（旧库无此列时补上；已存在则忽略）
+        // 存量库迁移：next_retry_at_ms / excluded 列（旧库无此列时补上；已存在则忽略）
         let _ = conn.execute_batch(
             "ALTER TABLE tasks ADD COLUMN next_retry_at_ms INTEGER NOT NULL DEFAULT 0",
+        );
+        let _ = conn.execute_batch(
+            "ALTER TABLE scan_issues ADD COLUMN excluded INTEGER NOT NULL DEFAULT 1",
         );
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tasks_claim ON tasks(account,state,claim_seq,next_retry_at_ms,updated_at_ms)")?;
         Ok(Self {
@@ -434,9 +437,53 @@ impl Store {
             .to_string_lossy()
             .to_string();
         let result = (|| {
+            let mut cols = std::collections::HashSet::new();
+            {
+                let mut stmt = conn.prepare("PRAGMA legacy.table_info(tasks)")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                for col in rows {
+                    cols.insert(col?);
+                }
+            }
+            let has_dirs: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM legacy.sqlite_master WHERE type='table' AND name='dirs'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                > 0;
             let tx = conn.unchecked_transaction()?;
-            tx.execute("INSERT OR IGNORE INTO tasks SELECT account,?4,target_fid,rel_path,local_path,size,mtime_ms,state,remote_fid,attempts,last_error,chunk_progress,updated_at_ms,claimed_at_ms,claim_seq,next_retry_at_ms FROM legacy.tasks WHERE account=?1 AND root_dir=?2 AND target_fid=?3",params![account,root,target,canonical])?;
-            tx.execute("INSERT OR IGNORE INTO dirs SELECT * FROM legacy.dirs WHERE account=?1 AND target_fid=?2",params![account,target])?;
+            if !cols.is_empty() {
+                let claimed_at = if cols.contains("claimed_at_ms") {
+                    "claimed_at_ms"
+                } else {
+                    "0"
+                };
+                let claim_seq = if cols.contains("claim_seq") {
+                    "claim_seq"
+                } else {
+                    "0"
+                };
+                let next_retry = if cols.contains("next_retry_at_ms") {
+                    "next_retry_at_ms"
+                } else {
+                    "0"
+                };
+                let sql = format!(
+                    "INSERT OR IGNORE INTO tasks \
+                     (account,root_dir,target_fid,rel_path,local_path,size,mtime_ms,state,remote_fid,attempts,last_error,chunk_progress,updated_at_ms,claimed_at_ms,claim_seq,next_retry_at_ms) \
+                     SELECT account,?4,target_fid,rel_path,local_path,size,mtime_ms,state,remote_fid,attempts,last_error,chunk_progress,updated_at_ms,{claimed_at},{claim_seq},{next_retry} \
+                     FROM legacy.tasks WHERE account=?1 AND root_dir=?2 AND target_fid=?3"
+                );
+                tx.execute(&sql, params![account, root, target, canonical])?;
+            }
+            if has_dirs {
+                tx.execute(
+                    "INSERT OR IGNORE INTO dirs SELECT * FROM legacy.dirs WHERE account=?1 AND target_fid=?2",
+                    params![account, target],
+                )?;
+            }
             tx.execute(
                 "INSERT OR IGNORE INTO counters VALUES ('legacy_imported',1)",
                 [],
@@ -477,15 +524,27 @@ impl Store {
     }
 
     pub fn add_issue(&self, rel: &str, message: &str) -> rusqlite::Result<()> {
+        self.add_scan_issue(rel, message, true)
+    }
+    pub fn add_scan_issue(&self, rel: &str, message: &str, excluded: bool) -> rusqlite::Result<()> {
+        let flag = if excluded { 1i64 } else { 0i64 };
         self.conn().execute(
-            "INSERT OR IGNORE INTO scan_issues VALUES (?1,?2)",
-            params![rel, message],
+            "INSERT INTO scan_issues(rel_path, message, excluded) VALUES (?1,?2,?3)
+             ON CONFLICT(rel_path, message) DO UPDATE SET excluded = MAX(scan_issues.excluded, excluded.excluded)",
+            params![rel, message, flag],
         )?;
         Ok(())
     }
     pub fn issue_count(&self) -> rusqlite::Result<i64> {
         self.conn()
             .query_row("SELECT COUNT(*) FROM scan_issues", [], |r| r.get(0))
+    }
+    pub fn exclusion_count(&self) -> rusqlite::Result<i64> {
+        self.conn().query_row(
+            "SELECT COUNT(*) FROM scan_issues WHERE excluded != 0",
+            [],
+            |r| r.get(0),
+        )
     }
     pub fn clear_issues(&self) -> rusqlite::Result<()> {
         self.conn().execute("DELETE FROM scan_issues", [])?;
@@ -498,10 +557,32 @@ impl Store {
     ) -> rusqlite::Result<Vec<serde_json::Value>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT rel_path,message FROM scan_issues ORDER BY rel_path LIMIT ?1 OFFSET ?2",
+            "SELECT rel_path,message,excluded FROM scan_issues ORDER BY excluded DESC, rel_path LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(params![limit.clamp(1, 500) as i64, offset as i64], |r| {
-            Ok(serde_json::json!({"relPath":r.get::<_,String>(0)?,"message":r.get::<_,String>(1)?}))
+            Ok(serde_json::json!({
+                "relPath": r.get::<_, String>(0)?,
+                "message": r.get::<_, String>(1)?,
+                "excluded": r.get::<_, i64>(2)? != 0
+            }))
+        })?;
+        rows.collect()
+    }
+    pub fn exclusion_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<serde_json::Value>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT rel_path,message FROM scan_issues WHERE excluded != 0 ORDER BY rel_path LIMIT ?1 OFFSET ?2",
+        )?;
+        let rows = stmt.query_map(params![limit.clamp(1, 500) as i64, offset as i64], |r| {
+            Ok(serde_json::json!({
+                "relPath": r.get::<_, String>(0)?,
+                "message": r.get::<_, String>(1)?,
+                "excluded": true
+            }))
         })?;
         rows.collect()
     }
@@ -791,5 +872,85 @@ mod tests {
             task("a.txt", 999, 42).identity_key(),
             "同键不同内容仍是同一任务"
         );
+    }
+
+    #[test]
+    fn import_legacy_handles_missing_next_retry_at_ms_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("src");
+        std::fs::create_dir_all(&root).unwrap();
+        let root_str = root.to_string_lossy().to_string();
+
+        // Build an older legacy DB missing next_retry_at_ms / claim_seq / claimed_at_ms.
+        let legacy_path = dir.path().join("legacy.db");
+        {
+            let legacy = Connection::open(&legacy_path).unwrap();
+            legacy
+                .execute_batch(
+                    r#"
+                    CREATE TABLE tasks (
+                        account TEXT NOT NULL,
+                        root_dir TEXT NOT NULL,
+                        target_fid TEXT NOT NULL,
+                        rel_path TEXT NOT NULL,
+                        local_path TEXT NOT NULL,
+                        size INTEGER NOT NULL,
+                        mtime_ms INTEGER NOT NULL,
+                        state TEXT NOT NULL,
+                        remote_fid TEXT,
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        last_error TEXT,
+                        chunk_progress TEXT,
+                        updated_at_ms INTEGER NOT NULL,
+                        PRIMARY KEY (account, root_dir, target_fid, rel_path)
+                    );
+                    CREATE TABLE dirs (
+                        account TEXT NOT NULL,
+                        target_fid TEXT NOT NULL,
+                        rel_path TEXT NOT NULL,
+                        remote_fid TEXT NOT NULL,
+                        PRIMARY KEY (account, target_fid, rel_path)
+                    );
+                    "#,
+                )
+                .unwrap();
+            legacy
+                .execute(
+                    "INSERT INTO tasks VALUES ('acc1', ?1, 't1', 'old.txt', '/src/old.txt', 42, 1000, 'success', 'rf1', 1, NULL, NULL, 1000)",
+                    params![root_str],
+                )
+                .unwrap();
+            legacy
+                .execute("INSERT INTO dirs VALUES ('acc1', 't1', 'sub', 'd1')", [])
+                .unwrap();
+        }
+
+        let store = Store::open(&dir.path().join("new.db")).unwrap();
+        store
+            .import_legacy(&legacy_path, "acc1", &root_str, "t1")
+            .unwrap();
+        let imported = store.all_in_state("acc1", TaskState::Success).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].rel_path, "old.txt");
+        assert_eq!(imported[0].remote_fid.as_deref(), Some("rf1"));
+        assert_eq!(
+            store.get_dir("acc1", "t1", "sub").unwrap().as_deref(),
+            Some("d1")
+        );
+    }
+
+    #[test]
+    fn scan_issues_distinguishes_advisory_warnings_from_exclusions() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("issues.db")).unwrap();
+        store
+            .add_scan_issue("long/path.txt", "Windows长路径", false)
+            .unwrap();
+        assert_eq!(store.issue_count().unwrap(), 1);
+        assert_eq!(store.exclusion_count().unwrap(), 0);
+        store.add_scan_issue("link", "符号链接已排除", true).unwrap();
+        assert_eq!(store.issue_count().unwrap(), 2);
+        assert_eq!(store.exclusion_count().unwrap(), 1);
+        assert_eq!(store.exclusion_page(0, 10).unwrap().len(), 1);
     }
 }

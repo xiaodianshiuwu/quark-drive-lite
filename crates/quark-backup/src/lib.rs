@@ -20,3 +20,9 @@ pub use manager::{BackupError, BackupManager, CoreRemote};
 pub use scheduler::{worker_loop, BackupConfig, RemoteOps, SchedulerStats};
 pub use verifier::{verify_manifest, verify_sample, VerifyReport};
 pub use store::{Store, Task};
+
+/// Normalize filenames to Unicode NFC so macOS NFD paths match cloud NFC names.
+pub fn nfc(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    s.nfc().collect()
+}

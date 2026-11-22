@@ -67,13 +67,15 @@ impl CoreRemote {
                         .transfers
                         .call("transfer.clear", json!({"ids":[id]}))
                         .await;
+                }
+                if st != "done" {
                     self.active.lock().unwrap().remove(id);
                 }
                 return Ok((st, error));
             }
             if tokio::time::Instant::now() >= deadline {
                 self.transfers
-                    .call("transfer.pause", json!(id))
+                    .call("transfer.pause", json!({"id":id}))
                     .await
                     .map_err(|e| e.message)?;
                 self.active.lock().unwrap().remove(id);
@@ -83,7 +85,7 @@ impl CoreRemote {
         }
     }
 
-    /// 跨页查找：在 parent 的全部子项中找 name（dir=目录/文件）。
+    /// 跨页查找：在 parent 的全部子项中找 name（dir=目录/文件），使用 NFC 归一化兼容 macOS NFD 文件名。
     /// 单页 200 的子目录 >200 项时会漏查——上传完成确认与冲突预检都必须跨页。
     async fn find_child(
         &self,
@@ -91,6 +93,7 @@ impl CoreRemote {
         name: &str,
         want_dir: bool,
     ) -> Result<Option<String>, String> {
+        let want_nfc = crate::nfc(name);
         let mut page = 1i64;
         loop {
             self.check_session()?;
@@ -104,11 +107,11 @@ impl CoreRemote {
                 .map_err(|e| e.message)?;
             if let Some(items) = listed["list"].as_array() {
                 for x in items {
-                    if x["dir"] == json!(want_dir) && x["name"] == json!(name) {
-                        return Ok(x["fid"].as_str().map(|s| s.to_string()));
+                    if let Some(fid) = match_child_entry(x, &want_nfc, want_dir) {
+                        return Ok(Some(fid));
                     }
                 }
-                if items.is_empty() || listed["hasMore"].as_bool().unwrap_or(false) == false {
+                if items.is_empty() || !listed["hasMore"].as_bool().unwrap_or(false) {
                     return Ok(None);
                 }
             } else {
@@ -116,6 +119,18 @@ impl CoreRemote {
             }
             page += 1;
         }
+    }
+}
+
+pub(crate) fn match_child_entry(item: &Value, want_nfc: &str, want_dir: bool) -> Option<String> {
+    if item["dir"].as_bool() != Some(want_dir) {
+        return None;
+    }
+    let item_name = item["name"].as_str()?;
+    if crate::nfc(item_name) == want_nfc {
+        item["fid"].as_str().map(|s| s.to_string())
+    } else {
+        None
     }
 }
 
@@ -136,7 +151,10 @@ impl RemoteOps for CoreRemote {
                 return Ok(false);
             };
             self.active.lock().unwrap().insert(id.clone());
-            self.transfers.call("transfer.resume",json!({"id":id,"rateLimitBps":self.rate_limit_bps,"_expectedSessionGeneration":self.generation})).await.map_err(|e|e.message)?;
+            if let Err(e) = self.transfers.call("transfer.resume",json!({"id":id,"rateLimitBps":self.rate_limit_bps,"_expectedSessionGeneration":self.generation})).await {
+                self.active.lock().unwrap().remove(&id);
+                return Err(e.message);
+            }
             let (status, _) = self.wait_task(&id, 86_400_000).await?;
             Ok(status == "done"
                 && self.transfers.task_status(&id).map_err(|e| e.message)?["fid"] == fid)
@@ -229,7 +247,10 @@ impl RemoteOps for CoreRemote {
             let existing = self.transfers.resumable_upload(local_path, parent_fid);
             let ids = if let Some(id) = existing {
                 self.active.lock().unwrap().insert(id.clone());
-                self.transfers.call("transfer.resume",json!({"id":id,"rateLimitBps":self.rate_limit_bps,"_expectedSessionGeneration":self.generation})).await.map_err(|e|e.message)?;
+                if let Err(e) = self.transfers.call("transfer.resume",json!({"id":id,"rateLimitBps":self.rate_limit_bps,"_expectedSessionGeneration":self.generation})).await {
+                    self.active.lock().unwrap().remove(&id);
+                    return Err(e.message);
+                }
                 json!([id])
             } else {
                 self.transfers.call("transfer.upload", json!({"localPaths":[local_path],"pdirFid":parent_fid,"rateLimitBps":self.rate_limit_bps,"_expectedSessionGeneration":self.generation})).await.map_err(|e|e.message)?
@@ -252,12 +273,26 @@ impl RemoteOps for CoreRemote {
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let visible = self
-                .find_child(parent_fid, &name, false)
-                .await?
-                .ok_or("上传完成后未在目录中确认文件")?;
-            let confirmed = self.transfers.task_status(&id).map_err(|e| e.message)?;
+            let visible = match self.find_child(parent_fid, &name, false).await {
+                Ok(Some(fid)) => fid,
+                Ok(None) => {
+                    self.active.lock().unwrap().remove(&id);
+                    return Err("上传完成后未在目录中确认文件".into());
+                }
+                Err(e) => {
+                    self.active.lock().unwrap().remove(&id);
+                    return Err(e);
+                }
+            };
+            let confirmed = match self.transfers.task_status(&id) {
+                Ok(c) => c,
+                Err(e) => {
+                    self.active.lock().unwrap().remove(&id);
+                    return Err(e.message);
+                }
+            };
             if confirmed["fid"] != visible {
+                self.active.lock().unwrap().remove(&id);
                 return Err("上传结果fid与已确认传输记录不一致".into());
             }
             Ok(visible)
@@ -324,7 +359,8 @@ impl BackupManager {
             crate::scanner::scan_controlled(&cfg, tx, &scan_stop)
         });
         let mut truncated = false;
-        let (mut files, mut dirs, mut warnings, mut total_bytes) = (0u64, 0u64, 0u64, 0u64);
+        let (mut files, mut dirs, mut warnings, mut exclusions, mut total_bytes) =
+            (0u64, 0u64, 0u64, 0u64, 0u64);
         let mut samples = Vec::new();
         'preview: while let Some(batch) = rx.recv().await {
             for it in batch {
@@ -337,10 +373,19 @@ impl BackupManager {
                         }
                     }
                     crate::scanner::ScanItem::Dir(_) => dirs += 1,
-                    crate::scanner::ScanItem::Warning { rel_path, message } => {
+                    crate::scanner::ScanItem::Warning {
+                        rel_path,
+                        message,
+                        excluded,
+                    } => {
                         warnings += 1;
+                        if excluded {
+                            exclusions += 1;
+                        }
                         if samples.len() < 10 {
-                            samples.push(json!({"warning":rel_path,"detail":message}));
+                            samples.push(
+                                json!({"warning":rel_path,"detail":message,"excluded":excluded}),
+                            );
                         }
                     }
                 }
@@ -358,7 +403,7 @@ impl BackupManager {
             Err(e) => return Err(system(e)),
         }
         Ok(
-            json!({"files":files,"dirs":dirs,"warnings":warnings,"totalBytes":total_bytes,"samples":samples,"truncated":truncated}),
+            json!({"files":files,"dirs":dirs,"warnings":warnings,"exclusions":exclusions,"totalBytes":total_bytes,"samples":samples,"truncated":truncated}),
         )
     }
 
@@ -524,13 +569,13 @@ impl BackupManager {
                     let mut files=Vec::new();
                     for it in batch {match it {
                         crate::scanner::ScanItem::File(t)=>files.push(t),
-                        crate::scanner::ScanItem::Warning{rel_path,message}=>s.store.add_issue(&rel_path,&message).map_err(system)?,
+                        crate::scanner::ScanItem::Warning{rel_path,message,excluded}=>s.store.add_scan_issue(&rel_path,&message,excluded).map_err(system)?,
                         crate::scanner::ScanItem::Dir(rel)=>{
                             let result=tokio::select! {
                                 r=ensure_dir_chain(&s.store,&*s.ops,&s.account,&s.target_fid,&rel)=>Some(r),
                                 _=stop.changed()=>None,
                             };
-                            match result {Some(Ok(_))=>{},Some(Err(_))=>s.store.add_issue(&rel,"云端目录创建失败，目录未完整备份；再次开始可重试").map_err(system)?,None=>return Ok(())}
+                            match result {Some(Ok(_))=>{},Some(Err(_))=>s.store.add_scan_issue(&rel,"云端目录创建失败，目录未完整备份；再次开始可重试",true).map_err(system)?,None=>return Ok(())}
                         }
                     }}
                     s.store.upsert_discovered(&files).map_err(system)?;
@@ -596,12 +641,13 @@ impl BackupManager {
         let paused = s.paused.load(Ordering::Acquire);
         let error = s.scan_error.lock().unwrap().clone();
         let warnings = s.store.issue_count().unwrap_or(1);
+        let exclusions = s.store.exclusion_count().unwrap_or(1);
         let complete = scan_done
             && pending == 0
             && get("failed") == 0
             && get("skipped") == 0
             && get("canceled") == 0
-            && warnings == 0
+            && exclusions == 0
             && error.is_none();
         let verified = complete
             && s.last_verify
@@ -640,7 +686,7 @@ impl BackupManager {
         let speed: u64 = active.iter().filter_map(|t| t["speed"].as_u64()).sum();
         let mut v = json!({"hasSession":true,"running":!paused && (!scan_done || pending>0),"paused":paused,"scanComplete":scan_done,"status":status,
             "readyToVerify":scan_done && pending==0 && !verification_running,"verificationRunning":verification_running,"complete":verified,"verification":s.last_verify.lock().unwrap().clone(),"accountFingerprint":format!("{:x}",Sha256::digest(s.account.as_bytes()))[..12],"rootDir":s.root_dir,"targetFid":s.target_fid,"startedAt":s.started_at,
-            "queueDepth":pending,"totalDiscovered":total,"warnings":warnings,"scanError":error,"config":s.cfg,
+            "queueDepth":pending,"totalDiscovered":total,"warnings":warnings,"exclusions":exclusions,"scanError":error,"config":s.cfg,
             "uploadedBytes":s.store.success_bytes(&s.account).unwrap_or(0),"speed":speed,"currentFiles":active,"recentErrors":s.store.recent_errors(&s.account,8).unwrap_or_default(),"issues":s.store.issue_page(0,20).unwrap_or_default()});
         for k in [
             "discovered",
@@ -740,62 +786,95 @@ impl BackupManager {
     }
     pub async fn export(&self, path: PathBuf) -> Result<Value, BackupError> {
         use std::io::Write;
-        let guard = self.session.lock().await;
-        let s = guard.as_ref().ok_or_else(no_session)?;
-        let store = s.store.clone();
-        let account = s.account.clone();
-        let status = Self::snapshot(s);
+        // 克隆句柄并立即释放会话锁，避免慢速磁盘导出阻塞 status/pause/cancel。
+        let (store, account, status) = {
+            let guard = self.session.lock().await;
+            let s = guard.as_ref().ok_or_else(no_session)?;
+            (s.store.clone(), s.account.clone(), Self::snapshot(s))
+        };
         let count = tokio::task::spawn_blocking(move || -> Result<usize, BackupError> {
-            let mut f = std::io::BufWriter::new(
-                std::fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&path)
-                    .map_err(system)?,
-            );
-            writeln!(f, "{}", json!({"type":"summary","status":status})).map_err(system)?;
-            let mut offset = 0;
-            loop {
-                let batch = store
-                    .task_page(&account, None, offset, 500)
-                    .map_err(system)?;
-                if batch.is_empty() {
-                    break;
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let tmp = parent.join(format!(".qk-export-{}.tmp", uuid::Uuid::new_v4()));
+            let write_res = (|| -> Result<usize, BackupError> {
+                let mut opts = std::fs::OpenOptions::new();
+                opts.create_new(true).write(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    opts.mode(0o600);
                 }
-                for t in &batch {
-                    writeln!(f, "{}", json!({"type":"file","task":public_task(t)}))
+                let mut f = std::io::BufWriter::new(opts.open(&tmp).map_err(system)?);
+                writeln!(f, "{}", json!({"type":"summary","status":status})).map_err(system)?;
+                let mut offset = 0;
+                loop {
+                    let batch = store
+                        .task_page(&account, None, offset, 500)
                         .map_err(system)?;
+                    if batch.is_empty() {
+                        break;
+                    }
+                    for t in &batch {
+                        writeln!(f, "{}", json!({"type":"file","task":public_task(t)}))
+                            .map_err(system)?;
+                    }
+                    offset += batch.len();
                 }
-                offset += batch.len();
-            }
-            let mut issue_offset = 0;
-            loop {
-                let batch = store.issue_page(issue_offset, 500).map_err(system)?;
-                if batch.is_empty() {
-                    break;
+                let mut issue_offset = 0;
+                loop {
+                    let batch = store.issue_page(issue_offset, 500).map_err(system)?;
+                    if batch.is_empty() {
+                        break;
+                    }
+                    for issue in &batch {
+                        writeln!(f, "{}", json!({"type":"issue","issue":issue})).map_err(system)?;
+                    }
+                    issue_offset += batch.len();
                 }
-                for issue in &batch {
-                    writeln!(f, "{}", json!({"type":"issue","issue":issue})).map_err(system)?;
-                }
-                issue_offset += batch.len();
-            }
-            let mut verify_offset = 0;
-            loop {
-                let batch = store
-                    .verification_issue_page(verify_offset, 500)
-                    .map_err(system)?;
-                if batch.is_empty() {
-                    break;
-                }
-                for issue in &batch {
-                    writeln!(f, "{}", json!({"type":"verification_issue","issue":issue}))
+                let mut verify_offset = 0;
+                loop {
+                    let batch = store
+                        .verification_issue_page(verify_offset, 500)
                         .map_err(system)?;
+                    if batch.is_empty() {
+                        break;
+                    }
+                    for issue in &batch {
+                        writeln!(f, "{}", json!({"type":"verification_issue","issue":issue}))
+                            .map_err(system)?;
+                    }
+                    verify_offset += batch.len();
                 }
-                verify_offset += batch.len();
+                f.flush().map_err(system)?;
+                f.get_ref().sync_all().map_err(system)?;
+                drop(f);
+                #[cfg(windows)]
+                {
+                    if let Err(e) = std::fs::rename(&tmp, &path) {
+                        if path.exists() {
+                            std::fs::remove_file(&path).map_err(system)?;
+                            std::fs::rename(&tmp, &path).map_err(system)?;
+                        } else {
+                            return Err(system(e));
+                        }
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    std::fs::rename(&tmp, &path).map_err(system)?;
+                }
+                #[cfg(unix)]
+                if let Ok(dir) = std::fs::File::open(parent) {
+                    let _ = dir.sync_all();
+                }
+                Ok(offset)
+            })();
+            if write_res.is_err() {
+                let _ = std::fs::remove_file(&tmp);
             }
-            f.flush().map_err(system)?;
-            f.get_ref().sync_all().map_err(system)?;
-            Ok(offset)
+            write_res
         })
         .await
         .map_err(system)??;
@@ -1262,5 +1341,56 @@ mod audit_tests {
         let cfg: BackupConfig = serde_json::from_value(json!({"highWatermark":0})).unwrap();
         assert!(cfg.validate().is_err());
         assert!(serde_json::from_value::<BackupConfig>(json!({"unknown":1})).is_err());
+    }
+
+    #[test]
+    fn match_child_entry_normalizes_macos_nfd_and_cloud_nfc() {
+        let nfd = "cafe\u{0301}.txt";
+        let nfc = "caf\u{00e9}.txt";
+        assert_ne!(nfd, nfc);
+        let cloud_item = json!({"name": nfc, "fid": "fid-1", "dir": false});
+        assert_eq!(
+            match_child_entry(&cloud_item, &crate::nfc(nfd), false),
+            Some("fid-1".into())
+        );
+        assert_eq!(match_child_entry(&cloud_item, &crate::nfc(nfd), true), None);
+
+        let cloud_nfd_item = json!({"name": nfd, "fid": "fid-2", "dir": true});
+        assert_eq!(
+            match_child_entry(&cloud_nfd_item, &crate::nfc(nfc), true),
+            Some("fid-2".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn advisory_compatibility_warning_does_not_mark_session_incomplete_and_export_overwrites() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("data");
+        std::fs::create_dir(&root).unwrap();
+        // CON.txt 触发 Windows 保留名兼容性提示（非排除），文件本身仍会正常上传。
+        #[cfg(not(windows))]
+        std::fs::write(root.join("CON.txt"), b"ok").unwrap();
+        #[cfg(windows)]
+        std::fs::write(root.join("normal.txt"), b"ok").unwrap();
+
+        let m = BackupManager::default();
+        start(&m, base.path(), "target", Arc::new(Remote::new(10))).await;
+        let done = until(&m, |s| s["readyToVerify"] == true).await;
+        assert_eq!(done["success"], 1);
+        assert_eq!(done["exclusions"], 0);
+        assert_eq!(done["status"], "awaiting_verification");
+        #[cfg(not(windows))]
+        assert_eq!(done["warnings"], 1);
+
+        // 导出允许覆盖已存在文件，并原子落盘不留临时文件。
+        let export = base.path().join("manifest.jsonl");
+        std::fs::write(&export, "stale-old-content").unwrap();
+        assert_eq!(m.export(export.clone()).await.unwrap()["exported"], 1);
+        let body = std::fs::read_to_string(&export).unwrap();
+        assert!(body.contains("\"type\":\"summary\""));
+        assert!(!body.contains("stale-old-content"));
+        // 再次覆盖导出同样成功
+        assert_eq!(m.export(export.clone()).await.unwrap()["exported"], 1);
+        m.cancel().await.unwrap();
     }
 }
