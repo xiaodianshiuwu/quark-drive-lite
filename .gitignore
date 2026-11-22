@@ -68,3 +68,10 @@ desktop.ini
 /src-tauri/gen/
 transfer-tasks.json
 app.lock
+
+# Optional Hub Server runtime data (never commit)
+/server/qdl-hub/data/
+/server/qdl-hub/releases/
+*.db
+*.db-shm
+*.db-wal

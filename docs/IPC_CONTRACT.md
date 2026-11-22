@@ -199,9 +199,19 @@ interface Settings { downloadDir: string; uploadConcurrency: number; downloadCon
 
 错误形状沿用 `qk_call` 统一错误（`code`/`message`，Agent 的操作提示合并进 `message`）。
 
-## 增量备份（当前已批准产品范围）
+## 可选作者服务器（`window.qk.hub`，默认关闭）
 
-`window.qk.backup` 提供 plan/start/status/retry/cancel/verify/pause/resume/tasks/export 十个命令。参数及核验强度以 [BACKUP.md](BACKUP.md) 为准。账号来自 Rust 会话，前端 account 字段不授予身份。扫描结束和核验结束是不同状态；不能用 `running=false` 隐藏报告或宣称备份完整。
+| 命令 | 参数 | 说明 |
+|---|---|---|
+| `hub.config` | `{}` | 返回当前开关、加密方式与海外节点说明（纯本地读取，零网络请求） |
+| `hub.setOptIn` | `{ optIn: boolean }` | 持久化 `serverOptIn` / `serverPrompted`（纯本地写入，零网络请求） |
+| `hub.checkUpdate` | `{}` | 需 `serverOptIn=true`；拉取并经 Ed25519 验签最新更新清单与公告 |
+| `hub.downloadUpdate` | `{ assetKey?, localDir? }` | 需 `serverOptIn=true`；从已验证直链下载安装包并校验 SHA-256，进度经 `qk:update-progress` 推送 |
+| `hub.sendTelemetry` | 脱敏指标对象 | 需 `serverOptIn=true`；经 X25519+AES-256-GCM 加密上报脱敏性能/错误摘要 |
+| `hub.submitFeedback` | `{ category, message, contact?, includeLogs }` | 需 `serverOptIn=true`；端到端加密提交用户反馈（可选附带脱敏诊断日志） |
+| `hub.logPreview` | `{}` | 返回内存环形缓冲区中的脱敏日志供用户发送前预览（纯本地读取） |
+
+当 `serverOptIn === false` 时，上述全部网络命令均在 Rust 后端直接返回 `OPT_IN_REQUIRED`，零外部网络请求。
 
 ### Agent 写操作结果语义
 

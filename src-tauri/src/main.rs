@@ -2,7 +2,10 @@
 
 use quark_agent::host::ToolHost;
 use quark_agent::runtime::AgentRuntime;
-use quark_core::{Core, Error, Result};
+use quark_core::{
+    hub::{HubClient, HubConfig},
+    Core, Error, Result,
+};
 use quark_transfer::TransferManager;
 use serde_json::{json, Value};
 use std::{
@@ -15,16 +18,14 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 
-mod backup_host;
-
 #[derive(Clone)]
 struct State {
     core: Core,
     transfers: TransferManager,
     /// Agent 子系统（工具层 + 网关 + 内置对话）。
     agent: Arc<AgentRuntime>,
-    /// 备份会话管理（Phase-2）。
-    backup: backup_host::BackupManager,
+    /// 可选作者服务器客户端（默认关闭，未开启时零外传）。
+    hub: HubClient,
     login: Arc<AtomicBool>,
     login_generation: Arc<AtomicU64>,
     account_control: Arc<tokio::sync::Mutex<()>>,
@@ -84,14 +85,47 @@ async fn qk_call(
                 | "transfer.retry"
                 | "transfer.resumeAll"
                 | "transfer.retryFailed"
-                | "backup.start"
-                | "backup.resume"
         )
     {
         return Err(Error::new("CONFLICT", "请完成或关闭登录窗口后再启动传输"));
     }
     if method.starts_with("dialog.") {
         return dialog(&app, &method, params).await;
+    }
+    if method.starts_with("hub.") {
+        let ver = env!("CARGO_PKG_VERSION");
+        return match method.as_str() {
+            "hub.config" => Ok(state.hub.config_info(ver)),
+            "hub.setOptIn" => {
+                let opt_in = params["optIn"].as_bool().unwrap_or(false);
+                state.hub.set_opt_in(opt_in, ver)
+            }
+            "hub.checkUpdate" => state.hub.check_update(ver).await,
+            "hub.downloadUpdate" => {
+                let asset_key = params["assetKey"].as_str();
+                let local_dir = params["localDir"].as_str();
+                let ev_handle = app.clone();
+                state
+                    .hub
+                    .download_update(ver, asset_key, local_dir, move |prog| {
+                        let _ = ev_handle.emit_to("main", "qk:update-progress", prog);
+                    })
+                    .await
+            }
+            "hub.sendTelemetry" => state.hub.send_telemetry(ver, params).await,
+            "hub.submitFeedback" => state.hub.submit_feedback(ver, params).await,
+            "hub.logPreview" => Ok(json!({ "logs": state.hub.log_preview() })),
+            "hub.recordEvent" => {
+                state.hub.record_event(
+                    params["level"].as_str().unwrap_or("info"),
+                    params["category"].as_str().unwrap_or("ui"),
+                    params["code"].as_str(),
+                    params["msg"].as_str().unwrap_or(""),
+                );
+                Ok(json!({ "ok": true }))
+            }
+            _ => Err(Error::new("INVALID_ARG", "未知服务接口")),
+        };
     }
     if method == "transfer.openItem" {
         let id = params["id"].as_str().unwrap_or_default();
@@ -115,7 +149,6 @@ async fn qk_call(
         None
     };
     if method == "auth.logout" {
-        if state.backup.session.lock().await.is_some() {state.backup.cancel().await.map_err(|e|Error::new(e.code,e.message))?;}
         if let Some(login) = app.get_webview_window("login") {
             let _ = login.close();
         }
@@ -136,46 +169,7 @@ async fn qk_call(
         }
     }
     let ai_beta_patched = method == "settings.set" && params.get("aiBetaEnabled").is_some();
-    let result = if method.starts_with("backup.") {
-        let core = state.core.clone();
-        let profile = state.core.profile_dir().to_path_buf();
-        let m = method.as_str();
-        let mapped: std::result::Result<Value, quark_backup::BackupError> = async {
-            match m {
-            "backup.plan" => {
-                let root = params["rootDir"].as_str().unwrap_or("").to_string();
-                let fid = params["targetFid"].as_str().unwrap_or("0").to_string();
-                backup_host::BackupManager::plan(core, root, fid).await
-            }
-            "backup.start" => {
-                let account = params["account"].as_str().unwrap_or("default").to_string();
-                let root = params["rootDir"].as_str().unwrap_or("").to_string();
-                let fid = params["targetFid"].as_str().unwrap_or("0").to_string();
-                let cfgp = params.get("config").cloned().unwrap_or(Value::Null);
-                let transfers = state.transfers.clone();
-                state.backup.start(core, transfers, account, root, fid, profile, cfgp).await
-            }
-            "backup.status" => Ok(state.backup.status().await),
-            "backup.pause" => state.backup.pause().await,
-            "backup.resume" => state.backup.resume().await,
-            "backup.tasks" => state.backup.tasks(params["offset"].as_u64().unwrap_or(0) as usize,params["limit"].as_u64().unwrap_or(100) as usize).await,
-            "backup.export" => {
-                if let Some(file)=rfd::AsyncFileDialog::new().set_file_name("quark-backup-manifest.jsonl").save_file().await {
-                    state.backup.export(file.path().to_path_buf()).await
-                } else {Ok(json!({"canceled":true}))}
-            }
-            "backup.retry" => state.backup.retry_failed().await,
-            "backup.cancel" => state.backup.cancel().await,
-            "backup.verify" => {
-                let rate = params["sampleRatePpm"].as_u64().unwrap_or(10_000) as u32;
-                state.backup.verify(rate).await
-            }
-                _ => Err(quark_backup::BackupError::new("INVALID_ARG", format!("未知备份方法：{m}"))),
-            }
-        }
-        .await;
-        mapped.map_err(|e| Error::new(e.code, e.message))
-    } else if method.starts_with("agent.") || method.starts_with("chat.") {
+    let result = if method.starts_with("agent.") || method.starts_with("chat.") {
         // 事件回调：对话过程中的工具进度实时推送到界面（事件不含凭据）。
         let event_handle = app.clone();
         let event: quark_agent::chat::EventCallback = Arc::new(move |ev: Value| {
@@ -225,6 +219,16 @@ async fn qk_call(
             }
         }
     }
+    if let Err(ref err) = result {
+        if err.code != "ABORTED" && err.code != "OPT_IN_REQUIRED" {
+            state.hub.record_event(
+                "error",
+                method.split('.').next().unwrap_or("ipc"),
+                Some(&err.code),
+                &format!("{} failed ({})", method, err.code),
+            );
+        }
+    }
     if method.starts_with("auth.")
         || result
             .as_ref()
@@ -249,7 +253,6 @@ async fn login(app: tauri::AppHandle, state: State) -> Result<Value> {
         }
     }
     let _reset = Reset(state.login.clone());
-    if state.backup.session.lock().await.is_some() {state.backup.cancel().await.map_err(|e|Error::new(e.code,e.message))?;}
     state.transfers.pause_all().await?;
     let generation = state.login_generation.fetch_add(1, Ordering::SeqCst) + 1;
     let window = tauri::WebviewWindowBuilder::new(
@@ -513,6 +516,7 @@ fn main() {
                 .map_err(|_| Error::new("CONFLICT", "此资料目录已有客户端正在运行"))?;
             let core = Core::open(profile.clone())?;
             let transfers = TransferManager::open(core.clone())?;
+            let hub = HubClient::new(core.clone(), HubConfig::from_env_or_default())?;
             // Agent 子系统：工具宿主 = 真实 Core/TransferManager；generation 供会话绑定。
             let host = ToolHost::new(core.clone(), transfers.clone());
             let generation_core = core.clone();
@@ -526,7 +530,7 @@ fn main() {
                 core,
                 transfers: transfers.clone(),
                 agent: agent.clone(),
-                backup: backup_host::BackupManager::default(),
+                hub,
                 login: Arc::new(AtomicBool::new(false)),
                 login_generation: Arc::new(AtomicU64::new(0)),
                 account_control: Arc::new(tokio::sync::Mutex::new(())),
@@ -614,16 +618,8 @@ fn main() {
                             let handle = app.clone();
                             let manager = app.state::<State>().transfers.clone();
                             let agent = app.state::<State>().agent.clone();
-                            let backup = app.state::<State>().backup.clone();
                             let done = shutdown_done.clone();
                             tauri::async_runtime::spawn(async move {
-                                if backup.session.lock().await.is_some() {
-                                    let _ = tokio::time::timeout(
-                                        Duration::from_secs(8),
-                                        backup.cancel(),
-                                    )
-                                    .await;
-                                }
                                 let _ = tokio::time::timeout(
                                     Duration::from_secs(8),
                                     manager.pause_all(),

@@ -30,11 +30,7 @@
     'agent.rotate': 1, 'agent.journal': 1, 'agent.mcpConfig': 1, 'agent.copyMcpConfig': 1,
     // 内置对话（模型由用户自配，工具与 Agent 接入同源；进度事件通道 qk:chat-event）
     'chat.status': 1, 'chat.saveConfig': 1, 'chat.clearConfig': 1, 'chat.test': 1,
-    'chat.models': 1, 'chat.history': 1, 'chat.clear': 1, 'chat.send': 1, 'chat.onEvent': 1,
-    // 重装前备份（Phase-2）
-    'backup.plan': 1, 'backup.start': 1, 'backup.status': 1,
-    'backup.retry': 1, 'backup.cancel': 1, 'backup.verify': 1,
-    'backup.pause':1,'backup.resume':1,'backup.tasks':1,'backup.export':1
+    'chat.models': 1, 'chat.history': 1, 'chat.clear': 1, 'chat.send': 1, 'chat.onEvent': 1
   };
 
   /**
@@ -44,7 +40,7 @@
    * 后端接线后 tauri-bridge.js 补上对应方法，missingExtension 自然清空。
    */
   function isExtensionContract(path) {
-    return path.indexOf('agent.') === 0 || path.indexOf('chat.') === 0 || path.indexOf('backup.') === 0;
+    return path.indexOf('agent.') === 0 || path.indexOf('chat.') === 0;
   }
 
   /* ------------------------------------------------------------------ *
@@ -351,15 +347,19 @@
       }
     },
 
-    /** 重装前备份（Phase-2）：方法由 tauri-bridge.js 按同名命令映射。 */
-    backup: {
-      plan: expose('backup', 'plan'),
-      start: expose('backup', 'start'),
-      status: expose('backup', 'status'),
-      retry: expose('backup', 'retry'),
-      cancel: expose('backup', 'cancel'),
-      verify: expose('backup', 'verify'),
-      pause:expose('backup','pause'),resume:expose('backup','resume'),tasks:expose('backup','tasks'),export:expose('backup','export')
+    /** 可选作者服务器（在线更新直链 / 脱敏日志 / 应用内反馈；未开启时 Rust 端严格零外传）。 */
+    hub: {
+      config: expose('hub', 'config', { silent: true, fallback: null }),
+      setOptIn: expose('hub', 'setOptIn'),
+      checkUpdate: expose('hub', 'checkUpdate'),
+      downloadUpdate: expose('hub', 'downloadUpdate'),
+      sendTelemetry: expose('hub', 'sendTelemetry', { silent: true, fallback: null }),
+      submitFeedback: expose('hub', 'submitFeedback'),
+      logPreview: expose('hub', 'logPreview', { silent: true, fallback: { logs: [] } }),
+      recordEvent: expose('hub', 'recordEvent', { silent: true, fallback: null }),
+      onUpdateProgress: function (cb) {
+        return subscribe([['hub', 'onUpdateProgress'], ['on', 'qk:update-progress']], cb);
+      }
     },
 
     /** 主进程 qk:toast 推送订阅。 */
@@ -454,18 +454,6 @@
         } catch (e) { return ''; }
       }
     };
-    api.backup = {
-      plan: expose('backup', 'plan'),
-      start: expose('backup', 'start'),
-      status: expose('backup', 'status'),
-      retry: expose('backup', 'retry'),
-      cancel: expose('backup', 'cancel'),
-      verify: expose('backup', 'verify'),
-      pause: expose('backup', 'pause'),
-      resume: expose('backup', 'resume'),
-      tasks: expose('backup', 'tasks'),
-      export: expose('backup', 'export')
-    };
     api.settings = { get: expose('settings', 'get'), set: expose('settings', 'set') };
     api.agent = {
       status: expose('agent', 'status'),
@@ -487,6 +475,17 @@
       clear: expose('chat', 'clear'),
       send: expose('chat', 'send'),
       onEvent: function (cb) { return subscribe([['chat', 'onEvent']], cb); }
+    };
+    api.hub = {
+      config: expose('hub', 'config', { silent: true, fallback: null }),
+      setOptIn: expose('hub', 'setOptIn'),
+      checkUpdate: expose('hub', 'checkUpdate'),
+      downloadUpdate: expose('hub', 'downloadUpdate'),
+      sendTelemetry: expose('hub', 'sendTelemetry', { silent: true, fallback: null }),
+      submitFeedback: expose('hub', 'submitFeedback'),
+      logPreview: expose('hub', 'logPreview', { silent: true, fallback: { logs: [] } }),
+      recordEvent: expose('hub', 'recordEvent', { silent: true, fallback: null }),
+      onUpdateProgress: function (cb) { return subscribe([['hub', 'onUpdateProgress']], cb); }
     };
     api.onToast = function (cb) { return subscribe([['onToast']], cb); };
     api.onTransferUpdate = function (cb) { return subscribe([['onTransferUpdate']], cb); };
@@ -574,6 +573,7 @@
     /* ---------- 设置 ---------- */
     var settings = {
       downloadDir: 'C:\\Users\\Public\\Downloads',
+      askDownloadDir: false,
       uploadConcurrency: 2,
       downloadConcurrency: 2,
       downloadParallel: 16,
@@ -581,6 +581,8 @@
       uploadPartConcurrency: 3,
       theme: 'light',
       aiBetaEnabled: false,
+      serverOptIn: false,
+      serverPrompted: true,
       viewMode: 'list',
       sortBy: 'file_type:asc,updated_at:desc'
     };
@@ -945,6 +947,48 @@
           for (var k in patch) if (Object.prototype.hasOwnProperty.call(settings, k)) settings[k] = patch[k];
           return Promise.resolve(JSON.parse(JSON.stringify(settings)));
         }
+      },
+
+      hub: {
+        config: function () {
+          return Promise.resolve({
+            optIn: !!settings.serverOptIn,
+            prompted: true,
+            baseUrl: 'https://qdl.xiaodianshiuwu.space',
+            region: '海外节点 · Tokyo (JP)',
+            currentVersion: '0.3.0-beta.1',
+            platform: 'preview',
+            arch: 'mock',
+            recommendedAssetKey: 'macos-arm64',
+            cryptoSummary: 'HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端加密 + Ed25519 签名校验'
+          });
+        },
+        setOptIn: function (p) {
+          settings.serverOptIn = !!(p && p.optIn);
+          settings.serverPrompted = true;
+          return qk.hub.config();
+        },
+        checkUpdate: function () {
+          if (!settings.serverOptIn) return Promise.reject({ code: 'OPT_IN_REQUIRED', message: '请先开启连接作者服务器' });
+          return Promise.resolve({
+            ok: true, hasUpdate: false, currentVersion: '0.3.0-beta.1', latestVersion: '0.3.0-beta.1',
+            channel: 'beta', releaseDate: '2026-11-22', changelog: '当前已是最新版本（演示数据）',
+            notice: null, assets: {}, recommendedAssetKey: 'macos-arm64', signatureVerified: true, serverRegion: '海外节点 · Tokyo (JP)'
+          });
+        },
+        downloadUpdate: function () {
+          return Promise.reject({ code: 'NOT_FOUND', message: '演示模式不支持实际下载更新包' });
+        },
+        sendTelemetry: function () { return Promise.resolve({ ok: true, encrypted: true }); },
+        submitFeedback: function (p) {
+          if (!settings.serverOptIn) return Promise.reject({ code: 'OPT_IN_REQUIRED', message: '请先开启连接作者服务器' });
+          return Promise.resolve({ ok: true, id: 1, encrypted: true, includedLogs: !!(p && p.includeLogs) });
+        },
+        logPreview: function () {
+          return Promise.resolve({ logs: [{ ts: Date.now(), level: 'info', category: 'lifecycle', code: 'APP_START', msg: 'app started (preview)' }] });
+        },
+        recordEvent: function () { return Promise.resolve({ ok: true }); },
+        onUpdateProgress: function () { return function () {}; }
       },
 
       onToast: function (cb) {

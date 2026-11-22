@@ -39,10 +39,6 @@
         <span>传输列表</span>
         <span class="nav-badge" id="transfer-badge" hidden></span>
       </button>
-      <button type="button" class="nav-item" data-view="backup">
-        <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-backup"></use></svg>
-        <span>备份</span>
-      </button>
       <button type="button" class="nav-item" id="nav-chat" data-view="chat" hidden>
         <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-chat"></use></svg>
         <span>对话</span>
@@ -51,6 +47,10 @@
       <button type="button" class="nav-item" data-view="settings">
         <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-settings"></use></svg>
         <span>设置</span>
+      </button>
+      <button type="button" class="nav-item" id="nav-feedback" data-view="feedback">
+        <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-feedback"></use></svg>
+        <span>反馈</span>
       </button>
     </nav>
 
@@ -95,7 +95,15 @@
           <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-arrow-up"></use></svg>
           <span id="btn-up-label">上一级</span>
         </button>
-        <div class="crumbs" id="crumbs" aria-label="目录路径"></div>
+        <div class="crumbs-shell" id="crumbs-shell">
+          <button type="button" class="crumbs-scroll-btn" id="btn-crumbs-prev" title="向左滚动路径（支持鼠标滚轮）" aria-label="向左滚动路径" hidden>
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-chevron-left"></use></svg>
+          </button>
+          <div class="crumbs" id="crumbs" aria-label="目录路径"></div>
+          <button type="button" class="crumbs-scroll-btn" id="btn-crumbs-next" title="向右滚动路径（支持鼠标滚轮）" aria-label="向右滚动路径" hidden>
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-chevron"></use></svg>
+          </button>
+        </div>
       </div>
 
       <div class="topbar-tools">
@@ -140,6 +148,15 @@
           <button type="button" class="pill" data-filter="audio" role="tab" aria-selected="false">音频</button>
           <button type="button" class="pill" data-filter="archive" role="tab" aria-selected="false">压缩包</button>
         </div>
+
+        <!-- 实时传输胶囊：有进行中的下载/上传任务时，展示在「压缩包」与「最新修改」中间空隙处 -->
+        <button type="button" class="subbar-transfer-live" id="subbar-transfer-live" hidden title="点击查看传输列表详情">
+          <span class="stl-dot" aria-hidden="true"></span>
+          <span class="stl-kind" id="stl-kind">下载</span>
+          <span class="stl-name" id="stl-name"></span>
+          <span class="stl-bar" aria-hidden="true"><i id="stl-fill"></i></span>
+          <span class="stl-meta" id="stl-meta"></span>
+        </button>
 
         <div class="file-subbar-right">
           <select id="sort-select" class="input input-sm sort-select" aria-label="排序方式" title="切换目录排序方式">
@@ -269,7 +286,7 @@
         <div class="setrow">
           <div class="setlabel">
             <div class="setname">下载目录</div>
-            <div class="sethint">下载任务默认保存到此目录，同名冲突由主进程处理。</div>
+            <div class="sethint">默认保存位置；同名冲突由核心自动编号，不覆盖已有文件。右键单文件也可随时选择「下载到指定位置…」。</div>
           </div>
           <div class="setcontrol">
             <input type="text" id="set-download-dir" class="input input-path" readonly placeholder="尚未设置">
@@ -280,31 +297,44 @@
 
         <div class="setrow">
           <div class="setlabel">
-            <div class="setname">同时上传的文件数</div>
-            <div class="sethint">多文件上传时同时进行的任务数，范围 1–8。</div>
+            <div class="setname">下载保存方式</div>
+            <div class="sethint">默认全部保存到上方同一目录；切换为「每次询问」后，每次点击下载都可单独指定目标目录。</div>
           </div>
           <div class="setcontrol">
-            <input type="number" id="set-up-conc" class="input input-num" min="1" max="8" step="1">
+            <div class="segmented" id="set-ask-dl-dir" role="radiogroup" aria-label="下载保存方式">
+              <button type="button" class="seg active" data-ask-dl="off" role="radio" aria-checked="true">默认同一目录</button>
+              <button type="button" class="seg" data-ask-dl="on" role="radio" aria-checked="false">每次询问目录</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">同时上传的文件数</div>
+            <div class="sethint">多文件上传时同时进行的任务数（不设硬上限，建议 1–6，默认 2）。</div>
+          </div>
+          <div class="setcontrol">
+            <input type="number" id="set-up-conc" class="input input-num" min="1" step="1">
           </div>
         </div>
 
         <div class="setrow">
           <div class="setlabel">
             <div class="setname">上传分片并发</div>
-            <div class="sethint">同时上传的分片数，默认 3，范围 1–8；设置为 1 可使用顺序上传。</div>
+            <div class="sethint">单文件并发上传分片数（不设硬上限，建议 1–12，默认 3；设为 1 使用顺序上传）。</div>
           </div>
           <div class="setcontrol">
-            <input type="number" id="set-up-part" class="input input-num" min="1" max="8" step="1">
+            <input type="number" id="set-up-part" class="input input-num" min="1" step="1">
           </div>
         </div>
 
         <div class="setrow">
           <div class="setlabel">
             <div class="setname">同时下载的文件数</div>
-            <div class="sethint">多文件下载时同时进行的任务数，范围 1–5。</div>
+            <div class="sethint">多文件下载时同时进行的任务数（不设硬上限，建议 1–6，默认 2）。</div>
           </div>
           <div class="setcontrol">
-            <input type="number" id="set-down-conc" class="input input-num" min="1" max="5" step="1">
+            <input type="number" id="set-down-conc" class="input input-num" min="1" step="1">
           </div>
         </div>
 
@@ -325,11 +355,16 @@
         <div class="setrow">
           <div class="setlabel">
             <div class="setname">单文件下载连接上限</div>
-            <div class="sethint">范围 1–16；自动策略下小文件会使用更少连接，新任务及恢复任务使用当前设置。</div>
+            <div class="sethint">单文件并发分片连接数（不设硬上限，建议 1–32，默认 16；新任务及恢复任务生效）。</div>
           </div>
           <div class="setcontrol">
-            <input type="number" id="set-down-parallel" class="input input-num" min="1" max="16" step="1">
+            <input type="number" id="set-down-parallel" class="input input-num" min="1" step="1">
           </div>
+        </div>
+
+        <div class="perf-warn" id="set-perf-warn" role="alert" hidden>
+          <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+          <span id="set-perf-warn-text">当前并行设置高于建议阈值，过高可能导致内存占用升高、界面卡顿或触发服务端限流，请按设备与网络情况酌情调整。</span>
         </div>
 
         <div class="setrow">
@@ -481,6 +516,54 @@
         </div>
       </div>
 
+      <div class="setcard" id="hub-card">
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname setname-badge">
+              <span>作者服务器连接（可选）</span>
+              <span class="hub-badge" id="hub-status-badge">已关闭 · 零外传</span>
+            </div>
+            <div class="sethint" id="hub-privacy-note">默认关闭：未开启时本应用承诺绝不向作者服务器发送任何数据。开启后仅在端到端加密下接收最新更新日志/直链下载包、提交应用内反馈，并可能上传脱敏后的非敏感运行/性能/下载速度数据（绝不包含文件名、路径、Cookie、账号等隐私），帮助持续改进应用。</div>
+            <div class="sethint hub-overseas-note">提示：服务器部署于海外节点（日本东京），国内直连可能出现连接失败或较慢，有代理/梯子开启后即可顺畅连接；没有也没关系，完全不影响网盘本地核心使用。</div>
+            <div class="sethint hub-crypto-note" id="hub-crypto-text">链路安全：HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端加密 + Ed25519 更新清单签名校验</div>
+          </div>
+          <div class="setcontrol">
+            <div class="segmented" id="set-hub-optin" role="radiogroup" aria-label="作者服务器连接开关">
+              <button type="button" class="seg active" data-hub-optin="off" role="radio" aria-checked="true">关闭（零外传）</button>
+              <button type="button" class="seg" data-hub-optin="on" role="radio" aria-checked="false">开启连接</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">在线更新与公告</div>
+            <div class="sethint" id="hub-update-summary">开启连接后，可获取作者发布的最新更新日志、公告通知，并直接从服务器高速直链下载经过 SHA-256 校验的新版安装包。</div>
+          </div>
+          <div class="setcontrol">
+            <button type="button" class="btn btn-sm" id="btn-hub-check">检查更新</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-hub-logs">查看脱敏日志</button>
+          </div>
+        </div>
+
+        <div class="hub-update-panel" id="hub-update-panel" hidden>
+          <div class="hub-update-head">
+            <strong id="hub-update-title"></strong>
+            <span class="muted" id="hub-update-meta"></span>
+          </div>
+          <div class="hub-update-notice" id="hub-update-notice" hidden></div>
+          <pre class="hub-update-changelog" id="hub-update-changelog"></pre>
+          <div class="hub-update-actions">
+            <button type="button" class="btn btn-sm btn-primary" id="btn-hub-download" hidden>从作者服务器直链下载</button>
+            <button type="button" class="btn btn-sm" id="btn-hub-reveal" hidden>打开下载文件位置</button>
+          </div>
+          <div class="hub-dl-progress" id="hub-dl-progress" hidden>
+            <div class="hub-dl-bar"><i id="hub-dl-fill"></i></div>
+            <span class="sethint" id="hub-dl-label"></span>
+          </div>
+        </div>
+      </div>
+
       <div class="setcard">
         <div class="setrow">
           <div class="setlabel">
@@ -503,92 +586,6 @@
               <span><kbd>Enter</kbd> 打开 / 下载</span>
               <span><kbd>Ctrl/⌘+A</kbd> 全选 · <kbd>Del</kbd> 删除</span>
             </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ======================= 视图：备份 ======================= -->
-    <section class="view" id="view-backup" hidden>
-      <div class="section-head">
-        <h2 class="section-title">重装前备份</h2>
-        <div class="section-actions">
-          <span class="muted">把本地目录分批、可恢复地备份到网盘指定目录；只读取本地文件，不改动本地内容。</span>
-        </div>
-      </div>
-
-      <div class="setcard">
-        <div class="setrow">
-          <div class="setlabel">
-            <div class="setname">备份向导</div>
-            <div class="sethint">选择源目录和云端目录即可开始，边扫描边上传，无需等待全盘预览。中断后选择相同账号、源目录和目标可恢复。</div>
-          </div>
-          <div class="setcontrol backup-row">
-            <button type="button" class="btn" id="backup-pick-dir">选择本地目录</button>
-            <input type="text" id="backup-root" class="input input-path" readonly placeholder="未选择目录" aria-label="本地备份目录">
-          </div>
-        </div>
-
-        <div class="setrow">
-          <div class="setlabel">
-            <div class="setname">云端目标目录</div>
-            <div class="sethint">使用目录选择器或当前文件目录，备份保留相对目录结构。同名冲突不会覆盖，任何跳过或排除都会单独报告。</div>
-          </div>
-          <div class="setcontrol backup-row">
-            <button type="button" class="btn" id="backup-pick-target">选择云端目录</button>
-            <button type="button" class="btn" id="backup-use-current">使用当前文件目录</button>
-            <input type="text" id="backup-target" class="input input-path" placeholder="0（根目录）" autocomplete="off" spellcheck="false" aria-label="云端目标目录 fid">
-            <button type="button" class="btn" id="backup-plan">有限预览（可选）</button>
-            <button type="button" class="btn btn-primary" id="backup-start" disabled>开始备份</button>
-          </div>
-        </div>
-
-        <div class="setrow">
-          <div class="setlabel">
-            <div class="setname">上传与发现</div>
-            <div class="sethint">批次控制发现量，并发控制同时上传的文件数；不会一次上传数百个文件。</div>
-          </div>
-          <div class="setcontrol backup-options">
-            <label>每批条目 <input class="input" id="backup-batch-size" type="number" min="1" max="5000" value="500"></label>
-            <label>限速（MiB/s，0为不限）<input class="input" id="backup-bandwidth" type="number" min="0" max="1048576" step="0.1" value="0"></label>
-            <label>上传并发 <input class="input" id="backup-concurrency" type="number" min="1" max="8" value="2"></label>
-          </div>
-        </div>
-        <div class="setrow">
-          <div class="setlabel">
-            <div class="sethint" id="backup-plan-result" hidden></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="setcard" id="backup-run" hidden>
-        <div class="setrow">
-          <div class="setlabel">
-            <div class="setname" id="backup-status-title">备份状态</div>
-            <div class="backup-progress">
-              <div class="backup-bar" id="backup-bar" role="progressbar" aria-label="备份进度"><i></i></div>
-              <div class="backup-pct" id="backup-pct" aria-live="polite"></div>
-            </div>
-            <div class="backup-grid" id="backup-stats"></div>
-          </div>
-          <div class="setcontrol backup-row">
-            <button type="button" class="btn" id="backup-retry">重试失败</button>
-            <button type="button" class="btn" id="backup-pause">暂停</button>
-            <button type="button" class="btn" id="backup-export">导出清单</button>
-            <button type="button" class="btn btn-danger" id="backup-cancel">取消</button>
-            <label for="backup-sample-rate" class="sr-only">核验强度</label>
-            <select class="input" id="backup-sample-rate"><option value="10000">抽样哈希（1%，5–20项）</option><option value="1000000">全量哈希（逐文件读回）</option></select>
-            <button type="button" class="btn" id="backup-verify">核验备份</button>
-          </div>
-        </div>
-
-        <div class="setrow">
-          <div class="setlabel">
-            <p class="sethint" id="backup-runtime-hint" role="status" aria-live="polite"></p>
-            <ul class="backup-issues" id="backup-runtime-issues"></ul>
-            <div class="sethint" id="backup-verify-result" hidden></div>
-            <div class="backup-task-head"><strong>任务清单</strong><button type="button" class="btn" id="backup-tasks-prev">上一页</button><span id="backup-tasks-page"></span><button type="button" class="btn" id="backup-tasks-next">下一页</button></div>
-            <ul class="backup-task-list" id="backup-task-list"></ul>
           </div>
         </div>
       </div>
@@ -666,6 +663,75 @@
       </div>
     </section>
 
+    <!-- ======================= 视图：意见反馈 ======================= -->
+    <section class="view" id="view-feedback" hidden>
+      <div class="section-head">
+        <h2 class="section-title section-title-badge">
+          <span>意见反馈</span>
+          <span class="hub-badge">端到端加密 · 脱敏传输</span>
+        </h2>
+        <div class="section-actions">
+          <span class="muted">直达作者服务端控制台</span>
+        </div>
+      </div>
+
+      <div class="setcard fb-gate-card" id="fb-gate-card" hidden>
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">当前未开启「连接作者服务器」</div>
+            <div class="sethint">由于您暂未开启连接，本应用严格遵守承诺不会向外发送任何请求。如需向作者发送反馈或获取直链更新，可点击右侧按钮开启连接（仅上传脱敏后的非敏感数据，随时可在设置中关闭）。</div>
+            <div class="sethint hub-overseas-note">提示：服务器位于海外节点（日本东京），若提交失败或延迟，开个梯子即可顺畅连接，没有也没关系。</div>
+          </div>
+          <div class="setcontrol">
+            <button type="button" class="btn btn-sm btn-primary" id="fb-btn-enable">开启连接以提交反馈</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="setcard" id="fb-card">
+        <div class="fb-form">
+          <div class="fb-row-grid">
+            <div class="fb-field">
+              <label class="chat-field-label" for="fb-category">反馈类型</label>
+              <select id="fb-category" class="input">
+                <option value="bug">问题反馈 / Bug</option>
+                <option value="performance">下载 / 上传性能建议</option>
+                <option value="ui">界面与交互体验</option>
+                <option value="feature">新功能需求</option>
+                <option value="other">其他建议</option>
+              </select>
+            </div>
+            <div class="fb-field">
+              <label class="chat-field-label" for="fb-contact">联系方式（选填）</label>
+              <input type="text" id="fb-contact" class="input" maxlength="120" placeholder="邮箱 / GitHub ID 等，不填也可以匿名反馈">
+            </div>
+          </div>
+
+          <div class="fb-field">
+            <label class="chat-field-label" for="fb-message">详细描述</label>
+            <textarea id="fb-message" class="input fb-textarea" rows="6" maxlength="4000" placeholder="请描述遇到的问题、复现步骤或优化建议，非常感谢你的支持！"></textarea>
+          </div>
+
+          <div class="fb-log-opt">
+            <label class="fb-check-label">
+              <input type="checkbox" id="fb-include-logs" checked>
+              <span>附带脱敏运行与性能日志（仅包含错误码、传输速率摘要与系统版本；绝不含文件名、本地路径、Cookie 与账号信息）</span>
+            </label>
+            <button type="button" class="btn btn-sm btn-ghost" id="fb-btn-preview">预览将发送的脱敏日志</button>
+          </div>
+
+          <div class="sethint hub-overseas-note">
+            注：反馈通过 X25519 + AES-256-GCM 端到端加密发送至作者海外服务器（日本东京）；如遇连接失败或较慢，开启代理/梯子后重试即可，没有也没关系。
+          </div>
+
+          <div class="fb-actions">
+            <button type="button" class="btn btn-primary" id="fb-btn-submit">加密发送反馈</button>
+            <span class="sethint fb-status" id="fb-status" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
   </main>
 </div>
 
@@ -687,26 +753,68 @@
 <!-- 右键菜单 -->
 <div class="ctxmenu" id="ctxmenu" hidden role="menu"></div>
 
-<!-- ======================= 内联图标（无外部资源） ======================= -->
+<!-- 面包屑折叠路径下拉菜单 -->
+<div class="ctxmenu crumb-popover" id="crumb-menu" hidden role="menu"></div>
+
+<!-- ======================= 内联图标（精致双色调重绘，无外部资源） ======================= -->
 <svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
-  <symbol id="i-cloud" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.95 5.5 5.5 0 0 0-10.5-1.3A3.9 3.9 0 0 0 7 18z"/></symbol>
-  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1l1.9 2.2h8A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/></symbol>
-  <symbol id="i-folder-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1l1.9 2.2h8A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 11.5v5M9.5 14h5"/></symbol>
-  <symbol id="i-folder-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h3.1l1.9 2h5A2.5 2.5 0 0 1 17 8v1"/><path d="M3.4 10h16.2a1.5 1.5 0 0 1 1.45 1.9l-1.7 6A1.5 1.5 0 0 1 17.9 19H5a2 2 0 0 1-2-2z"/></symbol>
-  <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
-  <symbol id="i-file-doc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M8.5 13h7M8.5 16.5h4.5"/></symbol>
-  <symbol id="i-file-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><circle cx="9.5" cy="12" r="1.3"/><path d="M7.5 18l3.2-3.2 2.3 2.3 1.8-1.8 1.7 1.7"/></symbol>
-  <symbol id="i-file-audio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M14.5 12.2v5.2"/><circle cx="13" cy="18" r="1.6"/><path d="M14.5 12.2l2.3-.6v5"/></symbol>
-  <symbol id="i-file-archive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M10 12h2.5M10 15h2.5M11.5 18h.01"/></symbol>
-  <symbol id="i-file-video" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M10.2 12.3l4.3 2.7-4.3 2.7z"/></symbol>
-  <symbol id="i-file-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M10.5 13.5 8.5 15.5l2 2M13.5 13.5l2 2-2 2"/></symbol>
+  <!-- 品牌图标：与用户定制应用图标同源的云朵+文件夹剪影 -->
+  <symbol id="i-cloud" viewBox="0 0 24 24" fill="none">
+    <path d="M7.2 18.2h10.1a4.1 4.1 0 0 0 .58-8.16A5.65 5.65 0 0 0 7.05 8.55a4.85 4.85 0 0 0 .15 9.65z" fill="currentColor" fill-opacity="0.96"/>
+    <path d="M8.6 11.4a1.1 1.1 0 0 1 1.1-1.1h2.1c.35 0 .68.16.89.43l.45.57h2.26a1.1 1.1 0 0 1 1.1 1.1v3.2a1.1 1.1 0 0 1-1.1 1.1H9.7a1.1 1.1 0 0 1-1.1-1.1z" fill="#2F66F6"/>
+  </symbol>
+  <!-- 双色层叠文件夹 / 文件类型图标 -->
+  <symbol id="i-folder" viewBox="0 0 24 24" fill="none">
+    <path d="M3 6.8A2.3 2.3 0 0 1 5.3 4.5h3.55c.62 0 1.21.26 1.62.72l1.16 1.28H18.7A2.3 2.3 0 0 1 21 8.8v8.9a2.3 2.3 0 0 1-2.3 2.3H5.3A2.3 2.3 0 0 1 3 17.7z" fill="currentColor" fill-opacity="0.20" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+    <path d="M3.2 10.2h17.6" stroke="currentColor" stroke-width="1.4" stroke-opacity="0.45"/>
+  </symbol>
+  <symbol id="i-folder-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 7.2A2.2 2.2 0 0 1 5.2 5h3.3l1.8 2h8.5A2.2 2.2 0 0 1 21 9.2v8.6A2.2 2.2 0 0 1 18.8 20H5.2A2.2 2.2 0 0 1 3 17.8z" fill="currentColor" fill-opacity="0.12"/>
+    <path d="M12 11.2v5.2M9.4 13.8h5.2"/>
+  </symbol>
+  <symbol id="i-folder-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.2 8.5V6.2A2.2 2.2 0 0 1 5.4 4h3.2l1.8 2h5.2a2.2 2.2 0 0 1 2.2 2.2v1.3"/>
+    <path d="M3.5 10.2h16.2a1.5 1.5 0 0 1 1.44 1.92l-1.75 6A1.5 1.5 0 0 1 17.95 19.2H5.1a2 2 0 0 1-2-2z" fill="currentColor" fill-opacity="0.16"/>
+  </symbol>
+  <symbol id="i-file" viewBox="0 0 24 24" fill="none">
+    <path d="M14 3.2H7.2a2 2 0 0 0-2 2v13.6a2 2 0 0 0 2 2h9.6a2 2 0 0 0 2-2V8.2z" fill="currentColor" fill-opacity="0.13" stroke="currentColor" stroke-width="1.65" stroke-linejoin="round"/>
+    <path d="M14 3.2v3.6a1.4 1.4 0 0 0 1.4 1.4h3.4" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-file-doc" viewBox="0 0 24 24" fill="none">
+    <path d="M14 3.2H7.2a2 2 0 0 0-2 2v13.6a2 2 0 0 0 2 2h9.6a2 2 0 0 0 2-2V8.2z" fill="currentColor" fill-opacity="0.16" stroke="currentColor" stroke-width="1.65" stroke-linejoin="round"/>
+    <path d="M14 3.2v3.6a1.4 1.4 0 0 0 1.4 1.4h3.4M8.6 12.2h6.8M8.6 15.2h6.8M8.6 18h4.2" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-file-image" viewBox="0 0 24 24" fill="none">
+    <rect x="3.5" y="4.2" width="17" height="15.6" rx="3" fill="currentColor" fill-opacity="0.16" stroke="currentColor" stroke-width="1.65"/>
+    <circle cx="8.8" cy="9.4" r="1.5" fill="currentColor"/>
+    <path d="M4.6 17.6l4.4-4.4a1 1 0 0 1 1.42 0l2.38 2.38 2.1-2.1a1 1 0 0 1 1.42 0l3.18 3.18" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-file-audio" viewBox="0 0 24 24" fill="none">
+    <rect x="4" y="3.8" width="16" height="16.4" rx="3.2" fill="currentColor" fill-opacity="0.16" stroke="currentColor" stroke-width="1.65"/>
+    <path d="M11 15.5V9.2l5.2-1.2v6.1" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="9.4" cy="15.7" r="1.7" fill="currentColor"/>
+    <circle cx="14.6" cy="14.4" r="1.7" fill="currentColor"/>
+  </symbol>
+  <symbol id="i-file-archive" viewBox="0 0 24 24" fill="none">
+    <rect x="4.2" y="3.8" width="15.6" height="16.4" rx="2.8" fill="currentColor" fill-opacity="0.16" stroke="currentColor" stroke-width="1.65"/>
+    <path d="M12 4.2v15.6" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2.2 2.2"/>
+    <rect x="9.6" y="10.2" width="4.8" height="4.2" rx="1.2" fill="currentColor" fill-opacity="0.32" stroke="currentColor" stroke-width="1.45"/>
+  </symbol>
+  <symbol id="i-file-video" viewBox="0 0 24 24" fill="none">
+    <rect x="3.5" y="4.5" width="17" height="15" rx="3" fill="currentColor" fill-opacity="0.16" stroke="currentColor" stroke-width="1.65"/>
+    <path d="M10.2 9.2a.9.9 0 0 1 1.36-.78l4.7 2.8a.9.9 0 0 1 0 1.56l-4.7 2.8a.9.9 0 0 1-1.36-.78z" fill="currentColor"/>
+  </symbol>
+  <symbol id="i-file-code" viewBox="0 0 24 24" fill="none">
+    <rect x="3.8" y="4.2" width="16.4" height="15.6" rx="3" fill="currentColor" fill-opacity="0.15" stroke="currentColor" stroke-width="1.65"/>
+    <path d="M9.6 9.5 7 12l2.6 2.5M14.4 9.5 17 12l-2.6 2.5M12.6 8.8l-1.2 6.4" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
   <symbol id="i-transfer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4v13M4.5 13.5 8 17l3.5-3.5"/><path d="M16 20V7M12.5 10.5 16 7l3.5 3.5"/></symbol>
   <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.1 14.6a1.6 1.6 0 0 0 .32 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.32 1.6 1.6 0 0 0-.97 1.47V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1.05-1.46 1.6 1.6 0 0 0-1.77.32l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .32-1.77 1.6 1.6 0 0 0-1.47-.97H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.46-1.05 1.6 1.6 0 0 0-.32-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.32H8.9a1.6 1.6 0 0 0 .97-1.47V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 .97 1.47 1.6 1.6 0 0 0 1.77-.32l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.32 1.77v.08a1.6 1.6 0 0 0 1.47.97H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.47.97z"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.35-5.65"/><path d="M20 4.5V9h-4.5"/></symbol>
-  <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16.5V5"/><path d="M7.5 9.5 12 5l4.5 4.5"/><path d="M5 19.5h14"/></symbol>
-  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v11.5"/><path d="M7.5 12 12 16.5 16.5 12"/><path d="M5 19.5h14"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16.5V5"/><path d="M7.5 9.5 12 5l4.5 4.5"/><path d="M5 19.5h14"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v11.5"/><path d="M7.5 12 12 16.5 16.5 12"/><path d="M5 19.5h14"/></symbol>
   <symbol id="i-rename" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10-10-4-4L4 16z"/><path d="M13.5 5.5l4 4"/></symbol>
   <symbol id="i-move" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1l1.9 2.2h8A2.5 2.5 0 0 1 21 9.7v7.8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M10 13.5h5M12.8 11l2.6 2.5-2.6 2.5"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11.5" rx="2"/><path d="M5.5 15.5h-1V4.5a1 1 0 0 1 1-1h8.5v1"/></symbol>
@@ -723,6 +831,7 @@
   <symbol id="i-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.2 21 19.6H3z"/><path d="M12 10v4M12 16.6v.02"/></symbol>
   <symbol id="i-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.2"/><path d="M12 8v5M12 15.8v.02"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 5.5 16 12l-6.5 6.5"/></symbol>
+  <symbol id="i-chevron-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5 8 12l6.5 6.5"/></symbol>
   <symbol id="i-arrow-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M6.5 10.5 12 5l5.5 5.5"/></symbol>
   <symbol id="i-arrow-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M10.5 6.5 5 12l5.5 5.5"/></symbol>
   <symbol id="i-arrow-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13.5 6.5 19 12l-5.5 5.5"/></symbol>
@@ -730,8 +839,9 @@
   <symbol id="i-view-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6"/></symbol>
   <symbol id="i-sidebar-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M15 4.5v15"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/></symbol>
-  <symbol id="i-backup" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v10m0 0 4-4m-4 4-4-4M5 17.5h14"/></symbol>
   <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5c4.7 0 8.5 3.1 8.5 7s-3.8 7-8.5 7c-.9 0-1.8-.11-2.6-.32a10.2 10.2 0 0 1-4.06 1.28.6.6 0 0 1-.6-.86c.4-.86.66-1.7.72-2.45C3.9 15.24 3.5 13.44 3.5 11.5c0-3.9 3.8-7 8.5-7z"/><path d="M8.5 10.5h7M8.5 13.5h4.5"/></symbol>
+  <symbol id="i-feedback" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 5.8A2.3 2.3 0 0 1 6.8 3.5h10.4a2.3 2.3 0 0 1 2.3 2.3v8.4a2.3 2.3 0 0 1-2.3 2.3H11l-4.2 3.5v-3.5H6.8a2.3 2.3 0 0 1-2.3-2.3z"/><path d="M8.5 8.5h7M8.5 12h4.8"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 5 6.4v5.3c0 4.5 3 8.1 7 9.3 4-1.2 7-4.8 7-9.3V6.4z"/><path d="M9.2 12.2 11.2 14.2 15.2 9.8"/></symbol>
   <symbol id="i-link-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 14.5 6.8 17.2a3.6 3.6 0 1 1-5-5l2.7-2.7"/><path d="M14.5 9.5l2.7-2.7a3.6 3.6 0 1 1 5 5l-2.7 2.7"/><path d="M4 4l16 16"/></symbol>
 </svg>
 

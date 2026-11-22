@@ -16,11 +16,55 @@ use std::{
 };
 use tokio::{
     fs::{self, OpenOptions},
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    io::AsyncWriteExt,
 };
+#[cfg(test)]
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::sync::CancellationToken;
 const PART: u64 = 1024 * 1024;
+const WRITE_BUF_CAP: usize = 256 * 1024;
+const HASH_BUF_CAP: usize = 2 * 1024 * 1024;
 const CHECKPOINT_VERSION: u32 = 2;
+
+fn choose_chunk_size(total: u64) -> u64 {
+    if total > 128 * 1024 * 1024 {
+        4 * PART
+    } else if total > 32 * 1024 * 1024 {
+        2 * PART
+    } else {
+        PART
+    }
+}
+
+fn valid_chunk_size(size: u64) -> bool {
+    size >= PART && size <= 16 * PART && size % PART == 0
+}
+
+fn write_exact_at(file: &std::fs::File, mut offset: u64, mut data: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.write_all_at(data, offset)?;
+        let _ = (&mut offset, &mut data);
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        while !data.is_empty() {
+            let n = file.seek_write(data, offset)?;
+            if n == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "write_exact_at returned 0",
+                ));
+            }
+            offset += n as u64;
+            data = &data[n..];
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct DonePart {
     len: u64,
@@ -99,7 +143,8 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         .ok_or_else(|| err("SERVER", "服务端没有返回有效文件大小"))?;
     let name = safe_name(info["name"].as_str().unwrap_or(&task.name));
     let mut cp = parse_checkpoint(&task)?;
-    if !cp.temp.is_empty() && (cp.version != CHECKPOINT_VERSION || cp.chunk_size != PART) {
+    if !cp.temp.is_empty() && (cp.version != CHECKPOINT_VERSION || !valid_chunk_size(cp.chunk_size))
+    {
         return Err(err(
             "CHECKPOINT_VERSION",
             "旧版下载分片格式不兼容，请取消此任务后重新下载；原文件已保留",
@@ -112,7 +157,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         let dir = PathBuf::from(task.local_dir.as_deref().unwrap_or(""));
         fs::create_dir_all(&dir).await.map_err(io_err)?;
         cp.version = CHECKPOINT_VERSION;
-        cp.chunk_size = PART;
+        cp.chunk_size = choose_chunk_size(total);
         cp.total = total;
         cp.target = reserve(m, id, &dir, &name)
             .await?
@@ -221,35 +266,39 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
     cp.etag = bound_etag;
     drop(probe);
     store(m, id, &cp)?;
-    let result = if range && total > 0 && !cp.etag.is_empty() {
-        multipart(m, id, &fid, &link, &temp, &mut cp, token).await
-    } else {
-        single(m, id, &fid, &link, &temp, &mut cp, token).await
-    };
-    match result {
-        Err(e) if e.code == "RANGE_UNSUPPORTED" => {
-            cp.parts.clear();
-            store(m, id, &cp)?;
-            single(m, id, &fid, &link, &temp, &mut cp, token).await?;
+    let inline_digest = if range && total > 0 && !cp.etag.is_empty() {
+        match multipart(m, id, &fid, &link, &temp, &mut cp, token).await {
+            Ok(()) => None,
+            Err(e) if e.code == "RANGE_UNSUPPORTED" => {
+                cp.parts.clear();
+                store(m, id, &cp)?;
+                Some(single(m, id, &fid, &link, &temp, &mut cp, token).await?)
+            }
+            Err(e) => return Err(e),
         }
-        other => other?,
-    }
+    } else {
+        Some(single(m, id, &fid, &link, &temp, &mut cp, token).await?)
+    };
     check(token)?;
     let metadata = fs::metadata(&temp).await.map_err(io_err)?;
     if metadata.len() != total {
         return Err(err("CONTENT_MISMATCH", "下载文件长度不符"));
     }
-    // Ensure all buffered multipart writes are durable before full-file hash & atomic publication.
-    OpenOptions::new()
-        .write(true)
-        .open(&temp)
-        .await
-        .map_err(io_err)?
-        .sync_all()
-        .await
-        .map_err(io_err)?;
-    // Hash entire finalized local file before publication. If API exposes a server digest, verify it too.
-    let (md5, sha1, sha256) = hash_file(&temp, token).await?;
+    // Multipart uses buffered positional writes; sync once before final full-file hash & publication.
+    // Single-stream already synced & computed exact hashes inline while streaming (saves full disk re-read).
+    let (md5, sha1, sha256) = if let Some(digests) = inline_digest {
+        digests
+    } else {
+        OpenOptions::new()
+            .write(true)
+            .open(&temp)
+            .await
+            .map_err(io_err)?
+            .sync_all()
+            .await
+            .map_err(io_err)?;
+        hash_file(&temp, token).await?
+    };
     for (key, value) in [("md5", &md5), ("sha1", &sha1), ("sha256", &sha256)] {
         if let Some(expected) = info[key].as_str().filter(|s| !s.is_empty()) {
             if !expected.eq_ignore_ascii_case(value) {
@@ -274,19 +323,55 @@ async fn verify_parts(temp: &Path, cp: &mut Checkpoint, token: &CancellationToke
     if cp.parts.is_empty() {
         return Ok(());
     }
-    let mut file = fs::File::open(temp).await.map_err(io_err)?;
-    let mut buf = vec![0u8; 1024 * 1024];
-    for (index, done) in cp.parts.clone() {
-        let start = index
-            .checked_mul(PART)
-            .ok_or_else(|| err("LOCAL_IO", "下载分片位置溢出"))?;
-        let len = PART.min(cp.total.saturating_sub(start));
-        if start >= cp.total
-            || done.len != len
-            || hash_range_file(&mut file, &mut buf, start, len, token).await? != done.sha256
-        {
-            cp.parts.remove(&index);
+    let chunk_size = if valid_chunk_size(cp.chunk_size) {
+        cp.chunk_size
+    } else {
+        PART
+    };
+    let path = temp.to_path_buf();
+    let total = cp.total;
+    let parts = cp.parts.clone();
+    let tok = token.clone();
+    let invalid = tokio::task::spawn_blocking(move || -> Result<Vec<u64>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(&path).map_err(io_err)?;
+        let mut buf = vec![0u8; HASH_BUF_CAP];
+        let mut bad = Vec::new();
+        for (index, done) in parts {
+            check(&tok)?;
+            let start = index
+                .checked_mul(chunk_size)
+                .ok_or_else(|| err("LOCAL_IO", "下载分片位置溢出"))?;
+            let len = chunk_size.min(total.saturating_sub(start));
+            if start >= total || done.len != len {
+                bad.push(index);
+                continue;
+            }
+            file.seek(SeekFrom::Start(start)).map_err(io_err)?;
+            let mut hash = Sha256::new();
+            let mut left = len;
+            let mut ok = true;
+            while left > 0 {
+                check(&tok)?;
+                let cap = (left as usize).min(buf.len());
+                let n = file.read(&mut buf[..cap]).map_err(io_err)?;
+                if n == 0 {
+                    ok = false;
+                    break;
+                }
+                hash.update(&buf[..n]);
+                left -= n as u64;
+            }
+            if !ok || format!("{:x}", hash.finalize()) != done.sha256 {
+                bad.push(index);
+            }
         }
+        Ok(bad)
+    })
+    .await
+    .map_err(|_| err("LOCAL_IO", "校验下载断点失败"))??;
+    for index in invalid {
+        cp.parts.remove(&index);
     }
     Ok(())
 }
@@ -393,7 +478,7 @@ fn connections(settings: &serde_json::Value, total: u64) -> usize {
     let max = settings["downloadParallel"]
         .as_u64()
         .unwrap_or(16)
-        .clamp(1, 16) as usize;
+        .max(1) as usize;
     match settings["downloadStrategy"].as_str().unwrap_or("auto") {
         "sequential" => 1,
         "parallel" => max,
@@ -485,9 +570,21 @@ async fn multipart(
     cp: &mut Checkpoint,
     token: &CancellationToken,
 ) -> Result<()> {
-    let count = cp.total.div_ceil(PART);
+    let chunk_size = if valid_chunk_size(cp.chunk_size) {
+        cp.chunk_size
+    } else {
+        PART
+    };
+    let count = cp.total.div_ceil(chunk_size);
     let settings = m.inner.core.settings();
     let parallel = connections(&settings, cp.total);
+    // Open the temporary file ONCE for the entire multipart download instead of per-part open/close.
+    let shared_file = Arc::new(
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(temp)
+            .map_err(io_err)?,
+    );
     let mut cursor = 0u64;
     let mut workers = FuturesUnordered::new();
     let workers_token = token.child_token();
@@ -514,12 +611,13 @@ async fn multipart(
                 let received = live.0 + live.1.values().sum::<u64>();
                 let _ = manager.progress(&task_id, received, total);
             });
-            workers.push(fetch_part(
+            workers.push(fetch_part_file(
                 m,
                 fid,
                 link,
-                temp,
+                shared_file.clone(),
                 index,
+                chunk_size,
                 cp.total,
                 cp.etag.clone(),
                 workers_token.clone(),
@@ -542,12 +640,23 @@ async fn multipart(
                 let should_flush = unsaved_parts >= 16
                     || last_flush.elapsed() >= Duration::from_millis(1500)
                     || cp.parts.len() as u64 == count;
-                store_batched(m, id, cp, should_flush)?;
+                if let Err(e) = store_batched(m, id, cp, should_flush) {
+                    if failure.is_none() {
+                        failure = Some(e);
+                        workers_token.cancel();
+                    }
+                    continue;
+                }
                 if should_flush {
                     unsaved_parts = 0;
                     last_flush = tokio::time::Instant::now();
                 }
-                m.progress(id, complete, cp.total)?;
+                if let Err(e) = m.progress(id, complete, cp.total) {
+                    if failure.is_none() {
+                        failure = Some(e);
+                        workers_token.cancel();
+                    }
+                }
             }
             Err(e) => {
                 if failure.is_none() {
@@ -557,6 +666,8 @@ async fn multipart(
             }
         }
     }
+    drop(workers);
+    drop(shared_file);
     if unsaved_parts > 0 {
         let _ = store(m, id, cp);
     }
@@ -568,12 +679,28 @@ async fn multipart(
     }
     Ok(())
 }
-async fn fetch_part(
+async fn flush_buf_at(
+    file: Arc<std::fs::File>,
+    offset: u64,
+    buf: Vec<u8>,
+) -> Result<Vec<u8>> {
+    tokio::task::spawn_blocking(move || {
+        write_exact_at(&file, offset, &buf).map_err(io_err)?;
+        let mut reused = buf;
+        reused.clear();
+        Ok(reused)
+    })
+    .await
+    .map_err(|_| err("LOCAL_IO", "写入下载临时文件失败"))?
+}
+#[allow(clippy::too_many_arguments)]
+async fn fetch_part_file(
     m: &TransferManager,
     fid: &str,
     link: &str,
-    temp: &Path,
+    file: Arc<std::fs::File>,
     index: u64,
+    chunk_size: u64,
     total: u64,
     etag: String,
     token: CancellationToken,
@@ -587,8 +714,8 @@ async fn fetch_part(
             .map_err(|_| err("ABORTED", "下载已停止"))
     })
     .await?;
-    let start = index * PART;
-    let length = PART.min(total - start);
+    let start = index * chunk_size;
+    let length = chunk_size.min(total - start);
     let mut link = link.to_string();
     for attempt in 0..3 {
         check(&token)?;
@@ -630,16 +757,12 @@ async fn fetch_part(
                     return Err(err("CONTENT_MISMATCH", "分片 Content-Length 不符"));
                 }
             }
-            let mut file = OpenOptions::new()
-                .write(true)
-                .open(temp)
-                .await
-                .map_err(io_err)?;
-            file.seek(std::io::SeekFrom::Start(start))
-                .await
-                .map_err(io_err)?;
             let mut stream = response.bytes_stream();
             let mut received = 0u64;
+            let mut written = 0u64;
+            let mut last_reported = 0u64;
+            let mut last_report_at = tokio::time::Instant::now();
+            let mut wbuf = Vec::with_capacity(WRITE_BUF_CAP.min(length as usize));
             let mut hash = Sha256::new();
             loop {
                 let chunk = cancellable(&token, async {
@@ -656,17 +779,35 @@ async fn fetch_part(
                 if received + chunk.len() as u64 > length {
                     return Err(err("CONTENT_MISMATCH", "分片响应超出请求范围"));
                 }
-                file.write_all(&chunk).await.map_err(io_err)?;
                 hash.update(&chunk);
                 received += chunk.len() as u64;
+                wbuf.extend_from_slice(&chunk);
+                if wbuf.len() >= WRITE_BUF_CAP {
+                    let flush_len = wbuf.len() as u64;
+                    wbuf = flush_buf_at(file.clone(), start + written, wbuf).await?;
+                    written += flush_len;
+                }
                 if let Some(progress) = &on_progress {
-                    progress(received);
+                    if received - last_reported >= WRITE_BUF_CAP as u64
+                        || last_report_at.elapsed() >= Duration::from_millis(100)
+                    {
+                        progress(received);
+                        last_reported = received;
+                        last_report_at = tokio::time::Instant::now();
+                    }
                 }
             }
             if received != length {
                 return Err(err("CONTENT_MISMATCH", "分片响应长度不足"));
             }
-            file.flush().await.map_err(io_err)?;
+            if !wbuf.is_empty() {
+                let _ = flush_buf_at(file.clone(), start + written, wbuf).await?;
+            }
+            if let Some(progress) = &on_progress {
+                if received != last_reported {
+                    progress(received);
+                }
+            }
             Ok((
                 index,
                 DonePart {
@@ -697,6 +838,27 @@ async fn fetch_part(
     }
     unreachable!()
 }
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+async fn fetch_part(
+    m: &TransferManager,
+    fid: &str,
+    link: &str,
+    temp: &Path,
+    index: u64,
+    total: u64,
+    etag: String,
+    token: CancellationToken,
+    on_progress: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+) -> Result<(u64, DonePart)> {
+    let file = Arc::new(
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(temp)
+            .map_err(io_err)?,
+    );
+    fetch_part_file(m, fid, link, file, index, PART, total, etag, token, on_progress).await
+}
 async fn single(
     m: &TransferManager,
     id: &str,
@@ -705,7 +867,7 @@ async fn single(
     temp: &Path,
     cp: &mut Checkpoint,
     token: &CancellationToken,
-) -> Result<()> {
+) -> Result<(String, String, String)> {
     let _slot = cancellable(token, async {
         m.inner
             .download_slots
@@ -733,14 +895,22 @@ async fn single(
                     ));
                 }
             }
-            let mut file = OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open(temp)
-                .await
-                .map_err(io_err)?;
+            let file = Arc::new(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(temp)
+                    .map_err(io_err)?,
+            );
             let mut stream = response.bytes_stream();
             let mut received = 0u64;
+            let mut written = 0u64;
+            let mut last_reported = 0u64;
+            let mut last_report_at = tokio::time::Instant::now();
+            let mut wbuf = Vec::with_capacity(WRITE_BUF_CAP.min(cp.total.max(4096) as usize));
+            let mut md5 = Md5::new();
+            let mut sha1 = Sha1::new();
+            let mut sha256 = Sha256::new();
             loop {
                 let chunk = cancellable(token, async {
                     tokio::time::timeout(Duration::from_secs(60), stream.next())
@@ -756,19 +926,45 @@ async fn single(
                 if received + chunk.len() as u64 > cp.total {
                     return Err(err("CONTENT_MISMATCH", "下载响应超过文件大小"));
                 }
-                file.write_all(&chunk).await.map_err(io_err)?;
+                md5.update(&chunk);
+                sha1.update(&chunk);
+                sha256.update(&chunk);
                 received += chunk.len() as u64;
-                m.progress(id, received, cp.total)?;
+                wbuf.extend_from_slice(&chunk);
+                if wbuf.len() >= WRITE_BUF_CAP {
+                    let flush_len = wbuf.len() as u64;
+                    wbuf = flush_buf_at(file.clone(), written, wbuf).await?;
+                    written += flush_len;
+                }
+                if received - last_reported >= WRITE_BUF_CAP as u64
+                    || last_report_at.elapsed() >= Duration::from_millis(100)
+                {
+                    m.progress(id, received, cp.total)?;
+                    last_reported = received;
+                    last_report_at = tokio::time::Instant::now();
+                }
             }
             if received != cp.total {
                 return Err(err("CONTENT_MISMATCH", "下载响应不完整"));
             }
-            file.sync_all().await.map_err(io_err)?;
-            Ok(())
+            if !wbuf.is_empty() {
+                let _ = flush_buf_at(file.clone(), written, wbuf).await?;
+            }
+            if received != last_reported {
+                m.progress(id, received, cp.total)?;
+            }
+            tokio::task::spawn_blocking(move || file.sync_all().map_err(io_err))
+                .await
+                .map_err(|_| err("LOCAL_IO", "同步下载文件失败"))??;
+            Ok((
+                format!("{:x}", md5.finalize()),
+                format!("{:x}", sha1.finalize()),
+                format!("{:x}", sha256.finalize()),
+            ))
         }
         .await;
         match result {
-            Ok(()) => return Ok(()),
+            Ok(digests) => return Ok(digests),
             Err(e)
                 if attempt < 2
                     && ["NETWORK", "LINK_EXPIRED", "CONTENT_MISMATCH"]
@@ -788,6 +984,7 @@ async fn single(
     }
     unreachable!()
 }
+#[cfg(test)]
 async fn hash_range_file(
     file: &mut fs::File,
     buf: &mut [u8],
@@ -824,26 +1021,33 @@ async fn hash_range(
     hash_range_file(&mut file, &mut buf, start, len, token).await
 }
 async fn hash_file(path: &Path, token: &CancellationToken) -> Result<(String, String, String)> {
-    let mut file = fs::File::open(path).await.map_err(io_err)?;
-    let mut md5 = Md5::new();
-    let mut sha1 = Sha1::new();
-    let mut sha256 = Sha256::new();
-    let mut buf = vec![0; 1024 * 1024];
-    loop {
-        check(token)?;
-        let n = file.read(&mut buf).await.map_err(io_err)?;
-        if n == 0 {
-            break;
+    let path = path.to_path_buf();
+    let tok = token.clone();
+    tokio::task::spawn_blocking(move || -> Result<(String, String, String)> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path).map_err(io_err)?;
+        let mut md5 = Md5::new();
+        let mut sha1 = Sha1::new();
+        let mut sha256 = Sha256::new();
+        let mut buf = vec![0u8; HASH_BUF_CAP];
+        loop {
+            check(&tok)?;
+            let n = file.read(&mut buf).map_err(io_err)?;
+            if n == 0 {
+                break;
+            }
+            md5.update(&buf[..n]);
+            sha1.update(&buf[..n]);
+            sha256.update(&buf[..n]);
         }
-        md5.update(&buf[..n]);
-        sha1.update(&buf[..n]);
-        sha256.update(&buf[..n]);
-    }
-    Ok((
-        format!("{:x}", md5.finalize()),
-        format!("{:x}", sha1.finalize()),
-        format!("{:x}", sha256.finalize()),
-    ))
+        Ok((
+            format!("{:x}", md5.finalize()),
+            format!("{:x}", sha1.finalize()),
+            format!("{:x}", sha256.finalize()),
+        ))
+    })
+    .await
+    .map_err(|_| err("LOCAL_IO", "校验下载文件失败"))?
 }
 fn validate_owned(task: &Task, cp: &Checkpoint) -> Result<()> {
     if cp.target.is_empty()
@@ -1090,7 +1294,12 @@ mod tests {
         assert_eq!(connections(&settings, PART), 1);
         assert_eq!(connections(&settings, 8 * PART), 4);
         assert_eq!(connections(&settings, 16 * PART + 1), 16);
+        assert_eq!(connections(&json!({"downloadParallel":48,"downloadStrategy":"parallel"}), 100 * PART), 48);
+        assert_eq!(connections(&json!({"downloadParallel":48,"downloadStrategy":"auto"}), 100 * PART), 48);
         assert_eq!(connections(&json!({"downloadParallel":2}), 100 * PART), 2);
+        assert_eq!(choose_chunk_size(10 * PART), PART);
+        assert_eq!(choose_chunk_size(64 * PART), 2 * PART);
+        assert_eq!(choose_chunk_size(512 * PART), 4 * PART);
         assert_eq!(
             connections(
                 &json!({"downloadParallel":16,"downloadStrategy":"sequential"}),

@@ -216,6 +216,7 @@ pub(crate) fn settings(doc: &Value) -> Value {
     merge_settings(
         json!({
             "downloadDir":dirs::download_dir().unwrap_or_else(std::env::temp_dir).to_string_lossy(),
+            "askDownloadDir":false,
             "uploadConcurrency":2,
             "downloadConcurrency":2,
             "downloadParallel":16,
@@ -223,6 +224,8 @@ pub(crate) fn settings(doc: &Value) -> Value {
             "uploadPartConcurrency":3,
             "theme":"light",
             "aiBetaEnabled":false,
+            "serverOptIn":false,
+            "serverPrompted":false,
             "viewMode":"list",
             "sortBy":"file_type:asc,updated_at:desc"
         }),
@@ -240,11 +243,14 @@ pub(crate) fn merge_settings(mut base: Value, patch: Value) -> Value {
     {
         base["downloadDir"] = json!(dir);
     }
-    for (key, max) in [
-        ("uploadConcurrency", 8),
-        ("downloadConcurrency", 5),
-        ("downloadParallel", 16),
-        ("uploadPartConcurrency", 8),
+    if let Some(ask) = p.get("askDownloadDir").and_then(Value::as_bool) {
+        base["askDownloadDir"] = json!(ask);
+    }
+    for key in [
+        "uploadConcurrency",
+        "downloadConcurrency",
+        "downloadParallel",
+        "uploadPartConcurrency",
     ] {
         if let Some(value) = p
             .get(key)
@@ -254,7 +260,7 @@ pub(crate) fn merge_settings(mut base: Value, patch: Value) -> Value {
             })
             .filter(|v| v.is_finite())
         {
-            base[key] = json!((value as i64).clamp(1, max));
+            base[key] = json!((value.floor() as i64).max(1));
         }
     }
     if let Some(strategy) = p
@@ -269,6 +275,12 @@ pub(crate) fn merge_settings(mut base: Value, patch: Value) -> Value {
     }
     if let Some(ai_beta) = p.get("aiBetaEnabled").and_then(Value::as_bool) {
         base["aiBetaEnabled"] = json!(ai_beta);
+    }
+    if let Some(opt_in) = p.get("serverOptIn").and_then(Value::as_bool) {
+        base["serverOptIn"] = json!(opt_in);
+    }
+    if let Some(prompted) = p.get("serverPrompted").and_then(Value::as_bool) {
+        base["serverPrompted"] = json!(prompted);
     }
     if let Some(view_mode) = p
         .get("viewMode")
@@ -417,10 +429,11 @@ mod tests {
     fn settings_bounds_and_unknown_field_rejection() {
         let s = merge_settings(
             settings(&json!({})),
-            json!({"uploadConcurrency":999,"downloadParallel":0,"downloadDir":false,"theme":"dark","cookie":"never"}),
+            json!({"uploadConcurrency":999,"downloadParallel":0,"askDownloadDir":true,"downloadDir":false,"theme":"dark","cookie":"never"}),
         );
-        assert_eq!(s["uploadConcurrency"], 8);
+        assert_eq!(s["uploadConcurrency"], 999);
         assert_eq!(s["downloadParallel"], 1);
+        assert_eq!(s["askDownloadDir"], true);
         assert_eq!(s["theme"], "dark");
         assert!(s.get("cookie").is_none());
         assert!(s["downloadDir"].is_string());
@@ -563,23 +576,31 @@ mod tests {
     fn ai_beta_defaults_off_and_view_sort_settings_are_whitelisted() {
         let defaults = settings(&json!({}));
         assert_eq!(defaults["aiBetaEnabled"], false);
+        assert_eq!(defaults["serverOptIn"], false);
+        assert_eq!(defaults["serverPrompted"], false);
         assert_eq!(defaults["viewMode"], "list");
         assert_eq!(defaults["sortBy"], "file_type:asc,updated_at:desc");
         let patched = merge_settings(
             defaults.clone(),
             json!({
                 "aiBetaEnabled": true,
+                "serverOptIn": true,
+                "serverPrompted": true,
                 "viewMode": "grid",
                 "sortBy": "file_type:asc,file_name:asc"
             }),
         );
         assert_eq!(patched["aiBetaEnabled"], true);
+        assert_eq!(patched["serverOptIn"], true);
+        assert_eq!(patched["serverPrompted"], true);
         assert_eq!(patched["viewMode"], "grid");
         assert_eq!(patched["sortBy"], "file_type:asc,file_name:asc");
         let rejected = merge_settings(
             patched.clone(),
             json!({
                 "aiBetaEnabled": "yes",
+                "serverOptIn": "yes",
+                "serverPrompted": 1,
                 "viewMode": "evil",
                 "sortBy": "invalid:desc"
             }),

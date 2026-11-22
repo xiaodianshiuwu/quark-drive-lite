@@ -8,12 +8,24 @@
     const settings = await window.qk.settings.get();
     check('Rust settings command', typeof settings.downloadDir === 'string');
     check('AI Beta defaults off', settings.aiBetaEnabled === false);
+    check('askDownloadDir defaults off', settings.askDownloadDir === false);
     check('AI entries hidden when Beta off', document.getElementById('nav-chat')?.hidden === true && document.getElementById('agent-card')?.hidden === true);
+    check('backup view removed', !document.querySelector('[data-view="backup"]') && !document.getElementById('view-backup'));
+    const optDecline = document.getElementById('optin-btn-decline');
+    check('first-launch server opt-in modal shown', !!optDecline);
+    if (optDecline) { optDecline.click(); await new Promise(r => setTimeout(r, 120)); }
+    const hubCfg = await window.qk.hub.config();
+    check('hub opt-in defaults off and prompted after decline', hubCfg && hubCfg.optIn === false && hubCfg.prompted === true);
+    let hubBlocked; try { await window.qk.hub.checkUpdate(); } catch (e) { hubBlocked = e.code; }
+    check('hub hard-blocks network when opted out', hubBlocked === 'OPT_IN_REQUIRED');
+    document.querySelector('[data-view="feedback"]').click();
+    check('feedback view', !document.getElementById('view-feedback').hidden);
+    document.querySelector('[data-view="files"]').click();
     const appInfo = await window.qk.app.info();
     check('Rust app info command', typeof appInfo?.version === 'string' && appInfo.version.length > 0);
-    const changed = await window.qk.settings.set({theme: 'dark'});
-    check('Rust settings persist', changed.theme === 'dark' && (await window.qk.settings.get()).theme === 'dark');
-    await window.qk.settings.set({theme: settings.theme});
+    const changed = await window.qk.settings.set({theme: 'dark', downloadParallel: 48, askDownloadDir: true});
+    check('Rust settings persist relaxed limits', changed.theme === 'dark' && changed.downloadParallel === 48 && changed.askDownloadDir === true && (await window.qk.settings.get()).downloadParallel === 48);
+    await window.qk.settings.set({theme: settings.theme, downloadParallel: settings.downloadParallel, askDownloadDir: settings.askDownloadDir});
     const auth = await window.qk.auth.status();
     check('Rust auth status', typeof auth.loggedIn === 'boolean');
     const tasks = await window.qk.transfer.list();
@@ -24,12 +36,6 @@
     check('settings view', !document.querySelector('#view-settings').hidden);
     document.querySelector('[data-view="transfers"]').click();
     check('transfers view', !document.querySelector('#view-transfers').hidden);
-    document.querySelector('[data-view="backup"]').click();
-    check('backup view',!document.getElementById('view-backup').hidden);
-    const backupStatus=await window.qk.backup.status();check('Rust backup status',backupStatus.hasSession===false);
-    const plan=await window.qk.backup.plan({rootDir:window.__qkSmokeRoot,targetFid:'0'});check('Rust backup scanner via native IPC',plan.files===1 && plan.dirs===2);
-    let backupCode;try {await window.qk.backup.start({rootDir:window.__qkSmokeRoot,targetFid:'0',account:'spoofed'});}catch(e){backupCode=e.code;}
-    check('backup cannot spoof unauthenticated account',backupCode==='NEED_LOGIN');
     const agent=await window.qk.agent.status();check('Rust agent status',typeof agent.enabled==='boolean');
     const mcp=await window.qk.agent.mcpConfig();check('packaged MCP adapter path',mcp.mcpServers['quark-mini'].args[0].includes('adapters'));
     document.querySelector('[data-view="settings"]').click();

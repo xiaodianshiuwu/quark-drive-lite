@@ -1,5 +1,6 @@
 //! Desktop-independent Quark API, encrypted session and settings.
 mod files;
+pub mod hub;
 mod session;
 mod store;
 
@@ -85,8 +86,8 @@ impl Core {
             .retry(reqwest::retry::never())
             .tcp_nodelay(true)
             .tcp_keepalive(Duration::from_secs(30))
-            .pool_idle_timeout(Duration::from_secs(60))
-            .pool_max_idle_per_host(24);
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(128);
         if no_proxy {
             builder = builder.no_proxy();
         }
@@ -157,6 +158,17 @@ impl Core {
     }
     pub fn settings(&self) -> Value {
         session::settings(&self.inner.state.lock().unwrap().document)
+    }
+    pub fn set_settings(&self, patch: Value) -> Result<Value> {
+        if !patch.is_object() {
+            return Err(Error::new("INVALID_ARG", "设置必须是对象"));
+        }
+        let mut merged = Value::Null;
+        self.update(|doc| {
+            merged = session::merge_settings(session::settings(doc), patch);
+            doc["settings"] = merged.clone();
+        })?;
+        Ok(merged)
     }
     pub fn replace_cookies(&self, cookies: Value) -> Result<()> {
         let cookies = session::normalize_external(cookies)?;

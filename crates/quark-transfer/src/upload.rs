@@ -14,11 +14,9 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{
-    fs,
-    io::{AsyncReadExt, AsyncSeekExt},
-};
+use tokio::fs;
 use tokio_util::sync::CancellationToken;
+const INSPECT_BUF_CAP: usize = 2 * 1024 * 1024;
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Checkpoint {
     #[serde(default)]
@@ -52,6 +50,13 @@ fn store(m: &TransferManager, id: &str, cp: &Checkpoint) -> Result<()> {
     m.checkpoint(
         id,
         serde_json::to_value(cp).map_err(|_| err("LOCAL_IO", "上传进度序列化失败"))?,
+    )
+}
+fn store_batched(m: &TransferManager, id: &str, cp: &Checkpoint, persist: bool) -> Result<()> {
+    m.checkpoint_batched(
+        id,
+        serde_json::to_value(cp).map_err(|_| err("LOCAL_IO", "上传进度序列化失败"))?,
+        persist,
     )
 }
 fn required<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
@@ -96,79 +101,80 @@ struct Inspection {
     contexts: BTreeMap<u64, String>,
     part_md5: BTreeMap<u64, String>,
 }
-async fn unchanged(path: &Path, expected: &FileStamp) -> Result<()> {
-    if FileStamp::from(&fs::metadata(path).await.map_err(io_err)?)? != *expected {
-        return Err(err("CONFLICT", "本地文件在上传期间发生变化，已停止提交"));
-    }
-    Ok(())
-}
 async fn inspect(
     path: &Path,
     expected: &FileStamp,
     part_size: Option<u64>,
     token: &CancellationToken,
 ) -> Result<Inspection> {
-    let mut file = fs::File::open(path).await.map_err(io_err)?;
-    if FileStamp::from(&file.metadata().await.map_err(io_err)?)? != *expected {
-        return Err(err("CONFLICT", "本地文件已被替换，已停止上传"));
-    }
-    let mut md5 = Md5::new();
-    let mut sha1 = Sha1::new();
-    let mut prefix = Sha1State::new();
-    let mut part_md5 = Md5::new();
-    let mut result = Inspection {
-        md5: String::new(),
-        sha1: String::new(),
-        contexts: BTreeMap::new(),
-        part_md5: BTreeMap::new(),
-    };
-    let mut buffer = vec![0; 1024 * 1024];
-    let mut position = 0u64;
-    loop {
-        check(token)?;
-        if let Some(span) = part_size {
-            if position > 0 && position < expected.size && position % span == 0 {
-                result
-                    .contexts
-                    .insert(position / span + 1, prefix.export_base64()?);
+    let path_buf = path.to_path_buf();
+    let expected = expected.clone();
+    let tok = token.clone();
+    tokio::task::spawn_blocking(move || -> Result<Inspection> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path_buf).map_err(io_err)?;
+        if FileStamp::from(&file.metadata().map_err(io_err)?)? != expected {
+            return Err(err("CONFLICT", "本地文件已被替换，已停止上传"));
+        }
+        let mut md5 = Md5::new();
+        let mut sha1 = Sha1::new();
+        let mut prefix = Sha1State::new();
+        let mut part_md5 = Md5::new();
+        let mut result = Inspection {
+            md5: String::new(),
+            sha1: String::new(),
+            contexts: BTreeMap::new(),
+            part_md5: BTreeMap::new(),
+        };
+        let mut buffer = vec![0u8; INSPECT_BUF_CAP];
+        let mut position = 0u64;
+        loop {
+            check(&tok)?;
+            if let Some(span) = part_size {
+                if position > 0 && position < expected.size && position % span == 0 {
+                    result
+                        .contexts
+                        .insert(position / span + 1, prefix.export_base64()?);
+                }
+            }
+            let max = part_size
+                .map(|span| (span - position % span).min(buffer.len() as u64) as usize)
+                .unwrap_or(buffer.len());
+            let count = file.read(&mut buffer[..max]).map_err(io_err)?;
+            if count == 0 {
+                break;
+            }
+            md5.update(&buffer[..count]);
+            sha1.update(&buffer[..count]);
+            if let Some(span) = part_size {
+                prefix.update(&buffer[..count])?;
+                part_md5.update(&buffer[..count]);
+                position += count as u64;
+                if position % span == 0 || position == expected.size {
+                    result.part_md5.insert(
+                        (position - 1) / span + 1,
+                        format!("{:x}", part_md5.finalize_reset()),
+                    );
+                }
+            } else {
+                position += count as u64;
+            }
+            if position > expected.size {
+                return Err(err("CONFLICT", "上传文件读取期间增长，已停止提交"));
             }
         }
-        let max = part_size
-            .map(|span| (span - position % span).min(buffer.len() as u64) as usize)
-            .unwrap_or(buffer.len());
-        let count = cancellable(token, async {
-            file.read(&mut buffer[..max]).await.map_err(io_err)
-        })
-        .await?;
-        if count == 0 {
-            break;
+        if position != expected.size {
+            return Err(err("CONTENT_MISMATCH", "上传源文件读取长度不符"));
         }
-        md5.update(&buffer[..count]);
-        sha1.update(&buffer[..count]);
-        if let Some(span) = part_size {
-            prefix.update(&buffer[..count])?;
-            part_md5.update(&buffer[..count]);
-            position += count as u64;
-            if position % span == 0 || position == expected.size {
-                result.part_md5.insert(
-                    (position - 1) / span + 1,
-                    format!("{:x}", part_md5.finalize_reset()),
-                );
-            }
-        } else {
-            position += count as u64;
+        if FileStamp::from(&std::fs::metadata(&path_buf).map_err(io_err)?)? != expected {
+            return Err(err("CONFLICT", "本地文件在上传期间发生变化，已停止提交"));
         }
-        if position > expected.size {
-            return Err(err("CONFLICT", "上传文件读取期间增长，已停止提交"));
-        }
-    }
-    if position != expected.size {
-        return Err(err("CONTENT_MISMATCH", "上传源文件读取长度不符"));
-    }
-    unchanged(path, expected).await?;
-    result.md5 = format!("{:x}", md5.finalize());
-    result.sha1 = format!("{:x}", sha1.finalize());
-    Ok(result)
+        result.md5 = format!("{:x}", md5.finalize());
+        result.sha1 = format!("{:x}", sha1.finalize());
+        Ok(result)
+    })
+    .await
+    .map_err(|_| err("LOCAL_IO", "校验上传源文件失败"))?
 }
 async fn signature(
     m: &TransferManager,
@@ -333,7 +339,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
             .as_u64()
             .or_else(|| env["data"]["part_thread"].as_u64())
             .unwrap_or(3)
-            .clamp(1, 8);
+            .max(1);
         cp.pre = Some(env["data"].clone());
         cp.phase = "prepared".into();
         store(m, id, &cp)?;
@@ -441,9 +447,8 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
                 m.inner.core.settings()["uploadPartConcurrency"]
                     .as_u64()
                     .unwrap_or(3)
-                    .clamp(1, 8)
-                    .min(cp.part_thread.max(1))
-                    .min((32 * 1024 * 1024 / part_size).max(1)) as usize
+                    .max(1)
+                    .min((256 * 1024 * 1024 / part_size).max(1)) as usize
             } else {
                 1
             };
@@ -509,13 +514,26 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
                 .map(|n| part_size.min(size - (n - 1) * part_size))
                 .sum::<u64>();
             m.progress(id, uploaded, size)?;
+            let mut unsaved_parts: u32 = 0;
+            let mut last_flush = tokio::time::Instant::now();
             let result = part_window(pending, concurrency, launch, |number, length, etag| {
                 uploaded += length;
                 cp.parts.insert(number, etag);
-                store(m, id, &cp)?;
+                unsaved_parts += 1;
+                let should_flush = unsaved_parts >= 4
+                    || last_flush.elapsed() >= Duration::from_millis(1500)
+                    || cp.parts.len() as u64 == count;
+                store_batched(m, id, &cp, should_flush)?;
+                if should_flush {
+                    unsaved_parts = 0;
+                    last_flush = tokio::time::Instant::now();
+                }
                 m.progress(id, uploaded, size)
             })
             .await;
+            if unsaved_parts > 0 {
+                let _ = store(m, id, &cp);
+            }
             match result {
                 Ok(()) => break,
                 Err(error)
@@ -667,30 +685,39 @@ async fn read_part(
     token: &CancellationToken,
 ) -> Result<bytes::Bytes> {
     check(token)?;
-    unchanged(path, stamp).await?;
     let start = number
         .checked_sub(1)
         .and_then(|n| n.checked_mul(part_size))
         .filter(|start| *start < stamp.size)
         .ok_or_else(|| err("CONTENT_MISMATCH", "上传分片范围无效"))?;
-    let mut file = fs::File::open(path).await.map_err(io_err)?;
-    if FileStamp::from(&file.metadata().await.map_err(io_err)?)? != *stamp {
-        return Err(err("CONFLICT", "本地上传文件已被替换"));
-    }
-    file.seek(std::io::SeekFrom::Start(start))
-        .await
-        .map_err(io_err)?;
-    let mut bytes = vec![0; part_size.min(stamp.size - start) as usize];
-    cancellable(token, async {
-        file.read_exact(&mut bytes).await.map_err(io_err)?;
-        Ok(())
+    let path_buf = path.to_path_buf();
+    let stamp = stamp.clone();
+    let expected_md5 = expected_md5.to_owned();
+    let tok = token.clone();
+    tokio::task::spawn_blocking(move || -> Result<bytes::Bytes> {
+        use std::io::{Read, Seek, SeekFrom};
+        check(&tok)?;
+        if FileStamp::from(&std::fs::metadata(&path_buf).map_err(io_err)?)? != stamp {
+            return Err(err("CONFLICT", "本地文件在上传期间发生变化，已停止提交"));
+        }
+        let mut file = std::fs::File::open(&path_buf).map_err(io_err)?;
+        if FileStamp::from(&file.metadata().map_err(io_err)?)? != stamp {
+            return Err(err("CONFLICT", "本地上传文件已被替换"));
+        }
+        file.seek(SeekFrom::Start(start)).map_err(io_err)?;
+        let mut bytes = vec![0u8; part_size.min(stamp.size - start) as usize];
+        file.read_exact(&mut bytes).map_err(io_err)?;
+        check(&tok)?;
+        if !format!("{:x}", Md5::digest(&bytes)).eq_ignore_ascii_case(&expected_md5) {
+            return Err(err("CONFLICT", "本地上传分片内容已变化，已停止传输"));
+        }
+        if FileStamp::from(&std::fs::metadata(&path_buf).map_err(io_err)?)? != stamp {
+            return Err(err("CONFLICT", "本地文件在上传期间发生变化，已停止提交"));
+        }
+        Ok(bytes.into())
     })
-    .await?;
-    if !format!("{:x}", Md5::digest(&bytes)).eq_ignore_ascii_case(expected_md5) {
-        return Err(err("CONFLICT", "本地上传分片内容已变化，已停止传输"));
-    }
-    unchanged(path, stamp).await?;
-    Ok(bytes.into())
+    .await
+    .map_err(|_| err("LOCAL_IO", "读取上传分片失败"))?
 }
 
 async fn small_response(mut response: reqwest::Response) -> Result<String> {

@@ -508,9 +508,10 @@ async function bootApp(opts = {}) {
     qk.auth.logout = () => Promise.resolve(null);
     qk.auth.quota = () => Promise.resolve({ total: 1024, used: 10 });
     const settingsState = Object.assign({
-      downloadDir: '/tmp/dl', uploadConcurrency: 2, downloadConcurrency: 2,
+      downloadDir: '/tmp/dl', askDownloadDir: false, uploadConcurrency: 2, downloadConcurrency: 2,
       downloadParallel: 16, downloadStrategy: 'auto', uploadPartConcurrency: 3,
       theme: 'light', aiBetaEnabled: !!opts.aiBetaEnabled,
+      serverOptIn: !!opts.serverOptIn, serverPrompted: opts.serverPrompted !== false,
       viewMode: 'list', sortBy: 'file_type:asc,updated_at:desc'
     }, opts.settings || {});
     qk.settings.get = (...args) => {
@@ -549,41 +550,50 @@ async function bootApp(opts = {}) {
       qk.chat.status = () => Promise.reject({ code: 'SERVER', message: opts.chatStatusError });
     }
     if (opts.sendImpl && bridgeMode === 'full') qk.chat.send = opts.sendImpl;
-    // 备份（Phase-2）：backupImpl = { plan, start, status, verify } 可覆盖；默认空响应
-    // backupOverrides 直接替换 qk.backup 上的方法（用例级，优先级最高）。
+    // 可选作者服务器（hub.*）：默认 serverPrompted: true、serverOptIn: false，确保无关测试零干扰
     if (bridgeMode === 'full') {
-      const bkImpl = opts.backupImpl || {};
-      const bkDefault = {
-        plan: {
-          files: 8, dirs: 2, warnings: 1, totalBytes: 4096,
-          samples: [
-            { relPath: 'docs/说明.pdf', size: 1024, mtimeMs: 1750000000000 },
-            { relPath: '图片/封面.png', size: 2048, mtimeMs: 1750000000001 },
-            { warning: '受限目录/System Volume Information', detail: '读取失败：权限不足' }
-          ]
+      qk.hub = {
+        config: (...args) => {
+          calls.push({ ns: 'hub', name: 'config', args });
+          return Promise.resolve({
+            optIn: !!settingsState.serverOptIn,
+            prompted: !!settingsState.serverPrompted,
+            baseUrl: 'https://qdl.xiaodianshiuwu.space',
+            region: '海外节点 · Tokyo (JP)',
+            currentVersion: '0.3.0-beta.1',
+            recommendedAssetKey: 'macos-arm64',
+            cryptoSummary: 'HTTPS TLS 1.3 + X25519/AES-256-GCM + Ed25519'
+          });
         },
-        start: { running: true },
-        status: null, // 动态（跑/不跑两态由 opts.backupRunning 决定）
-        retry: { requeued: 0 },
-        cancel: { canceled: true },
-        // 字段形态对齐真实后端 VerifyReport（serde 无 rename_all → snake_case）
-        verify: { status: 'verified', total_success: 8, listed_ok: 8, listed_missing: 0,
-          size_mismatch: 0, sample_requested: 8, sample_checked: 8, sample_ok: 8, sample_mismatch: 0, issues: [] },
-      };
-      ['plan', 'start', 'retry', 'cancel', 'verify'].forEach((name) => {
-        qk.backup[name] = (...args) => {
-          calls.push({ ns: 'backup', name, args });
-          return Promise.resolve(bkImpl[name] !== undefined ? clone(bkImpl[name]) : clone(bkDefault[name]));
-        };
-      });
-      qk.backup.status = (...args) => {
-        calls.push({ ns: 'backup', name: 'status', args });
-        if (bkImpl.status) return Promise.resolve(clone(bkImpl.status));
-        const running = !!opts.backupRunning;
-        return Promise.resolve(running ? {
-          hasSession:true,scanComplete:false,totalDiscovered:19,status:'scanning',running: true, account: 'fixture-user', discovered: 10, pending: 2, uploading: 1,
-          verifying: 0, success: 6, failed: 0, skipped: 0, canceled: 0, queueDepth: 2, uploadedBytes: 4096,
-        } : { running: false });
+        setOptIn: (p) => {
+          calls.push({ ns: 'hub', name: 'setOptIn', args: [p] });
+          settingsState.serverOptIn = !!(p && p.optIn);
+          settingsState.serverPrompted = true;
+          return qk.hub.config();
+        },
+        checkUpdate: (...args) => {
+          calls.push({ ns: 'hub', name: 'checkUpdate', args });
+          if (!settingsState.serverOptIn) return Promise.reject({ code: 'OPT_IN_REQUIRED', message: '未开启连接' });
+          return Promise.resolve({ ok: true, hasUpdate: false, currentVersion: '0.3.0-beta.1', latestVersion: '0.3.0-beta.1', changelog: '', notice: null, assets: {}, signatureVerified: true });
+        },
+        downloadUpdate: (...args) => {
+          calls.push({ ns: 'hub', name: 'downloadUpdate', args });
+          return Promise.resolve({ ok: true, path: '/tmp/dl/update.zip', filename: 'update.zip', verified: true });
+        },
+        sendTelemetry: (...args) => {
+          calls.push({ ns: 'hub', name: 'sendTelemetry', args });
+          return Promise.resolve({ ok: true, encrypted: true });
+        },
+        submitFeedback: (...args) => {
+          calls.push({ ns: 'hub', name: 'submitFeedback', args });
+          return Promise.resolve({ ok: true, id: 1, encrypted: true });
+        },
+        logPreview: (...args) => {
+          calls.push({ ns: 'hub', name: 'logPreview', args });
+          return Promise.resolve({ logs: [{ ts: 1, level: 'info', category: 'lifecycle', code: 'APP_START', msg: 'started' }] });
+        },
+        recordEvent: () => Promise.resolve({ ok: true }),
+        onUpdateProgress: () => function () {}
       };
     }
   }

@@ -173,8 +173,8 @@ impl TransferManager {
                 wake: Arc::new(Notify::new()),
                 changed: Arc::new(Notify::new()),
                 revision: AtomicU64::new(0),
-                download_slots: Semaphore::new(32),
-                upload_buffers: Semaphore::new(64 * 1024),
+                download_slots: Semaphore::new(1024),
+                upload_buffers: Semaphore::new(512 * 1024),
                 upload_rate_next: Arc::new(AsyncMutex::new(tokio::time::Instant::now())),
             }),
         };
@@ -418,7 +418,7 @@ impl TransferManager {
             } else {
                 "downloadConcurrency"
             };
-            let limit = settings[key].as_u64().unwrap_or(2).clamp(1, 8) as usize;
+            let limit = settings[key].as_u64().unwrap_or(2).max(1) as usize;
             if active.values().filter(|a| a.kind == task.kind).count() >= limit {
                 continue;
             }
