@@ -730,6 +730,8 @@ pub fn recommended_asset_key() -> &'static str {
         ("macos", "aarch64") => "macos-arm64",
         ("macos", _) => "macos-x64",
         ("windows", _) => "windows-x64-setup",
+        ("linux", "x86_64") => "linux-x64-deb",
+        ("linux", "aarch64") => "linux-arm64-deb",
         _ => "windows-x64-portable",
     }
 }

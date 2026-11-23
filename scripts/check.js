@@ -29,7 +29,7 @@ for (const tool of ['tools/agent-bridge-client.js', 'tools/agent-cli.js', 'tools
   if (fs.existsSync(p)) checkFile(p);
 }
 
-for (const file of ['package.json', 'src-tauri/tauri.conf.json', 'src-tauri/tauri.windows.conf.json']) {
+for (const file of ['package.json', 'src-tauri/tauri.conf.json', 'src-tauri/tauri.windows.conf.json', 'src-tauri/tauri.linux.conf.json']) {
   JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));
 }
 

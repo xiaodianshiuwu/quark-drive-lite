@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2022, macos-15, macos-15-intel]
+        os: [ubuntu-22.04, windows-2022, macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -27,10 +27,145 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libfuse2 librsvg2-dev libayatana-appindicator3-dev \
+            xvfb dbus-x11 openbox xdotool wmctrl imagemagick desktop-file-utils fonts-noto-cjk
       - run: npm ci --ignore-scripts
       - run: npm run check:js
       - run: cargo test --workspace --locked
+      - name: Require Chrome on Linux and Intel macOS
+        if: runner.os == 'Linux' || matrix.os == 'macos-15-intel'
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            chrome=$(command -v google-chrome)
+          else
+            chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+          fi
+          "$chrome" --version
+          echo "QCK_BROWSER_PATH=$chrome" >> "$GITHUB_ENV"
       - run: npm test
       - name: Compile native app (no publication)
+        if: runner.os != 'Linux' && matrix.os != 'macos-15-intel'
         run: npx tauri build --no-bundle
+      - name: Test native WebKitGTK and Tauri IPC
+        if: runner.os == 'Linux'
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: dbus-run-session -- xvfb-run -a npm run verify:native
+      - name: Build and validate Linux packages
+        if: runner.os == 'Linux'
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: |
+          npm run build -- -- --locked
+          mkdir -p linux-packages linux-qa
+          shopt -s nullglob
+          deb=(target/release/bundle/deb/*.deb)
+          appimage=(target/release/bundle/appimage/*.AppImage)
+          test "${#deb[@]}" -eq 1
+          test "${#appimage[@]}" -eq 1
+          version=$(node -p "require('./package.json').version")
+          deb_asset="$PWD/linux-packages/QuarkDriveLite-$version-Linux-x64.deb"
+          appimage_asset="$PWD/linux-packages/QuarkDriveLite-$version-Linux-x64.AppImage"
+          cp "${deb[0]}" "$deb_asset"
+          cp "${appimage[0]}" "$appimage_asset"
+          chmod +x "$appimage_asset"
+
+          test "$(dpkg-deb -f "$deb_asset" Architecture)" = amd64
+          test "$(dpkg-deb -f "$deb_asset" Version)" = "$version"
+          sudo apt-get install -y "$deb_asset"
+          package=$(dpkg-deb -f "$deb_asset" Package)
+          desktop=$(dpkg -L "$package" | awk '/[.]desktop$/')
+          desktop-file-validate "$desktop"
+          dbus-run-session -- xvfb-run -a bash scripts/linux-package-smoke.sh /usr/bin/quark-drive-lite-tauri linux-qa/deb.png
+          sudo apt-get remove -y "$package"
+          test ! -e /usr/bin/quark-drive-lite-tauri
+          test ! -e "$desktop"
+
+          dbus-run-session -- xvfb-run -a bash scripts/linux-package-smoke.sh "$appimage_asset" linux-qa/appimage.png
+          (cd linux-packages && sha256sum *.AppImage *.deb > SHA256SUMS-Linux.txt)
+      - name: Save Linux packages
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-drive-lite-linux-x64
+          path: linux-packages/
+          if-no-files-found: error
+      - name: Save Linux smoke evidence
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-drive-lite-linux-qa
+          path: |
+            .work/native-smoke.json
+            linux-qa/
+          include-hidden-files: true
+          if-no-files-found: warn
+      - name: Test native Intel WKWebView and Tauri IPC
+        if: matrix.os == 'macos-15-intel'
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          test "$(uname -m)" = x86_64
+          npm run verify:native
+      - name: Build and validate macOS Intel package
+        if: matrix.os == 'macos-15-intel'
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          npm run build -- --bundles app -- --locked
+          mkdir -p macos-intel-packages
+          app="夸克网盘极简版.app"
+          version=$(node -p "require('./package.json').version")
+          archive="$PWD/macos-intel-packages/QuarkDriveLite-$version-macOS-x64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "target/release/bundle/macos/$app" "$archive"
+          unzip -t "$archive"
+
+          smoke_dir=$(mktemp -d)
+          app_pid=
+          cleanup() {
+            if [[ -n $app_pid ]]; then
+              kill "$app_pid" 2>/dev/null || true
+              wait "$app_pid" 2>/dev/null || true
+            fi
+            rm -rf "$smoke_dir"
+          }
+          trap cleanup EXIT
+          install_dir="$smoke_dir/安装 测试"
+          ditto -x -k "$archive" "$install_dir"
+          installed_app="$install_dir/$app"
+          codesign --verify --deep --strict "$installed_app"
+          plist="$installed_app/Contents/Info.plist"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$plist")
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$plist")" = "$version"
+          binary="$installed_app/Contents/MacOS/$executable"
+          test "$(lipo -archs "$binary")" = x86_64
+
+          QK_PROFILE_DIR="$smoke_dir/profile" "$binary" >"$smoke_dir/startup.log" 2>&1 &
+          app_pid=$!
+          for attempt in {1..20}; do
+            test -f "$smoke_dir/profile/app.lock" && break
+            kill -0 "$app_pid" 2>/dev/null || { cat "$smoke_dir/startup.log"; exit 1; }
+            sleep 1
+          done
+          test -f "$smoke_dir/profile/app.lock"
+          sleep 5
+          kill -0 "$app_pid" 2>/dev/null || { cat "$smoke_dir/startup.log"; exit 1; }
+          echo "Verified x86_64 app signature and startup from the extracted ZIP"
+          (cd macos-intel-packages && shasum -a 256 *.zip > SHA256SUMS-macOS-x64.txt)
+      - name: Save macOS Intel package
+        if: matrix.os == 'macos-15-intel'
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-drive-lite-macos-x64
+          path: macos-intel-packages/
+          if-no-files-found: error
+      - name: Save macOS Intel smoke evidence
+        if: always() && matrix.os == 'macos-15-intel'
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-drive-lite-macos-x64-qa
+          path: .work/native-smoke.json
+          include-hidden-files: true
+          if-no-files-found: warn

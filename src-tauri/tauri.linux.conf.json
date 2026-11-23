@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Quark Drive Lite",
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "linux": {
+      "deb": {
+        "depends": ["xdg-desktop-portal", "xdg-desktop-portal-gtk | xdg-desktop-portal-backend"]
+      }
+    }
+  }
+}

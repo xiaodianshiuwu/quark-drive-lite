@@ -91,7 +91,7 @@ function stripComments(source) {
 /** app.js 中「对话（Chat 视图）」代码段（含块注释起始符）。 */
 function chatSectionSource() {
   const startMarker = appSrc.indexOf('* 对话（Chat 视图）');
-  const endMarker = appSrc.indexOf('* 设置\n');
+  const endMarker = appSrc.search(/\* 设置\r?\n/);
   const start = startMarker > 0 ? appSrc.lastIndexOf('/*', startMarker) : -1;
   const end = endMarker > 0 ? appSrc.lastIndexOf('/*', endMarker) : -1;
   assert.ok(start >= 0 && end > start, 'app.js 中未找到对话视图代码段');
