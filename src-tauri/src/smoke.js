@@ -1,6 +1,11 @@
 (async () => {
   const checks = [], check = (name, ok) => checks.push({name, ok: !!ok});
   try {
+    const readyBy = Date.now() + 25000;
+    while (!window.qk || !document.getElementById('tut-btn-skip')) {
+      if (Date.now() >= readyBy) throw new Error('初次启动界面未就绪');
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
     check('bundled interface', document.querySelector('.brand-text')?.textContent.includes('夸克网盘'));
     check('native bridge', !!window.qk && !!window.__TAURI__);
     check('quit action available', !!document.getElementById('btn-quit') && typeof window.qk.app.quit === 'function');

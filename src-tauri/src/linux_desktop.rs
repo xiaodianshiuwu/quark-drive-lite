@@ -14,7 +14,7 @@ pub async fn show_item(path: &Path) -> Result<()> {
         "/org/freedesktop/FileManager1",
         Some("org.freedesktop.FileManager1"),
         "ShowItems",
-        &([uri.as_str()], ""),
+        &(vec![uri.as_str()], ""),
     )
     .await
     .map_err(shell_error)?;

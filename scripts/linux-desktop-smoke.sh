@@ -66,6 +66,7 @@ xdotool windowactivate --sync "$files"
 # ShowItems must select the test file. F2 opens the rename dialog only on a selection.
 xdotool key F2
 rename=$(find_window '^Rename')
+[[ $(xdotool getwindowname "$rename") == *'upload fixture.txt'* ]]
 xdotool windowactivate --sync "$rename" key Escape
 # Use another GTK process as the drag source so the test sends a real Xdnd offer.
 python3 - "$QK_SMOKE_SOURCE/upload fixture.txt" <<'PYGTK' &

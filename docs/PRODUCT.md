@@ -30,7 +30,7 @@
 
 macOS 为本次实际开发与运行平台。Windows 10/11 x64 是主要备份目标；Windows 管道、长路径、保留名、junction、大小写目录及安装产物须在 Windows 验收，不能由 macOS 测试替代。具体结果以独立审计报告为准。
 
-v1.0.0 在 GitHub 发布页同时提供 Linux x64 的 DEB、AppImage 和 macOS Intel x64 的应用 ZIP。新增包在各自架构的原生桌面环境验收，安装说明和验证范围见[平台支持](PLATFORM_SUPPORT.md)。
+v1.0.0 在 GitHub 发布页同时提供 Linux x64 的 DEB、AppImage 和 macOS Intel x64 的应用 ZIP。新增包在各自架构的原生桌面环境验收，安装说明和验证范围见[平台支持](PLATFORM_SUPPORT.md)。 Linux 文件和目录选择、确认弹窗使用 GTK 原生对话框。支持 FileManager1 的文件管理器可直接选中本地文件，其他桌面环境可打开对应目录。
 
 ## 非目标
 
