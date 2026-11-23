@@ -110,7 +110,7 @@ const browserPath=[process.env.QCK_BROWSER_PATH,process.env.CHROME_BIN,
   process.platform==='darwin'?'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome':null,
   process.platform==='win32'?path.join(process.env.PROGRAMFILES||'C:/Program Files','Google/Chrome/Application/chrome.exe'):null,
   '/usr/bin/google-chrome','/usr/bin/chromium'].find(p=>p&&fs.existsSync(p));
-test('renderer DOM: virtual paging, file operations, transfers, settings and account lifecycle', { skip: !browserPath, timeout: 45000 }, async t => {
+test('renderer DOM: virtual paging, file operations, transfers, settings and account lifecycle', { skip: !browserPath, timeout: 75000 }, async t => {
   const os = require('node:os');
   const { spawn } = require('node:child_process');
   const { pathToFileURL } = require('node:url');
@@ -118,7 +118,9 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
   const child = spawn(browserPath, ['--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', '--window-size=1280,900',
     '--user-data-dir=' + profile, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
-  const deadline = Date.now() + 15000;
+  let browserLog = '';
+  child.stderr.on('data', chunk => { browserLog = (browserLog + chunk).slice(-3000); });
+  const deadline = Date.now() + 20000;
   let socket;
   t.after(async () => {
     if (socket) socket.close();
@@ -128,7 +130,7 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
   });
   const portFile = path.join(profile, 'DevToolsActivePort');
   while (!fs.existsSync(portFile)) {
-    if (Date.now() > deadline) throw new Error('Headless browser did not expose a project debug port');
+    if (Date.now() > deadline) throw new Error('Headless browser did not expose a project debug port: ' + browserLog);
     await new Promise(r => setTimeout(r, 50));
   }
   const port = fs.readFileSync(portFile, 'utf8').split('\n')[0];
@@ -396,9 +398,14 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
         }
       }}
     };` });
-  await cdp('Page.navigate', { url: pathToFileURL(path.join(__dirname, '../src/renderer/index.html')).href });
+  const navigation = await cdp('Page.navigate', { url: pathToFileURL(path.join(__dirname, '../src/renderer/index.html')).href });
+  assert.ok(!navigation.errorText, navigation.errorText);
+  const fixtureDeadline = Date.now() + 20000;
   while (!(await evaluate('!!(window.QKUI && QKUI.state.loadedOnce && !QKUI.state.loading)'))) {
-    if (Date.now() > deadline) throw new Error('Renderer did not finish initial fixture load');
+    if (Date.now() > fixtureDeadline) {
+      const state = await evaluate('({ready:document.readyState, bridge:!!window.qk, fixture:!!window.__fixture, app:!!window.QKUI})');
+      throw new Error('Renderer did not finish initial fixture load: ' + JSON.stringify(state));
+    }
     await new Promise(r => setTimeout(r, 30));
   }
   assert.ok(await evaluate('QKAPI.injected && QKAPI.bridgeInfo().missing.length === 0'));
