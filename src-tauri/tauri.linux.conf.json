@@ -5,7 +5,7 @@
     "targets": ["deb", "appimage"],
     "linux": {
       "deb": {
-        "depends": ["xdg-desktop-portal", "xdg-desktop-portal-gtk | xdg-desktop-portal-backend"]
+        "recommends": ["xdg-desktop-portal", "xdg-desktop-portal-gtk | xdg-desktop-portal-backend"]
       }
     }
   }

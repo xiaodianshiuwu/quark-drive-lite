@@ -3008,6 +3008,7 @@ name = "quark-drive-lite-tauri"
 version = "1.0.0"
 dependencies = [
  "fs2",
+ "gtk",
  "open",
  "quark-agent",
  "quark-core",
@@ -3017,6 +3018,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tokio",
+ "zbus",
 ]
 
 [[package]]

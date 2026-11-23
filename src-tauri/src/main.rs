@@ -18,6 +18,9 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 
+#[cfg(target_os = "linux")]
+mod linux_desktop;
+
 #[derive(Clone)]
 struct State {
     core: Core,
@@ -359,6 +362,10 @@ async fn open_local(path: PathBuf, reveal: bool) -> Result<Value> {
     if !path.is_absolute() || !path.exists() {
         return Err(Error::new("NOT_FOUND", "请选择存在的本地绝对路径"));
     }
+    #[cfg(target_os = "linux")]
+    if reveal && linux_desktop::show_item(&path).await.is_ok() {
+        return Ok(Value::Null);
+    }
     tauri::async_runtime::spawn_blocking(move || {
         if reveal {
             #[cfg(target_os = "macos")]
@@ -397,7 +404,12 @@ async fn open_local(path: PathBuf, reveal: bool) -> Result<Value> {
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
-                return open::that(path.parent().unwrap_or(&path)).map_err(shell_error);
+                let folder = if path.is_dir() {
+                    path.as_path()
+                } else {
+                    path.parent().unwrap_or(&path)
+                };
+                return open::that(folder).map_err(shell_error);
             }
         }
         open::that(path).map_err(shell_error)
@@ -407,7 +419,26 @@ async fn open_local(path: PathBuf, reveal: bool) -> Result<Value> {
     Ok(Value::Null)
 }
 
-async fn dialog(_app: &tauri::AppHandle, method: &str, params: Value) -> Result<Value> {
+async fn dialog(app: &tauri::AppHandle, method: &str, params: Value) -> Result<Value> {
+    if matches!(method, "dialog.openPath" | "dialog.showInFolder") {
+        return open_local(
+            PathBuf::from(params["path"].as_str().unwrap_or("")),
+            method == "dialog.showInFolder",
+        )
+        .await;
+    }
+    #[cfg(target_os = "linux")]
+    return linux_desktop::dialog(app, method, params).await;
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = app;
+        platform_dialog(method, params).await
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn platform_dialog(method: &str, params: Value) -> Result<Value> {
     let picker = rfd::AsyncFileDialog::new();
     match method {
         "dialog.pickFiles" => Ok(json!(picker
@@ -447,13 +478,6 @@ async fn dialog(_app: &tauri::AppHandle, method: &str, params: Value) -> Result<
                 .show()
                 .await;
             Ok(json!(result == rfd::MessageDialogResult::Ok))
-        }
-        "dialog.openPath" | "dialog.showInFolder" => {
-            open_local(
-                PathBuf::from(params["path"].as_str().unwrap_or("")),
-                method == "dialog.showInFolder",
-            )
-            .await
         }
         _ => Err(Error::new("INVALID_ARG", "未知系统操作")),
     }
