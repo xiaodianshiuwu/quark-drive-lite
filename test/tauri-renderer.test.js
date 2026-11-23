@@ -432,10 +432,15 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     };
     const crumbIds=()=>evaluate('QKUI.state.crumbs.map(c=>c.fid)');
     const up=async()=>{
+      // Wait for the resized viewport to be painted before sending a browser-level click.
+      await cdp('Page.captureScreenshot', {clip:{x:0,y:0,width:1,height:1,scale:1}});
       const rect=await evaluate('(()=>{const r=document.getElementById("btn-up").getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()');
       assert.ok(rect.width>50 && rect.height>20 && rect.x>=0,'up button has a usable visible size');
-      await cdp('Input.dispatchMouseEvent',{type:'mousePressed',x:rect.x+rect.width/2,y:rect.y+rect.height/2,button:'left',clickCount:1});
-      await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',x:rect.x+rect.width/2,y:rect.y+rect.height/2,button:'left',clickCount:1});
+      const point={x:rect.x+rect.width/2,y:rect.y+rect.height/2};
+      assert.equal(await evaluate('document.elementFromPoint('+point.x+','+point.y+')?.closest("#btn-up")?.id'),'btn-up','up button is the mouse target');
+      await cdp('Input.dispatchMouseEvent',{type:'mouseMoved',...point});
+      await cdp('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'left',clickCount:1});
+      await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'left',clickCount:1});
     };
     try {
       await evaluate('__fixture.navigationMode=true');await root();

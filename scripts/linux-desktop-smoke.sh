@@ -7,7 +7,7 @@ report=$(realpath -m "$2")
 sandbox=$(mktemp -d)
 mkdir -p "$(dirname "$report")" "$sandbox/files/chosen"
 echo "Linux desktop fixture" >"$sandbox/files/upload fixture.txt"
-export LANG=C.UTF-8 GDK_BACKEND=x11
+export LANG=C.UTF-8 GDK_BACKEND=x11 GTK_USE_PORTAL=0
 export QK_PROFILE_DIR="$sandbox/profile" QK_SMOKE_REPORT="$report" QK_SMOKE_DESKTOP=1 QK_SMOKE_EXIT=1
 export QK_SMOKE_SOURCE="$sandbox/files"
 
@@ -24,7 +24,7 @@ cleanup() {
 trap cleanup EXIT
 openbox &
 wm_pid=$!
-dbus-update-activation-environment DISPLAY
+dbus-update-activation-environment DISPLAY XAUTHORITY
 thunar --daemon &
 file_manager_pid=
 drag_pid=$!
@@ -34,7 +34,11 @@ app_pid=$!
 find_window() {
   local windows
   echo "Waiting for window: $1" >&2
-  windows=$(timeout 25s xdotool search --onlyvisible --sync --name "$1")
+  if ! windows=$(timeout 25s xdotool search --onlyvisible --sync "${2:---name}" "$1"); then
+    wmctrl -lx >&2
+    if [[ -f $report ]]; then cat "$report" >&2; fi
+    return 1
+  fi
   printf '%s\n' "${windows%%$'\n'*}"
 }
 
@@ -57,7 +61,7 @@ xdotool windowactivate --sync "$confirm"
 eval "$(xdotool getwindowgeometry --shell "$confirm")"
 xdotool mousemove --window "$confirm" "$((WIDTH - 55))" "$((HEIGHT - 24))" click 1
 
-files=$(find_window '^files( - Thunar)?$')
+files=$(find_window '[Tt]hunar' --class)
 xdotool windowactivate --sync "$files"
 # ShowItems must select the test file. F2 opens the rename dialog only on a selection.
 xdotool key F2

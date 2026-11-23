@@ -89,6 +89,14 @@ async fn show_dialog(
     } else {
         Vec::new()
     };
+    let paths = paths
+        .into_iter()
+        .map(|path| {
+            path.into_os_string()
+                .into_string()
+                .map_err(|_| Error::new("INVALID_ARG", "当前文件路径无法以 UTF-8 表示"))
+        })
+        .collect::<Result<Vec<_>>>()?;
     if multiple {
         Ok(json!(paths))
     } else {
