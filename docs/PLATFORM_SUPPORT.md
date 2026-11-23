@@ -16,7 +16,7 @@
 
 ## Linux 安装包
 
-- 在 x86_64 桌面上运行。DEB 由 APT 安装，系统需提供 GTK 3 和 WebKitGTK 4.1。Ubuntu 22.04 是构建和验证基线。
+- 在 x86_64 桌面上运行。DEB 由 APT 安装，系统需提供 GTK 3 和 WebKitGTK 4.1。Ubuntu 22.04 是构建和验证基线。 已安装首批 v1.0.0 DEB 的用户可运行 `sudo apt install --reinstall ./QuarkDriveLite-1.0.0-Linux-x64.deb` 覆盖安装。
 - AppImage 运行时需要兼容的 Linux 桌面和 FUSE 2。没有 FUSE 时可运行 `./QuarkDriveLite-1.0.0-Linux-x64.AppImage --appimage-extract-and-run`。
 - 文件、目录选择和确认均使用 GTK 原生对话框。桌面可使用 XDG 门户。支持 `org.freedesktop.FileManager1` 的文件管理器会选中文件，其他桌面会打开相应目录。
 - 构建与验收命令见[兼容性工作流](../.github/workflows/p0-compatibility.yml)。Windows、macOS 与 Linux 分别使用原生构建环境。
