@@ -16,12 +16,15 @@ trap cleanup EXIT
 openbox &
 wm_pid=$!
 export QK_PROFILE_DIR="$profile"
-# Run the AppImage via its embedded runtime even on runners without /dev/fuse.
-export APPIMAGE_EXTRACT_AND_RUN=1
 "$executable" &
 app_pid=$!
 window=$(timeout 45s xdotool search --sync --onlyvisible --name '^夸克网盘 · 极简版$')
-kill -0 "$app_pid"
+# The native window can appear before Tauri finishes creating the profile.
+for attempt in {1..100}; do
+  kill -0 "$app_pid"
+  test -f "$profile/app.lock" && break
+  sleep 0.1
+done
 test -f "$profile/app.lock"
 
 # Capture the packaged window after the embedded UI has loaded.
