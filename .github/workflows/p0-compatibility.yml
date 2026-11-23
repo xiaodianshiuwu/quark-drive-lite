@@ -28,7 +28,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libfuse2 librsvg2-dev libayatana-appindicator3-dev \
-            xvfb dbus-x11 openbox xdotool wmctrl imagemagick desktop-file-utils fonts-noto-cjk
+            xvfb dbus-x11 openbox xdotool wmctrl imagemagick desktop-file-utils fonts-noto-cjk thunar weston python3-gi
       - run: npm ci --ignore-scripts
       - run: npm run check:js
       - run: cargo test --workspace --locked
@@ -52,6 +52,31 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: dbus-run-session -- xvfb-run -a npm run verify:native
+      - name: Test Linux desktop operations on X11
+        if: runner.os == 'Linux'
+        run: |
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1440x980x24" bash scripts/linux-desktop-smoke.sh target/debug/quark-drive-lite-tauri .work/linux-desktop-smoke.json
+      - name: Test native WebKitGTK over Wayland
+        if: runner.os == 'Linux'
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          dbus-run-session -- bash -euo pipefail -c '
+            export XDG_RUNTIME_DIR=$(mktemp -d)
+            export GDK_BACKEND=wayland WAYLAND_DISPLAY=qdl-qa
+            unset DISPLAY
+            weston --backend=headless-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 >.work/weston.log 2>&1 &
+            compositor=$!
+            trap '"'"'kill "$compositor" 2>/dev/null || true; rm -rf "$XDG_RUNTIME_DIR"'"'"' EXIT
+            for attempt in {1..30}; do
+              test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && break
+              sleep 0.2
+            done
+            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+            cp .work/native-smoke.json .work/linux-x11-smoke.json
+            npm run verify:native
+            mv .work/native-smoke.json .work/linux-wayland-smoke.json
+          '
       - name: Build and validate Linux packages
         if: runner.os == 'Linux'
         env:
@@ -98,7 +123,8 @@ jobs:
         with:
           name: quark-drive-lite-linux-qa
           path: |
-            .work/native-smoke.json
+            .work/*smoke.json
+            .work/weston.log
             linux-qa/
           include-hidden-files: true
           if-no-files-found: warn

@@ -58,6 +58,31 @@
     check('AI Beta opt-out restores minimal mode', document.getElementById('nav-chat')?.hidden === true && document.getElementById('agent-card')?.hidden === true);
     document.querySelector('[data-view="files"]').click();
     check('no mock data', !location.search.includes('mock=1'));
+    if (window.__qkSmokeDesktop) {
+      const source = window.__qkSmokeRoot;
+      const file = source + '/upload fixture.txt';
+      const options = {defaultPath: source};
+      const files = await window.qk.dialog.pickFiles(options);
+      check('desktop file selection round trip', files.length === 1 && files[0] === file);
+      const folders = await window.qk.dialog.pickDirs(options);
+      check('desktop folder selection round trip', folders.length === 1 && folders[0] === source + '/chosen');
+      check('desktop download directory cancel', (await window.qk.dialog.saveDir(source)) === null);
+      const confirmed = await window.qk.dialog.confirm({title:'Linux QA 确认', message:'确认测试操作'});
+      check('desktop confirmation accepted', confirmed === true);
+
+      const dropped = new Promise(resolve => {
+        const unsubscribe = window.qk.dialog.onFilesDropped(paths => {
+          unsubscribe();
+          resolve(paths);
+        });
+      });
+      await window.qk.dialog.showInFolder(file);
+      check('desktop drag returns exact local paths', (await dropped).includes(file));
+
+      let loginCode;
+      try { await window.qk.auth.login(); } catch (error) { loginCode = error.code; }
+      check('desktop login window cancellation', loginCode === 'ABORTED');
+    }
   } catch(e) { checks.push({name:'exception',ok:false,code:e.code || 'JS',message:String(e.message).slice(0,180)}); }
   await window.__TAURI__.core.invoke('smoke_report', {report:{checks, passed: checks.every(c => c.ok), runtime:'Tauri 2 / system WebView / Rust', userAgent:navigator.userAgent}});
 })();

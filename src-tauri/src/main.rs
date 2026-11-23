@@ -274,15 +274,24 @@ async fn login(app: tauri::AppHandle, state: State) -> Result<Value> {
     })
     .build()
     .map_err(shell_error)?;
+    let is_current_login = || {
+        app.get_webview_window("login").is_some()
+            && state.login_generation.load(Ordering::SeqCst) == generation
+    };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
     let result=async {
         let mut last=String::new();
         while tokio::time::Instant::now()<deadline {
-            if app.get_webview_window("login").is_none() || state.login_generation.load(Ordering::SeqCst)!=generation {return Err(Error::new("ABORTED","登录已取消"));}
+            if !is_current_login() { return Err(Error::new("ABORTED", "登录已取消")); }
             tokio::time::sleep(Duration::from_millis(1500)).await;
-            let w=window.clone();
+            if !is_current_login() { return Err(Error::new("ABORTED", "登录已取消")); }
+            let w = window.clone();
             // Cookie APIs may block on WebView2; never call them on the UI thread.
-            let cookies=tauri::async_runtime::spawn_blocking(move ||w.cookies()).await.map_err(shell_error)?.map_err(shell_error)?;
+            let cookies = tauri::async_runtime::spawn_blocking(move || w.cookies())
+                .await
+                .map_err(shell_error)?;
+            if !is_current_login() { return Err(Error::new("ABORTED", "登录已取消")); }
+            let cookies = cookies.map_err(shell_error)?;
             let items:Vec<Value>=cookies.iter().filter(|c|{
                 let d=c.domain().unwrap_or("").trim_start_matches('.');
                 d=="quark.cn"||d.ends_with(".quark.cn")
@@ -508,7 +517,18 @@ async fn smoke_report(
 fn main() {
     let context=tauri::generate_context!();
     #[cfg(debug_assertions)]
-    let context={let mut context=context;if std::env::var_os("QK_SMOKE_REPORT").is_some(){for window in &mut context.config_mut().app.windows{window.visible=false;window.focus=false;}}context};
+    let context = {
+        let mut context = context;
+        if std::env::var_os("QK_SMOKE_REPORT").is_some()
+            && std::env::var_os("QK_SMOKE_DESKTOP").is_none()
+        {
+            for window in &mut context.config_mut().app.windows {
+                window.visible = false;
+                window.focus = false;
+            }
+        }
+        context
+    };
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![qk_call, smoke_report])
         .setup(|app| {
@@ -622,8 +642,13 @@ fn main() {
                 let w = app.get_webview_window("main").unwrap();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(3)).await;
-                    let source=std::env::var("QK_SMOKE_SOURCE").unwrap_or_default();
-                    let _ = w.eval(format!("window.__qkSmokeRoot={};\n{}",json!(source),include_str!("smoke.js")));
+                    let source = std::env::var("QK_SMOKE_SOURCE").unwrap_or_default();
+                    let desktop = std::env::var_os("QK_SMOKE_DESKTOP").is_some();
+                    let _ = w.eval(format!(
+                        "window.__qkSmokeRoot={}; window.__qkSmokeDesktop={desktop};\n{}",
+                        json!(source),
+                        include_str!("smoke.js")
+                    ));
                 });
             }
             Ok(())
