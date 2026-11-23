@@ -5,10 +5,10 @@
 # 夸克网盘极简版 · Quark Drive Lite
 
 **轻巧、纯粹、高速的开源夸克网盘桌面客户端**  
-基于 **Tauri 2 + Rust** 原生内核打造 · 安装包仅约 **4–5 MB** · 零广告 · 零后台常驻 · 隐私优先
+基于 **Tauri 2 + Rust** 原生内核打造 · 使用原生 WebView · 零广告 · 零后台常驻 · 隐私优先
 
 [![Release](https://img.shields.io/github/v/release/xiaodianshiuwu/quark-drive-lite?style=flat-square&color=2F66F6&label=正式版)](https://github.com/xiaodianshiuwu/quark-drive-lite/releases/latest)
-[![Platform](https://img.shields.io/badge/平台-macOS%20Apple%20Silicon%20%7C%20Windows%20x64-0ea5e9?style=flat-square)](https://github.com/xiaodianshiuwu/quark-drive-lite/releases/latest)
+[![Platform](https://img.shields.io/badge/平台-macOS%20Apple%20Silicon%20%2F%20Intel%20%7C%20Windows%20x64%20%7C%20Linux%20x64-0ea5e9?style=flat-square)](https://github.com/xiaodianshiuwu/quark-drive-lite/releases/latest)
 [![Stack](https://img.shields.io/badge/架构-Tauri%202%20%2B%20Rust-f97316?style=flat-square)](#核心架构与隐私承诺)
 [![Privacy](https://img.shields.io/badge/遥测-默认完全关闭（零外传）-10b981?style=flat-square)](#核心架构与隐私承诺)
 [![License](https://img.shields.io/badge/License-MIT-64748b?style=flat-square)](LICENSE)
@@ -31,7 +31,7 @@
 
 | 维度 | 夸克网盘极简版 v1.0.0 |
 |---|---|
-| **体积与性能** | **Tauri 2 + Rust 原生内核**，安装包仅 **~3.8–5.3 MB**，启动秒开、低内存占用、无多余后台驻留 |
+| **体积与性能** | **Tauri 2 + Rust 原生内核**，使用原生 WebView，启动快、低内存占用、无多余后台驻留 |
 | **高效浏览体验** | 深层目录面包屑（`···` 一键直达上级 + 滚轮/箭头滚动）、**文件夹真实大小自动回填**、分类快筛、列表/网格切换、大目录虚拟滚动 |
 | **自研高速传输** | Rust 事件驱动多线程分片下载与并发分片上传、断点续传、SHA-1/MD5 校验、**支持每文件自定义保存位置**、并发数不设硬上限 |
 | **五大极简云工具** | **压缩包云解压与在线浏览**（目录钻取 / 密码解锁 / 勾选解压 / 同名覆盖）、**增强文件详情 & 历史版本恢复**、**空间占用分类明细**、**轻量回收站** |
@@ -94,8 +94,13 @@
 | **Windows 10 / 11 (x64)** | `QuarkDriveLite-1.0.0-Windows-x64-setup.exe` | 标准安装版（支持简中/英文、当前用户免管理员安装、干净卸载零残留） |
 | **Windows 10 / 11 (x64)** | `QuarkDriveLite-1.0.0-Windows-x64-portable.zip` | 绿色便携版（解压即用，支持中文与含空格路径，无需安装） |
 | **macOS Apple Silicon (M1–M4)** | `QuarkDriveLite-1.0.0-macOS-arm64.zip` | 解压后将 `夸克网盘极简版.app` 拖入「应用程序」即可 |
+| **macOS Intel (x64)** | `QuarkDriveLite-1.0.0-macOS-x64.zip` | 解压后将 `夸克网盘极简版.app` 拖入「应用程序」即可 |
+| **Linux x64（Ubuntu / Debian 系）** | `QuarkDriveLite-1.0.0-Linux-x64.deb` | 运行 `sudo apt install ./QuarkDriveLite-1.0.0-Linux-x64.deb`，再从应用菜单打开 Quark Drive Lite |
+| **Linux x64（便携版）** | `QuarkDriveLite-1.0.0-Linux-x64.AppImage` | 运行 `chmod +x QuarkDriveLite-1.0.0-Linux-x64.AppImage`，再双击或用终端启动 |
 
-> 💡 **提示**：所有发布包均附带 `SHA256SUMS.txt` 校验文件；若 macOS 首次打开提示「无法验证开发者」，可在终端执行 `xattr -dr com.apple.quarantine "/Applications/夸克网盘极简版.app"` 后打开。
+Linux 和 macOS Intel 安装包从 GitHub Releases 下载。Linux 的系统要求以及 AppImage 的运行方式见[平台支持](docs/PLATFORM_SUPPORT.md)。
+
+> 💡 **提示**：Linux 和 macOS Intel 包使用 `SHA256SUMS-Additional.txt` 校验，首发包使用 `SHA256SUMS.txt`；若 macOS 首次打开提示「无法验证开发者」，可在终端执行 `xattr -dr com.apple.quarantine "/Applications/夸克网盘极简版.app"` 后打开。
 
 ### 2. 三步开始使用
 
@@ -134,7 +139,7 @@
 - **独立资料目录**：
   - macOS：`~/Library/Application Support/cn.quarkdrive.lite.tauri`
   - Windows：`%APPDATA%\cn.quarkdrive.lite.tauri`
-  - Linux：`$XDG_DATA_HOME/cn.quarkdrive.lite.tauri`
+  - Linux：`$XDG_DATA_HOME/cn.quarkdrive.lite.tauri`（默认 `~/.local/share/cn.quarkdrive.lite.tauri`）
 
 ---
 

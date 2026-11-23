@@ -17,7 +17,7 @@ npm run build
 
 需要 Node.js 24、Rust stable 和平台原生 Tauri 构建依赖。package-lock.json 与 Cargo.lock 均需保留。npm 脚本按副本路径隔离构建缓存，CARGO_TARGET_DIR 可覆盖。
 
-macOS 默认构建 .app；其他平台按 Tauri 的平台打包目标构建，尚未在本轮实机验证。源码运行与打包产物都使用系统 WebView，不包含 Node.js/Electron。
+macOS 默认构建 `.app`，Linux 默认构建 `.deb` 与 `.AppImage`，Windows 生成 NSIS 安装包。macOS Intel 正式包在 x64 runner 上原生构建。源码运行与打包产物都使用系统 WebView，不包含 Node.js/Electron。
 
 ## 模块
 
@@ -33,6 +33,6 @@ core/transfer 不依赖 Tauri。登录窗口的远端页面没有本地系统命
 
 ## 验证边界
 
-npm test 使用受控 Chrome fixture；verify:native 实际启动 WKWebView 并走 Rust IPC。二者均不代表真实云端传输已通过。真实账号驱动 cloud_acceptance 只操作本轮新建UUID目录，未重新获用户指令不得追加传输或性能测试。
+npm test 使用受控 Chrome fixture；verify:native 使用系统 WebView 并走 Rust IPC。在没有桌面会话的 Linux 环境，可运行 `dbus-run-session -- xvfb-run -a npm run verify:native`。二者均不代表真实云端传输已通过。真实账号驱动 cloud_acceptance 只操作本轮新建UUID目录，未重新获用户指令不得追加传输或性能测试。
 
 用户资料采用本机随机密钥加密，不调用系统钥匙串或要求系统密码；同目录密钥不能防御拥有相同文件权限的进程。备份需同时保管密文与密钥。

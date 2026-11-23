@@ -26,6 +26,7 @@
 - **AI 实验室（Beta）默认关闭**：内置对话与 Agent/MCP 网关默认隐藏不启动，需用户在设置页手动开启。
 
 ### ✅ 跨平台质量验收
+- 同一 v1.0.0 补充 Linux x64 的 DEB / AppImage 和 macOS Intel x64 的应用 ZIP。Linux 的更新包匹配当前平台，不再推荐 Windows 便携包。
 - 修复 Windows 便携版 ZIP 中文文件名 UTF-8 标志位（`0x0800`）兼容性，PowerShell `Expand-Archive` 与资源管理器完美解压中文及含空格路径。
 - 修复 `awaitTask` 延迟刷新竞态与 `renderInspector` 异步信息回填竞态。
 - 通过 macOS arm64 与 Windows 11 x64 实机全量测试（原生 Rust 全工作区单测 155/155、无头 Chrome DOM 66/66、WebKit & Edge WebView2 29/29 冒烟、NSIS 安装/卸载零残留）。

@@ -30,6 +30,8 @@
 
 macOS 为本次实际开发与运行平台。Windows 10/11 x64 是主要备份目标；Windows 管道、长路径、保留名、junction、大小写目录及安装产物须在 Windows 验收，不能由 macOS 测试替代。具体结果以独立审计报告为准。
 
+v1.0.0 在 GitHub 发布页同时提供 Linux x64 的 DEB、AppImage 和 macOS Intel x64 的应用 ZIP。新增包在各自架构的原生桌面环境验收，安装说明和验证范围见[平台支持](PLATFORM_SUPPORT.md)。
+
 ## 非目标
 
 自动双向同步、永久清空回收站、官方客户端会员/推广功能、自动重装。外部 MCP 客户端使用 Node.js 运行随应用内置的适配脚本，桌面应用本身不依赖 Node 运行时。
