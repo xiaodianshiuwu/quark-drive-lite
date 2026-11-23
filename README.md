@@ -92,15 +92,15 @@
 | 平台 | 推荐安装包 | 说明 |
 |---|---|---|
 | **Windows 10 / 11 (x64)** | `QuarkDriveLite-1.0.0-Windows-x64-setup.exe` | 标准安装版（支持简中/英文、当前用户免管理员安装、干净卸载零残留） |
-| **Windows 10 / 11 (x64)** | `QuarkDriveLite-1.0.0-Windows-x64-portable.zip` | 绿色便携版（解压即用，支持中文与含空格路径，无需安装） |
-| **macOS Apple Silicon (M1–M4)** | `QuarkDriveLite-1.0.0-macOS-arm64.zip` | 解压后将 `夸克网盘极简版.app` 拖入「应用程序」即可 |
-| **macOS Intel (x64)** | `QuarkDriveLite-1.0.0-macOS-x64.zip` | 解压后将 `夸克网盘极简版.app` 拖入「应用程序」即可 |
+| **Windows 10 / 11 (x64)** | `QuarkDriveLite-1.0.0-Windows-x64-portable.zip` | 解压后运行 `QuarkDriveLite.exe` |
+| **macOS Apple Silicon (arm64)** | `QuarkDriveLite-1.0.0-macOS-arm64.zip` | M1、M2、M3、M4、M5、M6 等 Apple Silicon Mac。解压后将 `QuarkDriveLite.app` 拖入「应用程序」 |
+| **macOS Intel (x64)** | `QuarkDriveLite-1.0.0-macOS-x64.zip` | 解压后将 `QuarkDriveLite.app` 拖入「应用程序」 |
 | **Linux x64（Ubuntu / Debian 系）** | `QuarkDriveLite-1.0.0-Linux-x64.deb` | 运行 `sudo apt install ./QuarkDriveLite-1.0.0-Linux-x64.deb`，再从应用菜单打开 Quark Drive Lite |
 | **Linux x64（便携版）** | `QuarkDriveLite-1.0.0-Linux-x64.AppImage` | 运行 `chmod +x QuarkDriveLite-1.0.0-Linux-x64.AppImage`，再双击或用终端启动 |
 
 Linux 和 macOS Intel 安装包从 GitHub Releases 下载。Linux 的系统要求以及 AppImage 的运行方式见[平台支持](docs/PLATFORM_SUPPORT.md)。
 
-> 💡 **提示**：Linux 和 macOS Intel 包使用 `SHA256SUMS-Additional.txt` 校验，首发包使用 `SHA256SUMS.txt`；若 macOS 首次打开提示「无法验证开发者」，可在终端执行 `xattr -dr com.apple.quarantine "/Applications/夸克网盘极简版.app"` 后打开。
+> 💡 **提示**：所有下载包使用 `SHA256SUMS.txt` 校验。若 macOS 首次打开提示「无法验证开发者」，可在终端执行 `xattr -dr com.apple.quarantine "/Applications/QuarkDriveLite.app"` 后打开。
 
 ### 2. 三步开始使用
 

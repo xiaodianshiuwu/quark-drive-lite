@@ -142,12 +142,10 @@ jobs:
         run: |
           npm run build -- --bundles app -- --locked
           mkdir -p macos-intel-packages
-          app="夸克网盘极简版.app"
+          app="QuarkDriveLite.app"
+          source_app=$(node -p "require('./src-tauri/tauri.conf.json').productName + '.app'")
           version=$(node -p "require('./package.json').version")
           archive="$PWD/macos-intel-packages/QuarkDriveLite-$version-macOS-x64.zip"
-          ditto -c -k --sequesterRsrc --keepParent "target/release/bundle/macos/$app" "$archive"
-          unzip -t "$archive"
-
           smoke_dir=$(mktemp -d)
           app_pid=
           cleanup() {
@@ -158,6 +156,12 @@ jobs:
             rm -rf "$smoke_dir"
           }
           trap cleanup EXIT
+          mkdir -p "$smoke_dir/staging"
+          staged_app="$smoke_dir/staging/$app"
+          ditto --norsrc --noextattr --noqtn "target/release/bundle/macos/$source_app" "$staged_app"
+          codesign --verify --deep --strict "$staged_app"
+          ditto -c -k --norsrc --noextattr --keepParent "$staged_app" "$archive"
+          unzip -t "$archive"
           install_dir="$smoke_dir/安装 测试"
           ditto -x -k "$archive" "$install_dir"
           installed_app="$install_dir/$app"

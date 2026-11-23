@@ -4,11 +4,13 @@
 
 | 平台 | 产品目标 | 本轮证据 |
 |---|---|---|
-| macOS Apple Silicon | 原生桌面、系统 WebView、应用包 | 以本轮独立审计报告为准：自动化、隐藏原生 WebView 与受控云端测试分别记录 |
+| macOS Apple Silicon (arm64) | 原生桌面、系统 WebView、应用包 | 以本轮独立审计报告为准：自动化、隐藏原生 WebView 与受控云端测试分别记录 |
 | Windows 10/11 x64 | 原生桌面、WebView2、高速并发传输、本机 Agent 命名管道 | 已在真实 Windows 11 家庭版 24H2（Build 26100，x64，WebView2 `157.0.4341.60`）完成实机验证：154/154 原生 Rust 测试（含 Windows `seek_write` 并发传输、`\\.\pipe\...` 命名管道网关与跨语言 Hub E2E）、65/65 Chrome/Node 前端测试、27/27 Edge WebView2 原生冒烟、SHA256 核验、中文空格路径便携版启动/单实例锁/真机截图/零残留退出，以及 NSIS 当前用户静默安装/启动/卸载清理；真机真实账号扫码登录与云端大文件传输入库见 [WINDOWS_QA_CHECKLIST.md](WINDOWS_QA_CHECKLIST.md) |
 | Linux x64 | DEB、AppImage、WebKitGTK 4.1 与 Unix socket | Ubuntu 22.04 x64 原生构建。Rust 159 项、前端 66 项。X11 原生桌面 36 项检查通过，覆盖文件与目录选择、确认框、Thunar 文件选中、原生拖拽及关闭登录窗口。Weston 无头 Wayland 的 WebKitGTK 冒烟 30 项通过，另在隔离 Weston 桌面上实测选目录并写入下载设置。 |
 | macOS Intel x64 | 应用 ZIP、WKWebView 与 Unix socket | macOS 15 Intel 原生构建。Rust 159 项、前端 66 项、WKWebView 冒烟 29 项全部通过。ZIP 解包、x86_64 架构、本地签名和启动通过。 |
 | Windows ARM64 | | 未验证 |
+
+M1、M2、M3、M4、M5、M6 等 Apple Silicon Mac 使用同一个 arm64 安装包。 英文文件名的 ZIP 已在 M5 上验证解包、签名与启动。
 
 `src-tauri/tauri.conf.json` 配置的 macOS 最低版本为 11.0；这是一项构建配置，不代表已在该版本实测。现有 CI 配置见 `.github/workflows/p0-compatibility.yml`；配置文件存在不能证明当前代码的 CI 已运行。
 
