@@ -1,0 +1,6 @@
+# GitHub Linguist overrides so the repository language bar reflects the actual Tauri 2 + Rust app stack
+reference/** linguist-vendored
+tools/*.py linguist-documentation
+docs/** linguist-documentation
+Cargo.lock linguist-generated
+package-lock.json linguist-generated
