@@ -157,7 +157,10 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
   async function until(expression, label) {
     const expires = Date.now() + 5000;
     while (!(await evaluate(expression))) {
-      if (Date.now() >= expires) throw new Error('Renderer fixture timed out: ' + label);
+      if (Date.now() >= expires) {
+        const diag = await evaluate('(() => { const lw = document.getElementById("listwrap"); const row = document.querySelector(".row"); return { view: window.QKUI?.state?.view, items: window.QKUI?.state?.items?.length, scrollTop: lw?.scrollTop, scrollHeight: lw?.scrollHeight, clientHeight: lw?.clientHeight, firstFid: row?.dataset?.fid, rows: document.querySelectorAll(".row").length }; })()').catch(() => null);
+        throw new Error('Renderer fixture timed out: ' + label + (diag ? ' ' + JSON.stringify(diag) : ''));
+      }
       await new Promise(r => setTimeout(r, 25));
     }
   }
@@ -166,6 +169,7 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await evaluate('document.querySelector(' + JSON.stringify(selector) + ').click()');
   }
   await cdp('Page.enable');
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
   await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `
     window.__fixtureCalls = [];
     window.__fixtureListeners = {};
@@ -473,8 +477,8 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
   assert.ok(await evaluate('QKUI.getRowCount() <= 40 && document.querySelectorAll(".row").length <= 40'));
   await evaluate('document.querySelector(".row input").click()');
   assert.ok(await evaluate('QKUI.state.selected.has("1")'));
-  await evaluate('var lw=document.getElementById("listwrap");lw.scrollTop=46*2500;lw.dispatchEvent(new Event("scroll"))');
-  await until('Number(document.querySelector(".row").dataset.fid)>2400','virtual list middle rendered');
+  await evaluate('(() => { const lw = document.getElementById("listwrap"); void lw.scrollHeight; lw.scrollTop = 46 * 2500; lw.dispatchEvent(new Event("scroll")); })()');
+  await until('(() => { const lw = document.getElementById("listwrap"); if (lw && lw.scrollTop < 46 * 2450) { lw.scrollTop = 46 * 2500; lw.dispatchEvent(new Event("scroll")); } const r = document.querySelector(".row"); return !!(r && Number(r.dataset.fid) > 2400); })()', 'virtual list middle rendered');
   assert.ok(await evaluate('Number(document.querySelector(".row").dataset.fid)>2400 && QKUI.getRowCount()<=40'));
   await evaluate('var lw=document.getElementById("listwrap");lw.scrollTop=46*5100;lw.dispatchEvent(new Event("scroll"))');
   await until('!!document.querySelector(".row[data-fid=\\"5100\\"]")','virtual list final row rendered');
