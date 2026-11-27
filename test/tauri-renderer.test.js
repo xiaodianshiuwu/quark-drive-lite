@@ -225,7 +225,41 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
           }
           case 'hub.submitFeedback': {
             if (!fixture.settings.serverOptIn) throw {code:'OPT_IN_REQUIRED',message:'未开启连接'};
-            return {ok:true,id:42,encrypted:true,includedLogs:!!p.includeLogs};
+            const nextId = fixture.feedbackItems ? (fixture.feedbackItems.length + 42) : 42;
+            const now = Date.now();
+            const entry = {
+              id: nextId,
+              createdAt: now,
+              updatedAt: now,
+              status: 'open',
+              appVersion: '1.0.0',
+              category: p.category || 'other',
+              message: String(p.message || ''),
+              adminNote: null,
+              hasAdminReply: false,
+              lastSender: 'user',
+              replyCount: 0,
+              messages: []
+            };
+            fixture.feedbackItems = fixture.feedbackItems || [];
+            fixture.feedbackItems.unshift(entry);
+            return {ok:true,id:nextId,status:'open',createdAt:now,encrypted:true,includedLogs:!!p.includeLogs};
+          }
+          case 'hub.listFeedback': {
+            if (!fixture.settings.serverOptIn) throw {code:'OPT_IN_REQUIRED',message:'未开启连接'};
+            return {ok:true,items:snapshot(fixture.feedbackItems || [])};
+          }
+          case 'hub.replyFeedback': {
+            if (!fixture.settings.serverOptIn) throw {code:'OPT_IN_REQUIRED',message:'未开启连接'};
+            const items = fixture.feedbackItems || [];
+            const target = items.find(x => x.id === Number(p.feedbackId));
+            if (!target) throw {code:'NOT_FOUND',message:'未找到该反馈'};
+            const reply = {id: Date.now(), sender: 'user', message: String(p.message || '').trim(), createdAt: Date.now()};
+            target.messages.push(reply);
+            target.replyCount = target.messages.length;
+            target.lastSender = 'user';
+            target.updatedAt = reply.createdAt;
+            return {ok:true,reply,updatedAt:reply.createdAt};
           }
           case 'hub.logPreview': return {logs:[{ts:1763817600000,level:'info',category:'lifecycle',code:'APP_START',msg:'app started (darwin/aarch64)'}]};
           case 'hub.recordEvent': return {ok:true};
@@ -326,6 +360,17 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
           case 'fs.list': {
             if (fixture.holdPage) return new Promise(resolve => fixture.releasePage=resolve);
             if (!fixture.account.loggedIn) throw {code:'NEED_LOGIN',message:'请先登录'};
+            if (fixture.folderOpsMode) {
+              const tree = fixture.folderTree || {};
+              const rawList = tree[p.pdirFid] || [];
+              const deleted = fixture.deletedFids || new Set();
+              const filtered = rawList.filter(it => !deleted.has(it.fid));
+              const size = Number(p.size) || 100;
+              const page = Number(p.page) || 1;
+              const start = (page - 1) * size;
+              const slice = filtered.slice(start, start + size);
+              return {list:slice,total:filtered.length,page,size,hasMore:start+size<filtered.length};
+            }
             if (fixture.cloudToolsMode) {
               const list = [
                 {fid:'folder-A',name:'一级目录',dir:true,size:0,updatedAt:1763817600000,pdirFid:'0'},
@@ -355,7 +400,21 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
             return {list:Array.from({length:Math.min(p.size,5100-start)},(_,i)=>item(start+i+1)),total:5100,page:p.page,size:p.size,hasMore:start+p.size<5100};
           }
           case 'fs.search': return {list:fixture.searchFolder?[{fid:'folder-deep',name:'二级目录',dir:true,pdirFid:'folder-A'}]:[item(7000)],total:1,page:1,size:p.size,hasMore:false};
-          case 'fs.mkdir': case 'fs.move': case 'fs.copy': case 'fs.remove': return {done:true};
+          case 'fs.mkdir': case 'fs.move': case 'fs.copy': return {done:true};
+          case 'fs.remove': {
+            if (fixture.asyncDeleteMode) {
+              fixture.deletedFids = fixture.deletedFids || new Set();
+              (p.fids || []).forEach(id => fixture.deletedFids.add(String(id)));
+              fixture.asyncTaskPolls = 0;
+              return {done:false, taskId:'del-task-1'};
+            }
+            return {done:true};
+          }
+          case 'fs.taskStatus': {
+            fixture.asyncTaskPolls = (fixture.asyncTaskPolls || 0) + 1;
+            const done = fixture.asyncTaskPolls >= 1;
+            return (p.taskIds || []).map(id => ({taskId:id, status: done ? 2 : 1, done}));
+          }
           case 'fs.rename': fixture.names[p.fid]=p.name;return {done:true};
           case 'transfer.list': {
             if (fixture.holdTransfers) return new Promise(resolve => fixture.releaseTransfers=resolve);
@@ -414,13 +473,13 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
   assert.ok(await evaluate('QKUI.getRowCount() <= 40 && document.querySelectorAll(".row").length <= 40'));
   await evaluate('document.querySelector(".row input").click()');
   assert.ok(await evaluate('QKUI.state.selected.has("1")'));
-  await evaluate('document.getElementById("listwrap").scrollTop=46*2500');
+  await evaluate('var lw=document.getElementById("listwrap");lw.scrollTop=46*2500;lw.dispatchEvent(new Event("scroll"))');
   await until('Number(document.querySelector(".row").dataset.fid)>2400','virtual list middle rendered');
   assert.ok(await evaluate('Number(document.querySelector(".row").dataset.fid)>2400 && QKUI.getRowCount()<=40'));
-  await evaluate('document.getElementById("listwrap").scrollTop=46*5100');
+  await evaluate('var lw=document.getElementById("listwrap");lw.scrollTop=46*5100;lw.dispatchEvent(new Event("scroll"))');
   await until('!!document.querySelector(".row[data-fid=\\"5100\\"]")','virtual list final row rendered');
   assert.ok(await evaluate('QKUI.getRowCount()<=40'));
-  await evaluate('document.getElementById("listwrap").scrollTop=0');
+  await evaluate('var lw=document.getElementById("listwrap");lw.scrollTop=0;lw.dispatchEvent(new Event("scroll"))');
   await until('!!document.querySelector(".row[data-fid=\\"1\\"]")','virtual list first row restored');
   assert.ok(await evaluate('document.querySelector(".row[data-fid=\\"1\\"] input").checked'));
   await evaluate('document.getElementById("check-all").click()');
@@ -923,6 +982,118 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await until('!document.querySelector(".overlay:not(.overlay-out) .dlg-tutorial")', 'completed tutorial closes cleanly');
 
     await evaluate('__fixture.cloudToolsMode=false;QKUI.setInspectorOpen(false);QKUI.setView("files")');
+  });
+
+  await t.test('folder delete auto-refreshes, recursive folder download preserves subdirs, and feedback history supports two-way replies', async () => {
+    // 1. 文件夹异步删除：提交后立即乐观移除 + 异步任务完成后自动刷新目录
+    await evaluate(`
+      __fixture.customSaveDir = '';
+      __fixture.settings.askDownloadDir = false;
+      QKUI.state.settings.askDownloadDir = false;
+      QKUI.state.settings.downloadDir = '/fixture';
+      __fixture.folderOpsMode = true;
+      __fixture.asyncDeleteMode = true;
+      __fixture.deletedFids = new Set();
+      __fixture.folderTree = {
+        '0': [
+          {fid:'dir-del', name:'待删文件夹', dir:true, size:0, updatedAt:1763817600000, pdirFid:'0'},
+          {fid:'dir-pack', name:'项目资料', dir:true, size:0, updatedAt:1763817600000, pdirFid:'0'},
+          {fid:'dir-empty', name:'空目录', dir:true, size:0, updatedAt:1763817600000, pdirFid:'0'},
+          {fid:'root-doc', name:'说明.md', dir:false, size:512, updatedAt:1763817600000, ext:'md', pdirFid:'0'}
+        ],
+        'dir-pack': [
+          {fid:'sub-a', name:'子目录A', dir:true, size:0, updatedAt:1763817600000, pdirFid:'dir-pack'},
+          {fid:'pack-f1', name:'首页.pdf', dir:false, size:2048, updatedAt:1763817600000, ext:'pdf', pdirFid:'dir-pack'}
+        ],
+        'sub-a': [
+          {fid:'pack-f2', name:'报表.xlsx', dir:false, size:4096, updatedAt:1763817600000, ext:'xlsx', pdirFid:'sub-a'}
+        ],
+        'dir-empty': []
+      };
+      QKUI.setView('files');
+      QKUI.navigate('0');
+    `);
+    await until('QKUI.state.items.length===4 && !QKUI.state.loading', 'folderOps root loaded');
+
+    // 文件夹行上的下载按钮可见且文案为「下载文件夹」
+    assert.equal(await evaluate('document.querySelector(".row[data-fid=\\"dir-pack\\"] .op[data-op=\\"download\\"]").hidden'), false, 'folder row shows download op button');
+    assert.equal(await evaluate('document.querySelector(".row[data-fid=\\"dir-pack\\"] .op[data-op=\\"download\\"]").title'), '下载文件夹');
+
+    // 删除文件夹（异步 taskId）：应立即从列表移除，且轮询完成后触发目录刷新
+    const listBeforeDel = await evaluate('__fixtureCalls.filter(c=>c.method==="fs.list").length');
+    await click('.row[data-fid="dir-del"] .op[data-op="remove"]');
+    await until('!!document.querySelector(".overlay:not(.overlay-out) .dlg-confirm")', 'confirm delete folder');
+    await click('.overlay:not(.overlay-out) .dlg-foot .btn:last-child');
+    await until('!document.querySelector(".row[data-fid=\\"dir-del\\"]")', 'deleted folder immediately removed from DOM');
+    await until('__fixtureCalls.some(c=>c.method==="fs.taskStatus") && __fixtureCalls.filter(c=>c.method==="fs.list").length>' + listBeforeDel, 'async task polled and directory auto-refreshed');
+    assert.equal(await evaluate('QKUI.state.items.some(i=>i.fid==="dir-del")'), false, 'deleted folder stays gone after refresh');
+
+    // 2. 递归下载单个文件夹：自动扫描子目录并传 relDirs 保留层级结构
+    const dlBefore = await evaluate('__fixtureCalls.filter(c=>c.method==="transfer.download").length');
+    await click('.row[data-fid="dir-pack"] .op[data-op="download"]');
+    await until('__fixtureCalls.filter(c=>c.method==="transfer.download").length>' + dlBefore, 'recursive folder download queued');
+    const folderDlParams = await evaluate('__fixtureCalls.filter(c=>c.method==="transfer.download").at(-1).params');
+    assert.deepEqual(folderDlParams.fids, ['pack-f1', 'pack-f2']);
+    assert.deepEqual(folderDlParams.names, ['首页.pdf', '报表.xlsx']);
+    assert.deepEqual(folderDlParams.relDirs, [['项目资料'], ['项目资料', '子目录A']]);
+    assert.equal(folderDlParams.localDir, '/fixture');
+
+    // 混合多选（文件夹 + 根目录文件）通过批量栏下载
+    const dlBeforeMix = await evaluate('__fixtureCalls.filter(c=>c.method==="transfer.download").length');
+    await click('.row[data-fid="dir-pack"] input[type="checkbox"]');
+    await click('.row[data-fid="root-doc"] input[type="checkbox"]');
+    await click('#bulkbar [data-bulk="download"]');
+    await until('__fixtureCalls.filter(c=>c.method==="transfer.download").length>' + dlBeforeMix, 'mixed folder+file bulk download queued');
+    const mixParams = await evaluate('__fixtureCalls.filter(c=>c.method==="transfer.download").at(-1).params');
+    assert.deepEqual(mixParams.fids, ['root-doc', 'pack-f1', 'pack-f2']);
+    assert.deepEqual(mixParams.relDirs, [[], ['项目资料'], ['项目资料', '子目录A']]);
+
+    // 空目录下载不抛异常、不创建空任务，弹出友好提示
+    const dlBeforeEmpty = await evaluate('__fixtureCalls.filter(c=>c.method==="transfer.download").length');
+    await click('.row[data-fid="dir-empty"] .op[data-op="download"]');
+    await until('document.getElementById("toasts").textContent.includes("没有可下载的文件")', 'empty folder friendly toast');
+    assert.equal(await evaluate('__fixtureCalls.filter(c=>c.method==="transfer.download").length'), dlBeforeEmpty);
+
+    // 3. 我的反馈历史与双向回复 UI
+    await evaluate(`
+      __fixture.settings.serverOptIn = true;
+      QKUI.state.settings.serverOptIn = true;
+      __fixture.feedbackItems = [{
+        id: 101,
+        createdAt: 1763817600000,
+        updatedAt: 1763817660000,
+        status: 'in_progress',
+        appVersion: '1.0.0',
+        category: 'bug',
+        message: '删除文件夹未自动刷新',
+        adminNote: '已定位，正在修复中',
+        hasAdminReply: true,
+        lastSender: 'admin',
+        replyCount: 1,
+        messages: [{ id: 1, sender: 'admin', message: '已定位，正在修复中', createdAt: 1763817660000 }]
+      }];
+      QKUI.setView('feedback');
+    `);
+    await until('document.querySelectorAll(".fb-thread-card").length===1', 'feedback history rendered');
+    const histText = await evaluate('document.getElementById("fb-history-list").textContent');
+    assert.ok(histText.includes('处理中') && histText.includes('作者已回复') && histText.includes('已定位，正在修复中'), 'shows status pill and admin reply');
+
+    // 用户追加新消息
+    await evaluate('document.querySelector(".fb-thread-card[data-fb-id=\\"101\\"] .fb-reply-input").value="感谢回复，期待新版！"');
+    await click('.fb-thread-card[data-fb-id="101"] .fb-reply-row button');
+    await until('document.querySelectorAll(".fb-thread-card[data-fb-id=\\"101\\"] .fb-chat-msg").length===2', 'user follow-up appended to thread');
+    assert.ok((await evaluate('document.getElementById("fb-history-list").textContent')).includes('感谢回复，期待新版！'));
+
+    // 4. 下载更新包完成后出现「立即打开安装包」并调用 dialog.openPath
+    await evaluate('QKUI.setView("settings")');
+    await click('#btn-hub-check');
+    await until('!document.getElementById("btn-hub-download").hidden', 'update download button shown');
+    await click('#btn-hub-download');
+    await until('!document.getElementById("btn-hub-open-pkg").hidden', 'open package button shown after verified download');
+    await click('#btn-hub-open-pkg');
+    await until('__fixtureCalls.some(c=>c.method==="dialog.openPath" && c.params.path==="/fixture/QuarkDriveLite-1.0.1.zip")', 'open package called dialog.openPath');
+
+    await evaluate('__fixture.folderOpsMode=false;__fixture.asyncDeleteMode=false;QKUI.setView("files")');
   });
 
 });

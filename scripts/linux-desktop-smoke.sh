@@ -63,9 +63,21 @@ xdotool mousemove --window "$confirm" "$((WIDTH - 55))" "$((HEIGHT - 24))" click
 
 files=$(find_window '[Tt]hunar' --class)
 xdotool windowactivate --sync "$files"
+sleep 0.5
 # ShowItems must select the test file. F2 opens the rename dialog only on a selection.
-xdotool key F2
-rename=$(find_window '^Rename')
+xdotool key --window "$files" F2
+if ! rename=$(timeout 4 bash -c '
+  while true; do
+    id=$(wmctrl -lx | awk -v p="^Rename" "$0 ~ p {print \$1; exit}")
+    if [[ -n "$id" ]]; then echo "$id"; exit 0; fi
+    sleep 0.1
+  done
+' 2>/dev/null); then
+  xdotool windowactivate --sync "$files"
+  sleep 0.4
+  xdotool key F2
+  rename=$(find_window '^Rename')
+fi
 [[ $(xdotool getwindowname "$rename") == *'upload fixture.txt'* ]]
 xdotool windowactivate --sync "$rename" key Escape
 # Use another GTK process as the drag source so the test sends a real Xdnd offer.

@@ -94,27 +94,55 @@ fn task_id(value: &Value) -> String {
     }
 }
 fn accepted(env: &Value) -> Value {
-    let id = record(env)
+    let rec = record(env);
+    let id = rec
         .map(task_id)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| task_id(env));
+    let already_done = rec.is_some_and(|r| {
+        let st_num = r["status"]
+            .as_i64()
+            .or_else(|| r["status"].as_u64().and_then(|u| i64::try_from(u).ok()));
+        let st_str = r["status"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        !truth(&r["failed"])
+            && st_num != Some(3)
+            && r["success"] != false
+            && (truth(&r["finish"])
+                || truth(&r["done"])
+                || st_num == Some(2)
+                || st_str == "finish")
+    });
     if id.is_empty() {
         json!({"done":true})
+    } else if already_done {
+        json!({"done":true,"taskId":id})
     } else {
         json!({"done":false,"taskId":id})
     }
 }
 fn task_entry(value: &Value) -> Result<Value> {
+    let status_num = value["status"]
+        .as_i64()
+        .or_else(|| value["status"].as_u64().and_then(|u| i64::try_from(u).ok()));
     let status = value["status"]
         .as_str()
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    let finished = truth(&value["finish"]) || truth(&value["done"]) || status == "finish";
-    // Finishing is not synonymous with succeeding. Explicit failure wins over
-    // completion flags, while undocumented numeric states remain unresolved.
+    // 官方 AsyncTaskStatus 枚举（7.5.0.827 实证）：0=todo, 1=running, 2=finish, 3=fail, 4=pause；
+    // 其余未知数值状态一律保持未完成（done=false），绝不冒充成功。
+    let finished = truth(&value["finish"])
+        || truth(&value["done"])
+        || status == "finish"
+        || status_num == Some(2);
+    // Explicit failure always wins over completion flags.
     if truth(&value["failed"])
-        || ["failed", "failure", "error", "cancelled", "canceled"].contains(&status.as_str())
+        || status_num == Some(3)
+        || ["fail", "failed", "failure", "error", "cancelled", "canceled"].contains(&status.as_str())
         || (finished && value["success"] == false)
     {
         return Err(Error::new("TASK_FAILED", "云端文件操作失败，请刷新后重试"));
@@ -573,25 +601,80 @@ impl Core {
         }
         Ok(page_result(&env, page, size))
     }
+    async fn query_single_task(&self, generation: u64, id: &str) -> Result<Option<Value>> {
+        let env = self
+            .get_in_session(
+                generation,
+                "/1/clouddrive/task",
+                &[("task_id", id.to_owned()), ("retry_index", "0".into())],
+            )
+            .await?;
+        let Some(rec) = record(&env) else {
+            return Ok(None);
+        };
+        let mut entry = task_entry(rec)?;
+        if entry["taskId"].as_str().unwrap_or("").is_empty() {
+            entry["taskId"] = json!(id);
+        }
+        Ok(Some(entry))
+    }
     async fn task_status(&self, generation: u64, params: &Value) -> Result<Value> {
+        let task_ids = ids(&params["taskIds"])?;
+        let explicit_op_type = !params["opType"].is_null();
+        // 夸克官方客户端对单个/少量异步任务（删除/移动/复制等）优先使用 GET /1/clouddrive/task?task_id=...
+        if !explicit_op_type && task_ids.len() <= 5 {
+            let mut out = Vec::with_capacity(task_ids.len());
+            let mut all_found = true;
+            for id in &task_ids {
+                match self.query_single_task(generation, id).await {
+                    Ok(Some(entry)) => out.push(entry),
+                    Ok(None) => {
+                        all_found = false;
+                        break;
+                    }
+                    Err(e) if e.code == "NEED_LOGIN" || e.code == "ABORTED" || e.code == "TASK_FAILED" => {
+                        return Err(e);
+                    }
+                    Err(_) => {
+                        all_found = false;
+                        break;
+                    }
+                }
+            }
+            if all_found && !out.is_empty() {
+                return Ok(Value::Array(out));
+            }
+        }
         let env = self
             .post_in_session(
                 generation,
                 "/1/clouddrive/task/status",
-                json!({"task_ids":ids(&params["taskIds"])? ,"op_type":number(&params["opType"],1)}),
+                json!({"task_ids":task_ids,"op_type":number(&params["opType"],1)}),
             )
             .await?;
         if let Some(a) = list(&env) {
-            Ok(Value::Array(
-                a.iter().map(task_entry).collect::<Result<Vec<_>>>()?,
-            ))
+            let parsed = a.iter().map(task_entry).collect::<Result<Vec<_>>>()?;
+            if !parsed.is_empty() {
+                return Ok(Value::Array(parsed));
+            }
         } else if let Some(v) =
             record(&env).filter(|r| r.get("task_id").is_some() || r.get("status").is_some())
         {
-            Ok(json!([task_entry(v)?]))
-        } else {
-            Ok(json!([]))
+            return Ok(json!([task_entry(v)?]));
         }
+        // 若批量接口返回空列表，再兜底逐个查询 GET /1/clouddrive/task
+        if task_ids.len() <= 5 {
+            let mut out = Vec::new();
+            for id in &task_ids {
+                if let Ok(Some(entry)) = self.query_single_task(generation, id).await {
+                    out.push(entry);
+                }
+            }
+            if !out.is_empty() {
+                return Ok(Value::Array(out));
+            }
+        }
+        Ok(json!([]))
     }
     pub(crate) async fn files_call(&self, method: &str, params: Value) -> Result<Value> {
         let generation = self.session_generation();
@@ -909,10 +992,24 @@ mod tests {
         assert_eq!(p["hasMore"], false);
     }
     #[test]
-    fn unknown_numeric_task_status_never_means_success() {
+    fn numeric_task_status_matches_verified_quark_enum_and_unknown_stays_pending() {
+        // 0=todo, 1=running, 4=pause, 99=unknown -> 均不得视作完成
+        for pending_status in [0, 1, 4, 99, -1] {
+            assert_eq!(
+                task_entry(&json!({"task_id":"t","status":pending_status})).unwrap()["done"],
+                false,
+                "status {pending_status} must stay pending"
+            );
+        }
+        // 2=finish (官方 AsyncTaskStatus 实证) -> done=true
         assert_eq!(
             task_entry(&json!({"task_id":"t","status":2})).unwrap()["done"],
-            false
+            true
+        );
+        // 3=fail -> TASK_FAILED
+        assert_eq!(
+            task_entry(&json!({"task_id":"t","status":3})).unwrap_err().code,
+            "TASK_FAILED"
         );
         assert_eq!(
             task_entry(&json!({"task_id":"t","status":"finish"})).unwrap()["done"],
@@ -922,6 +1019,10 @@ mod tests {
             accepted(&json!({"data":{"task_id":"t"}})),
             json!({"taskId":"t","done":false})
         );
+        assert_eq!(
+            accepted(&json!({"data":{"task_id":"t","finish":true}})),
+            json!({"taskId":"t","done":true})
+        );
     }
     #[test]
     fn explicit_task_failure_wins_over_finish_and_success_flags() {
@@ -929,11 +1030,13 @@ mod tests {
             json!({"task_id":"t","finish":true,"success":false}),
             json!({"task_id":"t","done":true,"status":"failed"}),
             json!({"task_id":"t","success":true,"failed":true}),
+            json!({"task_id":"t","status":2,"success":false}),
+            json!({"task_id":"t","status":3,"finish":true}),
         ] {
             assert_eq!(task_entry(&raw).unwrap_err().code, "TASK_FAILED");
         }
         assert_eq!(
-            task_entry(&json!({"task_id":"t","status":2,"success":false})).unwrap()["done"],
+            task_entry(&json!({"task_id":"t","status":99,"success":false})).unwrap()["done"],
             false
         );
         assert_eq!(

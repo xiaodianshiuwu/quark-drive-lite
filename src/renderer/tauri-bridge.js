@@ -120,7 +120,7 @@
   api.chat.send = function (text) { return call('chat.send', { text: String(text === undefined ? '' : text) }); };
   api.chat.onEvent = function (cb) { return listen('qk:chat-event', cb); };
   // 可选作者服务器（默认关闭，关闭时后端严格零外传）
-  ['config', 'setOptIn', 'checkUpdate', 'downloadUpdate', 'sendTelemetry', 'submitFeedback', 'logPreview', 'recordEvent'].forEach(function (name) {
+  ['config', 'setOptIn', 'checkUpdate', 'downloadUpdate', 'sendTelemetry', 'submitFeedback', 'listFeedback', 'replyFeedback', 'logPreview', 'recordEvent'].forEach(function (name) {
     api.hub[name] = method('hub.' + name);
   });
   api.hub.onUpdateProgress = function (cb) { return listen('qk:update-progress', cb); };

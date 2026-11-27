@@ -375,6 +375,8 @@
       downloadUpdate: expose('hub', 'downloadUpdate'),
       sendTelemetry: expose('hub', 'sendTelemetry', { silent: true, fallback: null }),
       submitFeedback: expose('hub', 'submitFeedback'),
+      listFeedback: expose('hub', 'listFeedback'),
+      replyFeedback: expose('hub', 'replyFeedback'),
       logPreview: expose('hub', 'logPreview', { silent: true, fallback: { logs: [] } }),
       recordEvent: expose('hub', 'recordEvent', { silent: true, fallback: null }),
       onUpdateProgress: function (cb) {
@@ -519,6 +521,8 @@
       downloadUpdate: expose('hub', 'downloadUpdate'),
       sendTelemetry: expose('hub', 'sendTelemetry', { silent: true, fallback: null }),
       submitFeedback: expose('hub', 'submitFeedback'),
+      listFeedback: expose('hub', 'listFeedback'),
+      replyFeedback: expose('hub', 'replyFeedback'),
       logPreview: expose('hub', 'logPreview', { silent: true, fallback: { logs: [] } }),
       recordEvent: expose('hub', 'recordEvent', { silent: true, fallback: null }),
       onUpdateProgress: function (cb) { return subscribe([['hub', 'onUpdateProgress']], cb); }
@@ -533,6 +537,7 @@
 
   function createMockBridge() {
     var now = Date.now();
+    var mockFeedbacks = [];
     var items = {};          // fid -> FileItem
     var kids = {};           // pdirFid -> [fid]
     var seq = 0;
@@ -1082,7 +1087,7 @@
             prompted: true,
             baseUrl: 'https://qdl.xiaodianshiuwu.space',
             region: '海外节点 · Tokyo (JP)',
-            currentVersion: '1.0.0',
+            currentVersion: '1.0.1',
             platform: 'preview',
             arch: 'mock',
             recommendedAssetKey: 'macos-arm64',
@@ -1108,7 +1113,39 @@
         sendTelemetry: function () { return Promise.resolve({ ok: true, encrypted: true }); },
         submitFeedback: function (p) {
           if (!settings.serverOptIn) return Promise.reject({ code: 'OPT_IN_REQUIRED', message: '请先开启连接作者服务器' });
-          return Promise.resolve({ ok: true, id: 1, encrypted: true, includedLogs: !!(p && p.includeLogs) });
+          var item = {
+            id: mockFeedbacks.length + 1,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            status: 'open',
+            appVersion: '1.0.0',
+            category: (p && p.category) || 'other',
+            message: String((p && p.message) || ''),
+            adminNote: null,
+            hasAdminReply: false,
+            lastSender: 'user',
+            replyCount: 0,
+            messages: []
+          };
+          mockFeedbacks.unshift(item);
+          return Promise.resolve({ ok: true, id: item.id, status: 'open', createdAt: item.createdAt, encrypted: true, includedLogs: !!(p && p.includeLogs) });
+        },
+        listFeedback: function () {
+          if (!settings.serverOptIn) return Promise.reject({ code: 'OPT_IN_REQUIRED', message: '请先开启连接作者服务器' });
+          return Promise.resolve({ ok: true, items: clone(mockFeedbacks) });
+        },
+        replyFeedback: function (p) {
+          if (!settings.serverOptIn) return Promise.reject({ code: 'OPT_IN_REQUIRED', message: '请先开启连接作者服务器' });
+          var id = Number(p && p.feedbackId);
+          var msg = String((p && p.message) || '').trim();
+          var target = mockFeedbacks.filter(function (x) { return x.id === id; })[0];
+          if (!target) return Promise.reject({ code: 'NOT_FOUND', message: '未找到该反馈记录' });
+          var reply = { id: Date.now(), sender: 'user', message: msg, createdAt: Date.now() };
+          target.messages.push(reply);
+          target.replyCount = target.messages.length;
+          target.lastSender = 'user';
+          target.updatedAt = reply.createdAt;
+          return Promise.resolve({ ok: true, reply: reply, updatedAt: reply.createdAt });
         },
         logPreview: function () {
           return Promise.resolve({ logs: [{ ts: Date.now(), level: 'info', category: 'lifecycle', code: 'APP_START', msg: 'app started (preview)' }] });

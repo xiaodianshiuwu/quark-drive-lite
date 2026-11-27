@@ -23,6 +23,7 @@
   var AUTO_REFRESH_MS = 60000;  // 文件列表每 60 秒后台静默刷新
   var QUOTA_REFRESH_MS = 90000; // 账号状态与剩余空间每 90 秒（1~2 分钟）后台同步一次
   var BULK_REFRESH_MS = 15000;  // 传输任务 >= 10 个时按 15 秒节流刷新
+  var HUB_POLL_MS = 15 * 60 * 1000; // 开启作者服务器后每 15 分钟静默检测更新与作者新回复
   var DEFAULT_SORT = 'file_type:asc,updated_at:desc';
 
   var STATUS_TEXT = {
@@ -79,7 +80,16 @@
       latest: null,
       downloadedPath: '',
       submittingFeedback: false,
-      telemetrySent: false
+      telemetrySent: false,
+      feedbackItems: [],
+      feedbackLoading: false,
+      feedbackLoaded: false,
+      feedbackError: '',
+      replyingId: null,
+      unreadReplies: 0,
+      lastUpdateCheckAt: 0,
+      dismissedUpdateVersion: '',
+      dismissedNotice: ''
     },
     transfers: [],
     transfersLoaded: false,
@@ -144,6 +154,7 @@
   var prevTaskStatus = new Map();  // id -> previous status (驱动下载/上传完成自动刷新)
   var autoRefreshTimer = null;
   var quotaRefreshTimer = null;
+  var hubPollTimer = null;
   var lastQuotaRefreshAt = 0;
   var quotaRefreshing = false;
   var quotaRefreshTicks = 0;
@@ -1930,6 +1941,25 @@
       clearTimeout(transferRefreshTimer);
       transferRefreshTimer = null;
     }
+    stopHubPollLoop();
+  }
+
+  function startHubPollLoop() {
+    stopHubPollLoop();
+    if (!hubBridgeReady() || !state.settings.serverOptIn) return;
+    hubPollTimer = setInterval(function () {
+      if (!state.settings.serverOptIn) { stopHubPollLoop(); return; }
+      if (typeof document !== 'undefined' && document.hidden) return;
+      checkHubUpdate({ silent: true });
+      loadMyFeedback({ silent: true, background: true });
+    }, HUB_POLL_MS);
+  }
+
+  function stopHubPollLoop() {
+    if (hubPollTimer) {
+      clearInterval(hubPollTimer);
+      hubPollTimer = null;
+    }
   }
 
   /**
@@ -2099,7 +2129,12 @@
       r.icWrap.appendChild(icon(wantIcon));
     }
     if (r.opButtons.download) {
-      r.opButtons.download.hidden = !!item.dir;
+      r.opButtons.download.hidden = false;
+      var dlTitle = item.dir ? '下载文件夹' : '下载';
+      if (r.opButtons.download.title !== dlTitle) {
+        r.opButtons.download.title = dlTitle;
+        r.opButtons.download.setAttribute('aria-label', dlTitle);
+      }
     }
     if (r.opButtons.unarchive) {
       r.opButtons.unarchive.hidden = !isArchiveItem(item);
@@ -2579,19 +2614,19 @@
       body.appendChild(multiMeta);
 
       var mActs = h('div', 'inspector-actions');
-      if (selFiles.length > 0) {
+      if (sel.length > 0) {
         var dlAll = h('button', 'btn btn-sm btn-primary');
         dlAll.type = 'button';
         dlAll.appendChild(icon('download'));
-        dlAll.appendChild(h('span', null, '下载已选文件 (' + selFiles.length + ')'));
-        dlAll.addEventListener('click', function () { downloadItems(selFiles); });
+        dlAll.appendChild(h('span', null, dirs > 0 ? ('下载已选项目 (' + sel.length + ')') : ('下载已选文件 (' + selFiles.length + ')')));
+        dlAll.addEventListener('click', function () { downloadItems(sel); });
         mActs.appendChild(dlAll);
 
         var dlAllPick = h('button', 'btn btn-sm');
         dlAllPick.type = 'button';
         dlAllPick.appendChild(icon('folder-open'));
         dlAllPick.appendChild(h('span', null, '下载到指定位置…'));
-        dlAllPick.addEventListener('click', function () { downloadItems(selFiles, { pickDir: true }); });
+        dlAllPick.addEventListener('click', function () { downloadItems(sel, { pickDir: true }); });
         mActs.appendChild(dlAllPick);
       }
       var mvAll = h('button', 'btn btn-sm');
@@ -2745,14 +2780,21 @@
       acts.appendChild(unzipBtn);
     }
 
-    if (!item.dir) {
-      var dlAsBtn = h('button', 'btn btn-sm');
-      dlAsBtn.type = 'button';
-      dlAsBtn.appendChild(icon('folder-open'));
-      dlAsBtn.appendChild(h('span', null, '下载到指定位置…'));
-      dlAsBtn.addEventListener('click', function () { downloadItems([item], { pickDir: true }); });
-      acts.appendChild(dlAsBtn);
+    if (item.dir) {
+      var dlDirBtn = h('button', 'btn btn-sm');
+      dlDirBtn.type = 'button';
+      dlDirBtn.appendChild(icon('download'));
+      dlDirBtn.appendChild(h('span', null, '下载文件夹'));
+      dlDirBtn.addEventListener('click', function () { downloadItems([item]); });
+      acts.appendChild(dlDirBtn);
     }
+
+    var dlAsBtn = h('button', 'btn btn-sm');
+    dlAsBtn.type = 'button';
+    dlAsBtn.appendChild(icon('folder-open'));
+    dlAsBtn.appendChild(h('span', null, '下载到指定位置…'));
+    dlAsBtn.addEventListener('click', function () { downloadItems([item], { pickDir: true }); });
+    acts.appendChild(dlAsBtn);
 
     var renameBtn = h('button', 'btn btn-sm');
     renameBtn.type = 'button';
@@ -3738,46 +3780,108 @@
     downloadItems([item]);
   }
 
+  /** 从当前视图中即时移除已删除/已移走的项目，让界面立即响应无需等待异步任务轮询结束。 */
+  function removeItemsLocally(fids) {
+    if (!Array.isArray(fids) || !fids.length) return 0;
+    var drop = new Set(fids.map(function (id) { return String(id); }));
+    var removed = 0;
+    var next = [];
+    for (var i = 0; i < state.items.length; i++) {
+      var it = state.items[i];
+      var key = it && it.fid !== undefined && it.fid !== null ? String(it.fid) : '';
+      if (key && drop.has(key)) {
+        delete state.itemMap[key];
+        state.selected.delete(key);
+        dirDetailCache.delete(key);
+        removed += 1;
+      } else {
+        next.push(it);
+      }
+    }
+    dirDetailCache.delete(String(state.fid));
+    if (state.inspectorFid && drop.has(String(state.inspectorFid))) {
+      state.inspectorFid = null;
+    }
+    if (!removed) return 0;
+    state.items = next;
+    if (typeof state.total === 'number' && state.total >= 0) {
+      state.total = Math.max(0, state.total - removed);
+    }
+    listVersion += 1;
+    renderRows(listSeq, true);
+    if (!state.items.length && !state.hasMore) {
+      renderEmpty(state.mode === 'search' ? '没有找到匹配的文件' : '此文件夹为空', false);
+    }
+    updateSelectAll();
+    renderStatusBar();
+    renderInspector();
+    return removed;
+  }
+
   /** 目录分页加载：把一条异步任务受理结果轮询到结束，失效缓存并按需刷新当前目录。 */
-  async function awaitTask(accepted, what, originFid, extraInvalidateFid) {
+  async function awaitTask(accepted, what, originFid, extraInvalidateFid, opts) {
     var srcFid = originFid !== undefined ? String(originFid) : String(state.fid);
-    var originSeq = listSeq;
     var accountSnap = state.account;
-    var maybeRefresh = function () {
+    var o = opts || {};
+    var removedSet = (Array.isArray(o.removedFids) && o.removedFids.length)
+      ? new Set(o.removedFids.map(function (id) { return String(id); }))
+      : null;
+    var maybeRefresh = function (allowRetry) {
       if (!sameAccountSession(accountSnap)) return;
       invalidateDirCache(srcFid);
+      dirDetailCache.delete(srcFid);
       if (extraInvalidateFid !== undefined && extraInvalidateFid !== null) {
         invalidateDirCache(String(extraInvalidateFid));
+        dirDetailCache.delete(String(extraInvalidateFid));
       }
-      if (listSeq === originSeq && state.view === 'files' && (state.mode === 'search' || String(state.fid) === srcFid)) {
+      var inTargetDir = state.view === 'files' && (state.mode === 'search' || String(state.fid) === srcFid);
+      if (inTargetDir) {
         reloadCurrent();
+        // 云端删除/移动大文件夹偶发短暂最终一致性延迟：若刷新后仍出现已删 fid，1.2s 后静默再校对一次
+        if (allowRetry && removedSet && removedSet.size) {
+          setTimeout(function () {
+            if (!sameAccountSession(accountSnap)) return;
+            if (state.view !== 'files' || (state.mode !== 'search' && String(state.fid) !== srcFid)) return;
+            var stillPresent = false;
+            removedSet.forEach(function (fid) {
+              if (state.itemMap[fid]) stillPresent = true;
+            });
+            if (stillPresent) {
+              invalidateDirCache(srcFid);
+              loadPage({ reset: true, silent: true, preserveSelection: true });
+            }
+          }, 1200);
+        }
+      } else {
+        pendingFilesRefresh = true;
       }
       if (what === '删除' || what === '复制') {
         silentRefreshAccountAndQuota({ force: true });
       }
     };
-    if (!accepted) { setTimeout(maybeRefresh, 700); return; }
-    if (accepted.done === true) { setTimeout(maybeRefresh, 260); return; }
+    if (!accepted) { setTimeout(function () { maybeRefresh(true); }, 700); return; }
+    if (accepted.done === true) { setTimeout(function () { maybeRefresh(true); }, 260); return; }
     var taskId = accepted.taskId;
-    if (!taskId) { setTimeout(maybeRefresh, 900); return; }
+    if (!taskId) { setTimeout(function () { maybeRefresh(true); }, 900); return; }
     for (var i = 0; i < TASK_POLL_MAX; i++) {
       await sleep(TASK_POLL_MS);
+      if (!sameAccountSession(accountSnap)) return;
       try {
         var arr = await API.fs.taskStatus({ taskIds: [taskId] });
-        var st = arr && arr[0];
+        var st = Array.isArray(arr) ? arr[0] : arr;
         if (st && st.done === true) {
-          maybeRefresh();
+          maybeRefresh(true);
           if (what) toast('ok', what + '完成');
           return;
         }
       } catch (err) {
         reportError(err, '任务状态查询失败，尚未确认操作完成');
-        maybeRefresh();
+        maybeRefresh(false);
         return;
       }
     }
     toast('warn', '尚未确认任务完成，请刷新后检查结果');
-    maybeRefresh();
+    maybeRefresh(false);
   }
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -3791,11 +3895,93 @@
     return true;
   }
 
+  var MAX_FOLDER_DOWNLOAD_FILES = 5000;
+  var MAX_FOLDER_DOWNLOAD_DEPTH = 24;
+  var FOLDER_DOWNLOAD_CONFIRM_THRESHOLD = 200;
+
+  /** 递归收集所选文件与文件夹内的所有可下载子文件，并保留相对目录路径段数组。 */
+  async function collectDownloadEntries(items) {
+    var entries = [];
+    var queue = [];
+    var visitedDirs = new Set();
+    var scannedDirs = 0;
+    var truncated = false;
+    var usedRootNames = new Map();
+
+    var uniqueRootSegment = function (name) {
+      var base = String(name || '未命名文件夹').trim() || '未命名文件夹';
+      var count = usedRootNames.get(base) || 0;
+      usedRootNames.set(base, count + 1);
+      return count === 0 ? base : (base + ' (' + (count + 1) + ')');
+    };
+
+    (items || []).forEach(function (it) {
+      if (!it || !it.fid) return;
+      if (it.dir) {
+        var fid = String(it.fid);
+        if (!visitedDirs.has(fid)) {
+          visitedDirs.add(fid);
+          queue.push({ fid: fid, relDir: [uniqueRootSegment(it.name)], depth: 1 });
+        }
+      } else {
+        entries.push({ fid: String(it.fid), name: it.name || String(it.fid), relDir: [] });
+      }
+    });
+
+    var concurrency = Math.min(4, Math.max(1, queue.length));
+    var workers = [];
+    for (var w = 0; w < concurrency; w++) {
+      workers.push((async function () {
+        while (queue.length && !truncated) {
+          var node = queue.shift();
+          if (!node) break;
+          scannedDirs += 1;
+          var page = 1;
+          while (!truncated) {
+            var res = await API.fs.list({ pdirFid: node.fid, page: page, size: 100 });
+            var list = (res && Array.isArray(res.list)) ? res.list : [];
+            for (var i = 0; i < list.length; i++) {
+              var child = list[i];
+              if (!child || !child.fid) continue;
+              if (child.dir) {
+                var childFid = String(child.fid);
+                if (!visitedDirs.has(childFid) && node.depth < MAX_FOLDER_DOWNLOAD_DEPTH) {
+                  visitedDirs.add(childFid);
+                  queue.push({
+                    fid: childFid,
+                    relDir: node.relDir.concat([String(child.name || '未命名文件夹')]),
+                    depth: node.depth + 1
+                  });
+                }
+              } else {
+                entries.push({
+                  fid: String(child.fid),
+                  name: child.name || String(child.fid),
+                  relDir: node.relDir
+                });
+                if (entries.length >= MAX_FOLDER_DOWNLOAD_FILES) {
+                  truncated = true;
+                  break;
+                }
+              }
+            }
+            if (!res || !res.hasMore || !list.length || page >= 500) break;
+            page += 1;
+          }
+        }
+      })());
+    }
+    await Promise.all(workers);
+    return { entries: entries, scannedDirs: scannedDirs, truncated: truncated };
+  }
+
   async function downloadItems(items, opts) {
     var o = opts || {};
     if (!ensureLoggedInForWrite('下载')) return;
-    var files = (items || []).filter(function (i) { return i && !i.dir; });
-    if (!files.length) { toast('warn', '所选项目中没有可下载的文件'); return; }
+    var selected = (items || []).filter(Boolean);
+    if (!selected.length) { toast('warn', '请先选择要下载的项目'); return; }
+    var hasDirs = selected.some(function (i) { return !!i.dir; });
+
     var dir = state.settings.downloadDir;
     var shouldPick = !!o.pickDir || !!state.settings.askDownloadDir || !dir;
     if (shouldPick) {
@@ -3806,14 +3992,54 @@
       if (!dir) { toast('warn', '未选择下载目录，已取消下载'); return; }
       if (!hadDefault) await saveSettings({ downloadDir: dir });
     }
-    try {
-      var ids = await API.transfer.download({
-        fids: files.map(function (f) { return f.fid; }),
-        localDir: dir,
-        names: files.map(function (f) { return f.name; })
+
+    var entries;
+    var scannedDirs = 0;
+    var truncated = false;
+    if (hasDirs) {
+      toast('info', '正在扫描文件夹内的子文件…');
+      try {
+        var collected = await collectDownloadEntries(selected);
+        entries = collected.entries;
+        scannedDirs = collected.scannedDirs;
+        truncated = collected.truncated;
+      } catch (err) {
+        reportError(err, '扫描文件夹内容失败');
+        return;
+      }
+      if (!entries.length) {
+        toast('warn', '所选文件夹内没有可下载的文件');
+        return;
+      }
+      if (entries.length > FOLDER_DOWNLOAD_CONFIRM_THRESHOLD || truncated) {
+        var confirmed = await confirmDialog({
+          title: '确认批量下载文件夹',
+          message: '共扫描到 ' + entries.length + ' 个子文件（涉及 ' + scannedDirs + ' 个目录），将按原目录结构下载到目标文件夹。',
+          detail: truncated
+            ? ('已达到单次批量下载上限（' + MAX_FOLDER_DOWNLOAD_FILES + ' 个文件），超出部分请分目录下载。')
+            : '确认后将全部加入下载队列并自动创建对应子目录。',
+          confirmText: '开始下载 (' + entries.length + ')'
+        });
+        if (!confirmed) return;
+      }
+    } else {
+      entries = selected.map(function (f) {
+        return { fid: f.fid, name: f.name, relDir: [] };
       });
-      var n = Array.isArray(ids) ? ids.length : files.length;
-      toast('ok', '已加入下载队列：' + n + ' 个文件');
+    }
+
+    try {
+      var payload = {
+        fids: entries.map(function (f) { return f.fid; }),
+        localDir: dir,
+        names: entries.map(function (f) { return f.name; })
+      };
+      if (entries.some(function (f) { return f.relDir && f.relDir.length > 0; })) {
+        payload.relDirs = entries.map(function (f) { return f.relDir || []; });
+      }
+      var ids = await API.transfer.download(payload);
+      var n = Array.isArray(ids) ? ids.length : entries.length;
+      toast('ok', '已加入下载队列：' + n + ' 个文件' + (hasDirs ? '（已保留目录结构）' : ''));
       refreshTransfers();
     } catch (err) {
       reportError(err, '下载失败');
@@ -3950,14 +4176,18 @@
     });
     if (!ok) return;
     try {
+      var fids = list.map(function (i) { return i.fid; });
       var accepted = isMove
-        ? await API.fs.move({ fids: list.map(function (i) { return i.fid; }), toFid: targetFid })
-        : await API.fs.copy({ fids: list.map(function (i) { return i.fid; }), toFid: targetFid });
+        ? await API.fs.move({ fids: fids, toFid: targetFid })
+        : await API.fs.copy({ fids: fids, toFid: targetFid });
       invalidateDirCache(originFid);
       invalidateDirCache(targetFid);
       toast('ok', '已提交' + (isMove ? '移动' : '复制') + '：' + list.length + ' 个项目');
       clearSelection();
-      awaitTask(accepted, isMove ? '移动' : '复制', originFid, targetFid);
+      if (isMove && state.mode === 'browse' && String(originFid) === String(state.fid) && String(targetFid) !== String(originFid)) {
+        removeItemsLocally(fids);
+      }
+      awaitTask(accepted, isMove ? '移动' : '复制', originFid, targetFid, isMove ? { removedFids: fids } : undefined);
       refreshQuota();
     } catch (err) {
       reportError(err, isMove ? '移动失败' : '复制失败');
@@ -3992,11 +4222,17 @@
     });
     if (!ok) return;
     try {
-      var accepted = await API.fs.remove({ fids: list.map(function (i) { return i.fid; }) });
+      var fids = list.map(function (i) { return i.fid; });
+      var accepted = await API.fs.remove({ fids: fids });
       invalidateDirCache(originFid);
-      toast('ok', '已提交删除：' + list.length + ' 个项目');
+      list.forEach(function (it) {
+        if (it && it.pdirFid) invalidateDirCache(it.pdirFid);
+        if (it && it.dir) invalidateDirCache(it.fid);
+      });
       clearSelection();
-      awaitTask(accepted, '删除', originFid);
+      removeItemsLocally(fids);
+      toast('ok', (accepted && accepted.done === true ? '已删除：' : '已提交删除：') + list.length + ' 个项目');
+      awaitTask(accepted, '删除', originFid, null, { removedFids: fids });
       refreshQuota();
     } catch (err) {
       reportError(err, '删除失败');
@@ -4039,8 +4275,19 @@
     return acts;
   }
 
+  function transferSubdirHint(t) {
+    if (!t || t.kind !== 'download' || !t.localDir) return '';
+    var base = String(state.settings.downloadDir || '').replace(/[\\/]+$/, '');
+    var dir = String(t.localDir).replace(/[\\/]+$/, '');
+    if (!base || dir.length <= base.length) return '';
+    if (dir.slice(0, base.length) !== base) return '';
+    var rest = dir.slice(base.length);
+    if (rest[0] !== '/' && rest[0] !== '\\') return '';
+    return rest.slice(1).replace(/\\/g, '/');
+  }
+
   function transferRowSig(t) {
-    return [t.status, t.transferred, t.size, t.speed, t.eta, t.error || '', t.errorCode || '', t.attempts || 0, t.name || ''].join('|');
+    return [t.status, t.transferred, t.size, t.speed, t.eta, t.error || '', t.errorCode || '', t.attempts || 0, t.name || '', t.localDir || ''].join('|');
   }
 
   function createTransferRow(t) {
@@ -4063,6 +4310,8 @@
 
     var meta = h('div', 'tmeta');
     var stateEl = h('span', 'tstate', STATUS_TEXT[t.status] || t.status);
+    var subdirEl = h('span', 'tsubdir', '');
+    subdirEl.hidden = true;
     var bytesEl = h('span', 'tbytes', '');
     var spEl = h('span', 'tspeed', '');
     var etaEl = h('span', 'teta', '');
@@ -4071,6 +4320,7 @@
     meta.appendChild(stateEl);
     meta.appendChild(h('span', 'tdot', '·'));
     meta.appendChild(bytesEl);
+    meta.appendChild(subdirEl);
     meta.appendChild(spEl);
     meta.appendChild(etaEl);
     meta.appendChild(terr);
@@ -4091,6 +4341,7 @@
       tpct: tpct,
       barFill: barFill,
       stateEl: stateEl,
+      subdirEl: subdirEl,
       bytesEl: bytesEl,
       spEl: spEl,
       etaEl: etaEl,
@@ -4113,9 +4364,19 @@
     }
     var pctLabel = Math.round(pct) + '%';
     if (r.tpct.textContent !== pctLabel) r.tpct.textContent = pctLabel;
-    if (r.tname.textContent !== t.name) {
-      r.tname.textContent = t.name;
-      r.tname.title = t.name;
+    var fullTitle = t.name + (t.localDir ? (' — ' + t.localDir) : '');
+    if (r.tname.textContent !== t.name) r.tname.textContent = t.name;
+    if (r.tname.title !== fullTitle) r.tname.title = fullTitle;
+    if (r.subdirEl) {
+      var sub = transferSubdirHint(t);
+      r.subdirEl.hidden = !sub;
+      if (sub) {
+        var subText = '目录：' + sub;
+        if (r.subdirEl.textContent !== subText) {
+          r.subdirEl.textContent = subText;
+          r.subdirEl.title = t.localDir || sub;
+        }
+      }
     }
 
     var stText = STATUS_TEXT[t.status] || t.status;
@@ -5885,7 +6146,7 @@
       var plat = info.platform ? (' · ' + info.platform + (info.arch ? '/' + info.arch : '')) : '';
       el.appVersionText.textContent = '夸克网盘极简版 v' + info.version + ' · ' + (info.runtime || 'Tauri 2 + Rust') + plat;
     } else {
-      el.appVersionText.textContent = '夸克网盘极简版 v1.0.0 · Tauri 2 + Rust';
+      el.appVersionText.textContent = '夸克网盘极简版 v1.0.1 · Tauri 2 + Rust';
     }
   }
 
@@ -6083,6 +6344,250 @@
     if (el.fbBtnPreview) el.fbBtnPreview.disabled = !ready;
     if (el.fbBtnSubmit) el.fbBtnSubmit.disabled = disabled;
     if (el.fbBtnEnable) el.fbBtnEnable.disabled = !ready;
+    if (el.fbBtnRefreshHistory) {
+      el.fbBtnRefreshHistory.disabled = !ready || !on || state.hub.feedbackLoading || !API.has('hub', 'listFeedback');
+    }
+    renderFeedbackHistory();
+  }
+
+  var FB_STATUS_TEXT = {
+    open: '待处理',
+    in_progress: '处理中',
+    resolved: '已解决',
+    archived: '已归档'
+  };
+  var FB_CATEGORY_TEXT = {
+    bug: '问题反馈 / Bug',
+    performance: '性能建议',
+    ui: '界面与交互',
+    feature: '新功能需求',
+    other: '其他建议'
+  };
+
+  function renderFeedbackHistory() {
+    if (!el.fbHistoryList) return;
+    var box = el.fbHistoryList;
+    box.textContent = '';
+    var ready = hubBridgeReady() && API.has('hub', 'listFeedback');
+    var on = !!state.settings.serverOptIn;
+    if (!ready) {
+      if (el.fbHistorySummary) el.fbHistorySummary.textContent = '当前环境未接入服务器反馈模块';
+      box.appendChild(h('div', 'fb-history-empty', '当前环境不支持查看历史反馈。'));
+      return;
+    }
+    if (!on) {
+      if (el.fbHistorySummary) el.fbHistorySummary.textContent = '开启「连接作者服务器」后可实时追踪反馈进度与作者回复';
+      box.appendChild(h('div', 'fb-history-empty', '未开启服务器连接：已遵守隐私承诺不拉取任何远程记录。'));
+      return;
+    }
+    if (state.hub.feedbackLoading && !state.hub.feedbackLoaded) {
+      box.appendChild(h('div', 'fb-history-empty', '正在加密拉取你的历史反馈与作者回复…'));
+      return;
+    }
+    if (state.hub.feedbackError && !state.hub.feedbackItems.length) {
+      box.appendChild(h('div', 'fb-history-empty', state.hub.feedbackError));
+      return;
+    }
+    var items = Array.isArray(state.hub.feedbackItems) ? state.hub.feedbackItems : [];
+    var repliedCount = items.filter(function (x) { return !!(x && x.hasAdminReply); }).length;
+    if (el.fbHistorySummary) {
+      el.fbHistorySummary.textContent = items.length
+        ? ('共 ' + items.length + ' 条历史反馈' + (repliedCount ? (' · ' + repliedCount + ' 条已收到作者回复') : ' · 可随时刷新查看进度'))
+        : '提交反馈后可在此实时追踪进度、查看作者回复并追加留言';
+    }
+    if (!items.length) {
+      box.appendChild(h('div', 'fb-history-empty', '暂无反馈记录。提交一条新反馈后，这里会自动展示处理进度与作者回复。'));
+      return;
+    }
+    items.forEach(function (item) {
+      if (!item) return;
+      var card = h('div', 'fb-thread-card');
+      card.dataset.fbId = String(item.id);
+      var statusKey = item.status || 'open';
+      var statusLabel = FB_STATUS_TEXT[statusKey] || statusKey;
+      var catLabel = FB_CATEGORY_TEXT[item.category] || item.category || '其他建议';
+
+      var head = h('div', 'fb-thread-head');
+      var badges = h('div', 'fb-thread-badges');
+      badges.appendChild(h('span', 'fb-pill fb-pill-' + statusKey, statusLabel));
+      badges.appendChild(h('span', 'fb-pill', catLabel));
+      if (item.hasAdminReply) {
+        badges.appendChild(h('span', 'fb-pill fb-pill-replied', '作者已回复'));
+      }
+      head.appendChild(badges);
+      var metaText = '#' + item.id
+        + (item.appVersion ? (' · v' + item.appVersion) : '')
+        + (item.createdAt ? (' · ' + fmtTime(item.createdAt)) : '');
+      head.appendChild(h('span', 'fb-thread-meta', metaText));
+      card.appendChild(head);
+
+      card.appendChild(h('div', 'fb-thread-origin', item.message || ''));
+
+      var msgs = Array.isArray(item.messages) ? item.messages : [];
+      if (msgs.length) {
+        var chatLog = h('div', 'fb-chat-log');
+        msgs.forEach(function (m) {
+          var isAdmin = m && m.sender === 'admin';
+          var bubble = h('div', 'fb-chat-msg' + (isAdmin ? ' fb-chat-msg-admin' : ''));
+          var mHead = h('div', 'fb-chat-msg-head');
+          mHead.appendChild(h('strong', null, isAdmin ? '作者回复' : '我（追加）'));
+          if (m && m.createdAt) mHead.appendChild(h('span', null, fmtTime(m.createdAt)));
+          bubble.appendChild(mHead);
+          bubble.appendChild(h('div', 'fb-chat-msg-body', (m && m.message) || ''));
+          chatLog.appendChild(bubble);
+        });
+        card.appendChild(chatLog);
+      } else if (item.adminNote) {
+        var noteLog = h('div', 'fb-chat-log');
+        var noteBubble = h('div', 'fb-chat-msg fb-chat-msg-admin');
+        var nHead = h('div', 'fb-chat-msg-head');
+        nHead.appendChild(h('strong', null, '作者回复'));
+        noteBubble.appendChild(nHead);
+        noteBubble.appendChild(h('div', 'fb-chat-msg-body', item.adminNote));
+        noteLog.appendChild(noteBubble);
+        card.appendChild(noteLog);
+      }
+
+      if (statusKey !== 'archived' && API.has('hub', 'replyFeedback')) {
+        var replyRow = h('div', 'fb-reply-row');
+        var input = h('textarea', 'input fb-reply-input');
+        input.rows = 1;
+        input.maxLength = 2000;
+        input.placeholder = '追加补充说明或回复作者（Ctrl/⌘+Enter 发送）…';
+        var btn = h('button', 'btn btn-sm btn-primary', '追加回复');
+        btn.type = 'button';
+        btn.disabled = state.hub.replyingId === item.id;
+        var submitReply = function () {
+          sendFeedbackReply(item.id, input.value, input, btn);
+        };
+        btn.addEventListener('click', submitReply);
+        input.addEventListener('keydown', function (ev) {
+          if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
+            ev.preventDefault();
+            submitReply();
+          }
+        });
+        replyRow.appendChild(input);
+        replyRow.appendChild(btn);
+        card.appendChild(replyRow);
+      }
+      box.appendChild(card);
+    });
+  }
+
+  var FB_SEEN_REPLY_KEY = 'qdl_seen_admin_reply_id';
+
+  function getLastSeenAdminReplyId() {
+    try {
+      var raw = typeof localStorage !== 'undefined' ? localStorage.getItem(FB_SEEN_REPLY_KEY) : '';
+      var n = parseInt(raw || '0', 10);
+      return isFinite(n) && n > 0 ? n : 0;
+    } catch (_) { return 0; }
+  }
+
+  function maxAdminReplyId(items) {
+    var maxId = 0;
+    (items || []).forEach(function (it) {
+      var msgs = it && Array.isArray(it.messages) ? it.messages : [];
+      msgs.forEach(function (m) {
+        if (m && m.sender === 'admin') {
+          var id = Number(m.id) || 0;
+          if (id > maxId) maxId = id;
+        }
+      });
+    });
+    return maxId;
+  }
+
+  function updateFeedbackUnreadBadge(items, opts) {
+    var o = opts || {};
+    var list = Array.isArray(items) ? items : [];
+    var latestAdminId = maxAdminReplyId(list);
+    if (o.markRead || state.view === 'feedback') {
+      if (latestAdminId > getLastSeenAdminReplyId()) {
+        try { if (typeof localStorage !== 'undefined') localStorage.setItem(FB_SEEN_REPLY_KEY, String(latestAdminId)); } catch (_) {}
+      }
+      state.hub.unreadReplies = 0;
+    } else {
+      var seen = getLastSeenAdminReplyId();
+      var unread = 0;
+      list.forEach(function (it) {
+        var msgs = it && Array.isArray(it.messages) ? it.messages : [];
+        msgs.forEach(function (m) {
+          if (m && m.sender === 'admin' && (Number(m.id) || 0) > seen) unread += 1;
+        });
+      });
+      state.hub.unreadReplies = unread;
+    }
+    if (el.feedbackBadge) {
+      el.feedbackBadge.hidden = state.hub.unreadReplies <= 0;
+      if (state.hub.unreadReplies > 0) {
+        el.feedbackBadge.textContent = String(state.hub.unreadReplies);
+      }
+    }
+  }
+
+  async function loadMyFeedback(opts) {
+    var o = opts || {};
+    if (!hubBridgeReady() || !state.settings.serverOptIn || !API.has('hub', 'listFeedback')) {
+      renderFeedbackHistory();
+      return;
+    }
+    if (state.hub.feedbackLoading) return;
+    state.hub.feedbackLoading = true;
+    state.hub.feedbackError = '';
+    if (!o.background) renderFeedbackView();
+    try {
+      var res = await API.hub.listFeedback();
+      state.hub.feedbackItems = (res && Array.isArray(res.items)) ? res.items : [];
+      state.hub.feedbackLoaded = true;
+      state.hub.feedbackError = '';
+      updateFeedbackUnreadBadge(state.hub.feedbackItems, { markRead: state.view === 'feedback' });
+      if (!o.silent) toast('ok', '已刷新反馈历史与最新回复');
+    } catch (err) {
+      var emsg = (err && err.message) ? err.message : '拉取反馈历史失败（海外服务器如连接不畅可开梯子重试）';
+      state.hub.feedbackError = emsg;
+      if (!o.silent) toast('warn', emsg);
+    } finally {
+      state.hub.feedbackLoading = false;
+      if (!o.background || state.view === 'feedback') renderFeedbackView();
+    }
+  }
+
+  async function sendFeedbackReply(feedbackId, rawText, inputEl, btnEl) {
+    if (!hubBridgeReady() || !state.settings.serverOptIn || !API.has('hub', 'replyFeedback')) return;
+    var text = String(rawText || '').trim();
+    if (!text) {
+      toast('warn', '请输入要追加的回复内容');
+      if (inputEl) inputEl.focus();
+      return;
+    }
+    if (state.hub.replyingId !== null) return;
+    state.hub.replyingId = feedbackId;
+    if (btnEl) btnEl.disabled = true;
+    try {
+      var res = await API.hub.replyFeedback({ feedbackId: feedbackId, message: text });
+      if (inputEl) inputEl.value = '';
+      if (res && res.reply) {
+        var target = state.hub.feedbackItems.filter(function (x) { return x && x.id === feedbackId; })[0];
+        if (target) {
+          if (!Array.isArray(target.messages)) target.messages = [];
+          target.messages.push(res.reply);
+          target.replyCount = target.messages.length;
+          target.lastSender = 'user';
+          if (res.updatedAt) target.updatedAt = res.updatedAt;
+        }
+      }
+      toast('ok', '追加消息已加密送达作者控制台');
+      state.hub.replyingId = null;
+      renderFeedbackHistory();
+      loadMyFeedback({ silent: true });
+    } catch (err) {
+      var emsg = (err && err.message) ? err.message : '追加消息发送失败';
+      toast('warn', emsg);
+      state.hub.replyingId = null;
+      if (btnEl) btnEl.disabled = false;
+    }
   }
 
   async function setHubOptIn(wantOn, opts) {
@@ -6105,8 +6610,13 @@
           : '已关闭作者服务器连接：应用承诺绝不外传任何数据');
       }
       if (on && !o.skipProbe) {
+        startHubPollLoop();
         checkHubUpdate({ silent: true });
         sendHubTelemetry('opt_in');
+        loadMyFeedback({ silent: true, background: state.view !== 'feedback' });
+      } else if (!on) {
+        stopHubPollLoop();
+        updateFeedbackUnreadBadge([], { markRead: true });
       }
       return true;
     } catch (err) {
@@ -6151,6 +6661,9 @@
         el.btnHubDownload.textContent = '直链下载 ' + rec.filename + (rec.size ? '（' + fmtBytes(rec.size) + '）' : '');
       }
     }
+    if (el.btnHubOpenPkg) {
+      el.btnHubOpenPkg.hidden = !state.hub.downloadedPath;
+    }
     if (el.btnHubReveal) {
       el.btnHubReveal.hidden = !state.hub.downloadedPath;
     }
@@ -6164,6 +6677,7 @@
     }
     if (state.hub.checking) return null;
     state.hub.checking = true;
+    state.hub.lastUpdateCheckAt = Date.now();
     renderHubSettings();
     if (!o.silent && el.hubUpdateSummary) el.hubUpdateSummary.textContent = '正在连接海外更新服务器并校验 Ed25519 数字签名…';
     try {
@@ -6176,14 +6690,29 @@
       }
       renderHubUpdateResult(res);
       if (res.hasUpdate) {
-        banner('hub-update', 'info', '发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），可前往设置页直链下载。', [
-          { label: '查看更新', primary: true, run: function () { setView('settings'); } },
-          { label: '稍后再说', run: function () { clearBanner('hub-update'); } }
-        ]);
+        if (!o.silent || state.hub.dismissedUpdateVersion !== String(res.latestVersion || '')) {
+          banner('hub-update', 'info', '发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），可前往设置页直链下载。', [
+            { label: '查看更新', primary: true, run: function () {
+              setView('settings');
+              if (el.hubCard && typeof el.hubCard.scrollIntoView === 'function') {
+                el.hubCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            } },
+            { label: '稍后再说', run: function () {
+              state.hub.dismissedUpdateVersion = String(res.latestVersion || '');
+              clearBanner('hub-update');
+            } }
+          ]);
+        }
       } else if (res.notice && o.silent) {
-        banner('hub-notice', 'info', '作者公告：' + res.notice, [
-          { label: '我知道了', run: function () { clearBanner('hub-notice'); } }
-        ]);
+        if (state.hub.dismissedNotice !== String(res.notice)) {
+          banner('hub-notice', 'info', '作者公告：' + res.notice, [
+            { label: '我知道了', run: function () {
+              state.hub.dismissedNotice = String(res.notice);
+              clearBanner('hub-notice');
+            } }
+          ]);
+        }
       } else if (!o.silent) {
         toast('ok', '当前已是最新版本 v' + res.currentVersion);
       }
@@ -6331,9 +6860,10 @@
         includeLogs: !!(el.fbIncludeLogs && el.fbIncludeLogs.checked)
       });
       if (el.fbMessage) el.fbMessage.value = '';
-      var tip = '已加密送达作者控制台' + (res && res.id ? '（编号 #' + res.id + '）' : '') + '，非常感谢你的反馈！';
+      var tip = '已加密送达作者控制台' + (res && res.id ? '（编号 #' + res.id + '）' : '') + '，可在下方随时查看进度与回复！';
       if (el.fbStatus) { el.fbStatus.textContent = tip; el.fbStatus.dataset.level = 'ok'; }
       toast('ok', tip);
+      loadMyFeedback({ silent: true });
     } catch (err) {
       var emsg = err && err.message ? err.message : '发送反馈失败（海外服务器如连接不畅可尝试开梯子）';
       if (el.fbStatus) { el.fbStatus.textContent = emsg; el.fbStatus.dataset.level = 'error'; }
@@ -6347,7 +6877,8 @@
   var TUTORIAL_STEPS = [
     {
       icon: 'folder',
-      title: '欢迎使用夸克网盘极简版 v1.0.0',
+      title: '欢迎使用夸克网盘极简版',
+      showVersion: true,
       sub: '基于 Tauri 2 + Rust 原生打造，轻巧流畅、零广告干扰，30 秒即可轻松上手。',
       points: [
         { icon: 'arrow-up', title: '深层目录高效导航', desc: '支持后退 / 前进 / 上一级按钮、深层面包屑「···」下拉一键跳级，以及鼠标滚轮与 Alt+↑ / Backspace 快捷键。' },
@@ -6357,12 +6888,12 @@
     },
     {
       icon: 'transfer',
-      title: '自研高速并发传输与灵活目录',
+      title: '自研高速并发传输与整目录下载',
       sub: 'Rust 事件驱动并发引擎，空闲零轮询，大文件断点续传与校验一步到位。',
       points: [
-        { icon: 'download', title: '灵活选择下载位置', desc: '既可统一保存到默认目录，也可在设置开启「每次询问目录」，或右键 / 详情栏对单个文件选择「下载到指定位置…」。' },
+        { icon: 'download', title: '支持整个文件夹递归批量下载', desc: '可直接下载单个或多个文件夹（及混合选中），自动保留嵌套子目录结构；也支持每次询问或按项指定下载位置。' },
         { icon: 'upload', title: '不设死的并发调节', desc: '可在设置中自由调整上传/下载并发数与分片连接数，超出推荐阈值时自动提醒，兼顾极速与稳定。' },
-        { icon: 'refresh', title: '实时传输胶囊与自动刷新', desc: '活跃传输时子工具栏常驻速度与进度胶囊；上传/删除完成后自动静默刷新当前目录与剩余空间。' }
+        { icon: 'refresh', title: '实时传输胶囊与自动刷新', desc: '活跃传输时子工具栏常驻速度与进度胶囊；上传/删除文件夹后即时响应并自动同步目录与剩余空间。' }
       ]
     },
     {
@@ -6381,7 +6912,7 @@
       sub: '你的网盘数据与登录凭据始终由你自己掌控。',
       points: [
         { icon: 'lock', title: '凭据本地加密 · 零外泄', desc: '扫码登录在独立原生窗口完成，Cookie 经 AES-256-GCM 加密存放在本机资料目录，所有网盘请求直连夸克官方接口。' },
-        { icon: 'cloud', title: '可选连接作者服务器（默认关闭）', desc: '开启后可接收最新更新日志、直链下载经 Ed25519 验签的安装包，或在侧栏「反馈」加密直达作者；不开启则严格零外传。' },
+        { icon: 'cloud', title: '自动更新检测与双向意见反馈', desc: '可选开启作者服务器连接：启动及运行期间自动静默检测新版本与作者回复提醒，支持直链验签下载和反馈历史追问；关闭则严格零外传。' },
         { icon: 'settings', title: '随时可重看本教程', desc: '之后可随时前往「设置 → 版本与运行环境 → 查看使用教程」再次打开，祝你使用愉快！' }
       ]
     }
@@ -6481,7 +7012,8 @@
           counter.textContent = (step + 1) + ' / ' + TUTORIAL_STEPS.length;
           heroIc.textContent = '';
           heroIc.appendChild(icon(s.icon));
-          titleEl.textContent = s.title;
+          var ver = (state.appInfo && state.appInfo.version) ? state.appInfo.version : '1.0.1';
+          titleEl.textContent = s.showVersion ? (s.title + ' v' + ver) : s.title;
           subEl.textContent = s.sub;
           pointsBox.textContent = '';
           s.points.forEach(function (pt) {
@@ -6575,9 +7107,11 @@
       await showServerOptInModal();
       return;
     }
-    // 严格遵守：仅当用户已显式开启 serverOptIn 时才在后台检查更新与上报脱敏心跳
+    // 严格遵守：仅当用户已显式开启 serverOptIn 时才在后台检查更新、同步作者回复与上报脱敏心跳
     if (state.settings.serverOptIn) {
+      startHubPollLoop();
       checkHubUpdate({ silent: true });
+      loadMyFeedback({ silent: true, background: true });
       setTimeout(function () {
         if (state.settings.serverOptIn && !state.hub.telemetrySent) {
           sendHubTelemetry('startup');
@@ -6637,7 +7171,11 @@
       refreshTransfers();
     }
     if (view === 'chat') ensureChat();
-    if (view === 'feedback') renderFeedbackView();
+    if (view === 'feedback') {
+      updateFeedbackUnreadBadge(state.hub.feedbackItems, { markRead: true });
+      renderFeedbackView();
+      if (state.settings.serverOptIn) loadMyFeedback({ silent: true });
+    }
     if (view === 'settings') {
       renderSettings();
       if (state.settings.aiBetaEnabled) {
@@ -7023,22 +7561,28 @@
       }
       var sel = selectedItems();
       var multi = sel.length > 1;
-      var downloadable = sel.filter(function (x) { return !x.dir; });
+      var hasDirInSel = sel.some(function (x) { return !!x.dir; });
       var entries = [];
       if (!multi && item.dir) entries.push({ label: '打开', icon: 'folder-open', run: function () { openItem(item); } });
       if (!multi && isArchiveItem(item) && API.has('archive', 'preview')) {
         entries.push({ label: '云解压 / 浏览内容…', icon: 'file-archive', run: function () { openArchiveModal(item); } });
       }
-      if (downloadable.length) {
+      if (sel.length) {
+        var dlLabel = multi
+          ? ('下载选中的 ' + sel.length + (hasDirInSel ? ' 项（含文件夹）' : ' 个文件'))
+          : (item.dir ? '下载文件夹' : '下载');
+        var dlPickLabel = multi
+          ? ('下载选中的 ' + sel.length + (hasDirInSel ? ' 项到指定位置…' : ' 个文件到指定位置…'))
+          : (item.dir ? '下载文件夹到指定位置…' : '下载到指定位置…');
         entries.push({
-          label: multi ? ('下载选中的 ' + downloadable.length + ' 个文件') : '下载',
+          label: dlLabel,
           icon: 'download',
-          run: function () { downloadItems(downloadable); }
+          run: function () { downloadItems(sel); }
         });
         entries.push({
-          label: multi ? ('下载选中的 ' + downloadable.length + ' 个文件到指定位置…') : '下载到指定位置…',
+          label: dlPickLabel,
           icon: 'folder-open',
-          run: function () { downloadItems(downloadable, { pickDir: true }); }
+          run: function () { downloadItems(sel, { pickDir: true }); }
         });
       }
       if (!multi && state.mode === 'search' && item.pdirFid) {
@@ -7163,6 +7707,12 @@
     if (el.btnHubCheck) el.btnHubCheck.addEventListener('click', function () { checkHubUpdate({ silent: false }); });
     if (el.btnHubLogs) el.btnHubLogs.addEventListener('click', openHubLogPreviewModal);
     if (el.btnHubDownload) el.btnHubDownload.addEventListener('click', downloadHubUpdate);
+    if (el.btnHubOpenPkg) {
+      el.btnHubOpenPkg.addEventListener('click', function () {
+        if (!state.hub.downloadedPath) return;
+        API.dialog.openPath(state.hub.downloadedPath).catch(function (err) { reportError(err, '打开安装包失败'); });
+      });
+    }
     if (el.btnHubReveal) {
       el.btnHubReveal.addEventListener('click', function () {
         if (!state.hub.downloadedPath) return;
@@ -7172,6 +7722,7 @@
     if (el.fbBtnEnable) el.fbBtnEnable.addEventListener('click', function () { setHubOptIn(true); });
     if (el.fbBtnPreview) el.fbBtnPreview.addEventListener('click', openHubLogPreviewModal);
     if (el.fbBtnSubmit) el.fbBtnSubmit.addEventListener('click', submitFeedbackForm);
+    if (el.fbBtnRefreshHistory) el.fbBtnRefreshHistory.addEventListener('click', function () { loadMyFeedback({ silent: false }); });
     el.themeSeg.addEventListener('click', function (e) {
       var b = e.target.closest ? e.target.closest('.seg') : null;
       if (!b) return;
@@ -7264,6 +7815,10 @@
       if (pendingFilesRefresh) silentRefreshFiles();
       if (Date.now() - lastQuotaRefreshAt >= QUOTA_REFRESH_MS) {
         silentRefreshAccountAndQuota({ force: true });
+      }
+      if (state.settings.serverOptIn && (Date.now() - (state.hub.lastUpdateCheckAt || 0) >= HUB_POLL_MS)) {
+        checkHubUpdate({ silent: true });
+        loadMyFeedback({ silent: true, background: state.view !== 'feedback' });
       }
     });
 
@@ -7429,6 +7984,7 @@
     el.nav = $('nav');
     el.navChat = $('nav-chat');
     el.navFeedback = $('nav-feedback');
+    el.feedbackBadge = $('feedback-badge');
     el.transferBadge = $('transfer-badge');
     el.sidebarTransferMini = $('sidebar-transfer-mini');
     el.sidebarTransferText = $('sidebar-transfer-text');
@@ -7533,6 +8089,7 @@
     el.hubUpdateNotice = $('hub-update-notice');
     el.hubUpdateChangelog = $('hub-update-changelog');
     el.btnHubDownload = $('btn-hub-download');
+    el.btnHubOpenPkg = $('btn-hub-open-pkg');
     el.btnHubReveal = $('btn-hub-reveal');
     el.hubDlProgress = $('hub-dl-progress');
     el.hubDlFill = $('hub-dl-fill');
@@ -7547,6 +8104,10 @@
     el.fbBtnPreview = $('fb-btn-preview');
     el.fbBtnSubmit = $('fb-btn-submit');
     el.fbStatus = $('fb-status');
+    el.fbHistoryCard = $('fb-history-card');
+    el.fbHistorySummary = $('fb-history-summary');
+    el.fbBtnRefreshHistory = $('fb-btn-refresh-history');
+    el.fbHistoryList = $('fb-history-list');
     el.appVersionText = $('app-version-text');
     el.btnPickDir = $('btn-pick-dir');
     el.btnOpenDir = $('btn-open-dir');
@@ -7787,6 +8348,6 @@
     openStorageDetailModal: openStorageDetailModal,
     loadRecycle: loadRecycle,
     getRowCount: function () { return rowMap.size; },
-    version: '1.0.0'
+    version: '1.0.1'
   };
 })();

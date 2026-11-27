@@ -55,6 +55,7 @@
       <button type="button" class="nav-item" id="nav-feedback" data-view="feedback">
         <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-feedback"></use></svg>
         <span>反馈</span>
+        <span class="nav-badge" id="feedback-badge" hidden></span>
       </button>
     </nav>
 
@@ -604,6 +605,7 @@
           <pre class="hub-update-changelog" id="hub-update-changelog"></pre>
           <div class="hub-update-actions">
             <button type="button" class="btn btn-sm btn-primary" id="btn-hub-download" hidden>从作者服务器直链下载</button>
+            <button type="button" class="btn btn-sm btn-primary" id="btn-hub-open-pkg" hidden>立即打开安装包</button>
             <button type="button" class="btn btn-sm" id="btn-hub-reveal" hidden>打开下载文件位置</button>
           </div>
           <div class="hub-dl-progress" id="hub-dl-progress" hidden>
@@ -779,6 +781,20 @@
             <span class="sethint fb-status" id="fb-status" role="status" aria-live="polite"></span>
           </div>
         </div>
+      </div>
+
+      <div class="setcard fb-history-card" id="fb-history-card">
+        <div class="fb-history-head">
+          <div class="fb-history-title-wrap">
+            <h3 class="fb-history-title">我的反馈历史与回复</h3>
+            <span class="sethint" id="fb-history-summary">提交后可在此实时查看处理进度、作者回复，并随时追加补充消息</span>
+          </div>
+          <button type="button" class="btn btn-sm" id="fb-btn-refresh-history">
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-refresh"></use></svg>
+            <span>刷新进度</span>
+          </button>
+        </div>
+        <div class="fb-history-list" id="fb-history-list"></div>
       </div>
     </section>
 

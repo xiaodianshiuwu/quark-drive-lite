@@ -45,8 +45,58 @@ jobs:
           echo "QCK_BROWSER_PATH=$chrome" >> "$GITHUB_ENV"
       - run: npm test
       - name: Compile native app (no publication)
-        if: runner.os != 'Linux' && matrix.os != 'macos-15-intel'
+        if: runner.os == 'macOS' && matrix.os != 'macos-15-intel'
         run: npx tauri build --no-bundle
+      - name: Build and validate Windows NSIS and Portable packages
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npx tauri build --bundles nsis -- --locked
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $outDir = Join-Path $PWD "windows-packages"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          $nsisFiles = Get-ChildItem -Path "target/release/bundle/nsis" -Filter "*-setup.exe"
+          if ($nsisFiles.Count -ne 1) { throw "Expected 1 NSIS setup exe, found $($nsisFiles.Count)" }
+          $setupDest = Join-Path $outDir "QuarkDriveLite-$version-Windows-x64-Setup.exe"
+          Copy-Item $nsisFiles[0].FullName $setupDest -Force
+
+          $exePath = Join-Path $PWD "target/release/quark-drive-lite-tauri.exe"
+          if (-not (Test-Path $exePath)) { throw "Missing release exe at $exePath" }
+          $portableStage = Join-Path $env:TEMP "qdl-portable-$version"
+          if (Test-Path $portableStage) { Remove-Item $portableStage -Recurse -Force }
+          $folderName = "夸克网盘极简版-v$version-便携版"
+          $stageInner = Join-Path $portableStage $folderName
+          New-Item -ItemType Directory -Force -Path $stageInner | Out-Null
+          Copy-Item $exePath (Join-Path $stageInner "夸克网盘极简版.exe") -Force
+          @"
+          夸克网盘 · 极简版 v$version（Windows x64 便携版）
+          ==========================================
+          1. 双击「夸克网盘极简版.exe」即可运行，无需安装。
+          2. 需要 Windows 10/11 系统自带的 Microsoft Edge WebView2 运行时。
+          3. 本应用支持文件夹递归批量下载、云解压、文件夹大小统计及意见反馈进度追踪。
+          "@ | Set-Content -Path (Join-Path $stageInner "使用说明.txt") -Encoding UTF8
+
+          $zipDest = Join-Path $outDir "QuarkDriveLite-$version-Windows-x64-Portable.zip"
+          python -c "import zipfile, pathlib, sys; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); zf=zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED); [zf.write(p, p.relative_to(root).as_posix()) for p in sorted(root.rglob('*')) if p.is_file()]; zf.close()" $portableStage $zipDest
+
+          $sums = @()
+          foreach ($f in @($setupDest, $zipDest)) {
+            $h = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+            $sums += "$h  $(Split-Path $f -Leaf)"
+          }
+          $sums | Set-Content -Path (Join-Path $outDir "SHA256SUMS-Windows.txt") -Encoding ASCII
+          Get-ChildItem $outDir | Format-Table Name, Length
+      - name: Save Windows packages
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: quark-drive-lite-windows-x64
+          path: windows-packages/
+          if-no-files-found: error
       - name: Test native WebKitGTK and Tauri IPC
         if: runner.os == 'Linux'
         env:

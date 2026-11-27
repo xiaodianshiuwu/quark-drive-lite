@@ -122,6 +122,7 @@ struct HubInner {
     started_at: Instant,
     session_salt: String,
     diag: Mutex<VecDeque<DiagEntry>>,
+    feedback_token: Mutex<Option<String>>,
 }
 
 impl HubClient {
@@ -169,6 +170,7 @@ impl HubClient {
                 started_at: Instant::now(),
                 session_salt,
                 diag: Mutex::new(diag),
+                feedback_token: Mutex::new(None),
             }),
         })
     }
@@ -528,6 +530,48 @@ impl HubClient {
         Ok(json!({ "ok": true, "encrypted": true }))
     }
 
+    /// Load or generate a persistent, local-only 256-bit anonymous feedback token.
+    /// Never exposed to renderer JS and never tied to Quark account or hardware ID.
+    fn feedback_client_token(&self) -> Result<String> {
+        let mut guard = self.inner.feedback_token.lock().unwrap();
+        if let Some(tok) = guard.as_ref() {
+            return Ok(tok.clone());
+        }
+        let dir = self.inner.core.profile_dir();
+        let token_path = dir.join("hub-feedback-token");
+        if let Ok(raw) = std::fs::read_to_string(&token_path) {
+            let trimmed = raw.trim();
+            if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+                let owned = trimmed.to_ascii_lowercase();
+                *guard = Some(owned.clone());
+                return Ok(owned);
+            }
+        }
+        let mut bytes = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        let token = hex::encode(bytes);
+        std::fs::create_dir_all(&dir)
+            .map_err(|_| Error::new("LOCAL_IO", "无法创建本地反馈凭证目录"))?;
+        let tmp_path = dir.join(format!("hub-feedback-token.tmp.{}", std::process::id()));
+        std::fs::write(&tmp_path, &token)
+            .map_err(|_| Error::new("LOCAL_IO", "无法写入本地反馈凭证"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+        }
+        #[cfg(windows)]
+        {
+            let _ = std::fs::remove_file(&token_path);
+        }
+        std::fs::rename(&tmp_path, &token_path)
+            .or_else(|_| std::fs::write(&token_path, &token))
+            .map_err(|_| Error::new("LOCAL_IO", "无法保存本地反馈凭证"))?;
+        let _ = std::fs::remove_file(&tmp_path);
+        *guard = Some(token.clone());
+        Ok(token)
+    }
+
     /// Encrypt and submit user feedback (optionally attaching redacted diagnostic logs).
     pub async fn submit_feedback(&self, app_version: &str, input: Value) -> Result<Value> {
         self.require_opt_in()?;
@@ -554,6 +598,7 @@ impl HubClient {
         } else {
             None
         };
+        let client_token = self.feedback_client_token()?;
 
         let payload = json!({
             "appVersion": app_version,
@@ -564,6 +609,7 @@ impl HubClient {
             "contact": contact,
             "includeLogs": include_logs,
             "logs": logs,
+            "clientToken": client_token,
         });
 
         let envelope = encrypt_envelope(
@@ -597,8 +643,109 @@ impl HubClient {
         Ok(json!({
             "ok": true,
             "id": body["id"],
+            "status": body.get("status").and_then(Value::as_str).unwrap_or("open"),
+            "createdAt": body["createdAt"],
             "encrypted": true,
             "includedLogs": include_logs
+        }))
+    }
+
+    /// Fetch the current installation's own feedback history and replies via E2EE.
+    pub async fn list_feedback(&self) -> Result<Value> {
+        self.require_opt_in()?;
+        let origin = self.inner.config.validated_origin()?;
+        let path = "/api/v1/feedback/mine";
+        let url = format!("{}{}", origin.as_str().trim_end_matches('/'), path);
+        let client_token = self.feedback_client_token()?;
+
+        let payload = json!({ "clientToken": client_token });
+        let envelope = encrypt_envelope(
+            &self.inner.config.x25519_pub,
+            "POST",
+            path,
+            &serde_json::to_vec(&payload).map_err(|_| Error::new("SYSTEM", "反馈历史请求编码失败"))?,
+        )?;
+
+        let resp = self
+            .inner
+            .http
+            .post(url)
+            .timeout(Duration::from_secs(15))
+            .json(&envelope)
+            .send()
+            .await
+            .map_err(|_| Error::new("NETWORK", OVERSEAS_NET_HINT))?;
+
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+        if !status.is_success() || body["ok"] != Value::Bool(true) {
+            let msg = body["error"]
+                .as_str()
+                .map(|s| format!("读取反馈历史失败：{s}"))
+                .unwrap_or_else(|| format!("读取反馈历史失败（HTTP {}）", status.as_u16()));
+            return Err(Error::new("HTTP", msg));
+        }
+        Ok(json!({
+            "ok": true,
+            "items": body["items"].as_array().cloned().unwrap_or_default()
+        }))
+    }
+
+    /// Append a follow-up user message to one of this installation's own feedback threads via E2EE.
+    pub async fn reply_feedback(&self, input: Value) -> Result<Value> {
+        self.require_opt_in()?;
+        let origin = self.inner.config.validated_origin()?;
+        let path = "/api/v1/feedback/reply";
+        let url = format!("{}{}", origin.as_str().trim_end_matches('/'), path);
+
+        let feedback_id = input["feedbackId"]
+            .as_i64()
+            .or_else(|| input["feedbackId"].as_str().and_then(|s| s.parse::<i64>().ok()))
+            .filter(|id| *id > 0)
+            .ok_or_else(|| Error::new("INVALID_ARG", "反馈编号无效"))?;
+        let message = redact_text(input["message"].as_str().unwrap_or("").trim(), 2000);
+        if message.is_empty() {
+            return Err(Error::new("INVALID_ARG", "请输入要追加的回复内容"));
+        }
+        let client_token = self.feedback_client_token()?;
+
+        let payload = json!({
+            "clientToken": client_token,
+            "feedbackId": feedback_id,
+            "message": message,
+        });
+        let envelope = encrypt_envelope(
+            &self.inner.config.x25519_pub,
+            "POST",
+            path,
+            &serde_json::to_vec(&payload).map_err(|_| Error::new("SYSTEM", "回复消息编码失败"))?,
+        )?;
+
+        let resp = self
+            .inner
+            .http
+            .post(url)
+            .timeout(Duration::from_secs(15))
+            .json(&envelope)
+            .send()
+            .await
+            .map_err(|_| Error::new("NETWORK", OVERSEAS_NET_HINT))?;
+
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+        if !status.is_success() || body["ok"] != Value::Bool(true) {
+            let msg = body["error"]
+                .as_str()
+                .map(|s| format!("发送追问失败：{s}"))
+                .unwrap_or_else(|| format!("发送追问失败（HTTP {}）", status.as_u16()));
+            return Err(Error::new("HTTP", msg));
+        }
+
+        self.record_event("info", "feedback", Some("FEEDBACK_REPLY"), "user appended feedback reply");
+        Ok(json!({
+            "ok": true,
+            "reply": body["reply"],
+            "updatedAt": body["updatedAt"]
         }))
     }
 
@@ -1030,10 +1177,32 @@ mod tests {
             hub.download_update("0.3.0-beta.1", None, None, |_| {}).await,
             hub.send_telemetry("0.3.0-beta.1", json!({"eventType":"heartbeat"})).await,
             hub.submit_feedback("0.3.0-beta.1", json!({"category":"bug","message":"test msg"})).await,
+            hub.list_feedback().await,
+            hub.reply_feedback(json!({"feedbackId":1,"message":"follow up"})).await,
         ] {
             let err = res.expect_err("must block when serverOptIn == false");
             assert_eq!(err.code, "OPT_IN_REQUIRED");
         }
+    }
+
+    #[test]
+    fn feedback_token_persists_across_reloads_and_recovers_corrupt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let token_path = dir.path().join("hub-feedback-token");
+        // Seed a corrupt file first so Windows overwrite semantics (remove before rename) are exercised!
+        std::fs::write(&token_path, "corrupt-short-token").unwrap();
+
+        let core1 = Core::open_no_proxy(dir.path()).unwrap();
+        let hub1 = HubClient::new(core1, HubConfig::from_env_or_default()).unwrap();
+        let tok1 = hub1.feedback_client_token().unwrap();
+        assert_eq!(tok1.len(), 64);
+        assert!(tok1.bytes().all(|b| b.is_ascii_hexdigit()));
+
+        // Reload with a fresh HubClient pointing to the same profile_dir -> must return identical token
+        let core2 = Core::open_no_proxy(dir.path()).unwrap();
+        let hub2 = HubClient::new(core2, HubConfig::from_env_or_default()).unwrap();
+        let tok2 = hub2.feedback_client_token().unwrap();
+        assert_eq!(tok1, tok2);
     }
 
     #[test]
@@ -1251,17 +1420,14 @@ mod tests {
 
         // Now test Rust HubClient end-to-end!
         let core = Core::open_no_proxy(tmp.path().join("profile")).unwrap();
-        let hub = HubClient::new(
-            core,
-            HubConfig {
-                base_url: base_url.clone(),
-                region: "Test Local".into(),
-                x25519_pub,
-                ed25519_pub,
-                allow_insecure_localhost: true,
-            },
-        )
-        .unwrap();
+        let hub_cfg = HubConfig {
+            base_url: base_url.clone(),
+            region: "Test Local".into(),
+            x25519_pub,
+            ed25519_pub,
+            allow_insecure_localhost: true,
+        };
+        let hub = HubClient::new(core, hub_cfg.clone()).unwrap();
 
         // 1. Must block before opt-in
         assert_eq!(hub.check_update("0.3.0-beta.1").await.unwrap_err().code, "OPT_IN_REQUIRED");
@@ -1339,5 +1505,71 @@ mod tests {
         assert!(!logs_str.contains("secretuser"), "home path must be redacted");
         assert!(!logs_str.contains("abc"), "cookie value must be redacted");
         assert!(logs_str.contains("[REDACTED_COOKIE]"));
+        assert_eq!(fb_list["items"][0]["has_client_token"], true);
+
+        // 8. Verify my feedback history + two-way replies + strict cross-client isolation!
+        let fb_id = fb["id"].as_i64().unwrap();
+        let mine = hub.list_feedback().await.unwrap();
+        assert_eq!(mine["items"].as_array().unwrap().len(), 1);
+        assert_eq!(mine["items"][0]["id"], fb_id);
+        assert_eq!(mine["items"][0]["status"], "open");
+
+        // Admin replies & transitions status to in_progress
+        let admin_reply: Value = probe
+            .post(format!("{base_url}/api/admin/feedback/{fb_id}/reply"))
+            .header("Cookie", &cookie)
+            .header("X-QDL-Admin", "1")
+            .json(&json!({"message": "收到，正在排查中！", "status": "in_progress"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(admin_reply["ok"], true);
+        assert_eq!(admin_reply["status"], "in_progress");
+
+        // User sees admin reply and updated status
+        let mine_after_admin = hub.list_feedback().await.unwrap();
+        assert_eq!(mine_after_admin["items"][0]["status"], "in_progress");
+        assert_eq!(mine_after_admin["items"][0]["hasAdminReply"], true);
+        assert_eq!(mine_after_admin["items"][0]["messages"][0]["sender"], "admin");
+        assert_eq!(mine_after_admin["items"][0]["messages"][0]["message"], "收到，正在排查中！");
+
+        // User appends a follow-up message
+        let follow = hub
+            .reply_feedback(json!({"feedbackId": fb_id, "message": "补充：Windows 11 复现稳定"}))
+            .await
+            .unwrap();
+        assert_eq!(follow["ok"], true);
+        assert_eq!(follow["reply"]["sender"], "user");
+
+        // Admin sees both messages in order and last_sender == 'user'
+        let fb_list2: Value = probe
+            .get(format!("{base_url}/api/admin/feedback"))
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let thread = fb_list2["items"][0]["messages"].as_array().unwrap();
+        assert_eq!(thread.len(), 2);
+        assert_eq!(thread[0]["sender"], "admin");
+        assert_eq!(thread[1]["sender"], "user");
+        assert_eq!(fb_list2["items"][0]["last_sender"], "user");
+
+        // Another client profile with a different feedback token MUST see 0 items & CANNOT reply!
+        let other_dir = tmp.path().join("other-profile");
+        let other_core = Core::open_no_proxy(&other_dir).unwrap();
+        other_core.set_settings(json!({"serverOptIn": true})).unwrap();
+        let other_hub = HubClient::new(other_core, hub_cfg).unwrap();
+        assert_eq!(other_hub.list_feedback().await.unwrap()["items"].as_array().unwrap().len(), 0);
+        let forbidden = other_hub
+            .reply_feedback(json!({"feedbackId": fb_id, "message": "hijack attempt"}))
+            .await
+            .expect_err("another client must never reply to someone else's feedback");
+        assert_eq!(forbidden.code, "HTTP");
     }
 }

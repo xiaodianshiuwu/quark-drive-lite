@@ -375,7 +375,46 @@ async fn verify_parts(temp: &Path, cp: &mut Checkpoint, token: &CancellationToke
     }
     Ok(())
 }
+/// Ensure `dir + sep + name + .{uuid}.qkdownloading` stays within classic Windows MAX_PATH (260)
+/// when downloading deeply nested subdirectories, preserving extension and UTF-8 char boundaries.
+fn fit_name_for_dir(dir: &Path, name: &str) -> String {
+    let dir_len = dir.to_string_lossy().len();
+    // Reserve room for path separator (1) + "(9999)" suffix (6) + ".{36-char-uuid}.qkdownloading" (51) + margin
+    let overhead = dir_len.saturating_add(62);
+    let max_name = 250usize.saturating_sub(overhead).max(24);
+    if name.len() <= max_name {
+        return name.to_string();
+    }
+    let p = Path::new(name);
+    let ext = p
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| {
+            let mut end = s.len().min(16);
+            while !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!(".{}", &s[..end])
+        })
+        .unwrap_or_default();
+    let stem_raw = if ext.is_empty() {
+        name
+    } else {
+        name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name)
+    };
+    let stem_budget = max_name.saturating_sub(ext.len()).max(8);
+    let mut end = stem_raw.len().min(stem_budget);
+    while !stem_raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    let stem = stem_raw[..end].trim_end_matches(['.', ' ']);
+    let stem = if stem.is_empty() { "file" } else { stem };
+    format!("{stem}{ext}")
+}
+
 async fn reserve(m: &TransferManager, id: &str, dir: &Path, name: &str) -> Result<PathBuf> {
+    let fitted = fit_name_for_dir(dir, name);
+    let name = fitted.as_str();
     let p = Path::new(name);
     let ext = p
         .extension()
@@ -1529,5 +1568,15 @@ mod tests {
         assert_eq!(fs::read(&forged.temp).await.unwrap(), b"keep");
         cleanup(&m.task(&id).unwrap()).await.unwrap();
         assert!(!temp.exists());
+    }
+    #[test]
+    fn fit_name_for_dir_keeps_deep_nested_paths_within_windows_budget() {
+        let deep = PathBuf::from("C:\\Users\\Administrator\\Downloads\\项目资料\\2026年度汇总\\子目录A\\更深一级目录\\第二层子目录");
+        let long_name = format!("{}.xlsx", "非常长的季度财务报表文件名测试".repeat(6));
+        let fitted = fit_name_for_dir(&deep, &long_name);
+        assert!(fitted.ends_with(".xlsx"), "extension must be preserved: {fitted}");
+        assert!(fitted.len() < long_name.len(), "long filename must be trimmed");
+        assert!(deep.to_string_lossy().len() + fitted.len() + 62 <= 250 || fitted.len() <= 24);
+        assert_eq!(fit_name_for_dir(Path::new("/tmp"), "normal.txt"), "normal.txt");
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "quark-drive-lite-tauri"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 license = "MIT"
 default-run = "quark-drive-lite-tauri"

@@ -117,6 +117,8 @@ async fn qk_call(
             }
             "hub.sendTelemetry" => state.hub.send_telemetry(ver, params).await,
             "hub.submitFeedback" => state.hub.submit_feedback(ver, params).await,
+            "hub.listFeedback" => state.hub.list_feedback().await,
+            "hub.replyFeedback" => state.hub.reply_feedback(params).await,
             "hub.logPreview" => Ok(json!({ "logs": state.hub.log_preview() })),
             "hub.recordEvent" => {
                 state.hub.record_event(

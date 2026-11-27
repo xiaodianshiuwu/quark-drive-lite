@@ -125,6 +125,60 @@ pub fn safe_name(input: &str) -> String {
     }
     name
 }
+pub fn safe_dir_segment(input: &str) -> String {
+    let mut name: String = input
+        .nfc()
+        .map(|c| {
+            if c.is_control() || "\\/:*?\"<>|".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    name = name.trim().trim_end_matches(['.', ' ']).into();
+    if name.is_empty() || name.chars().all(|c| c == '.') {
+        name = "未命名文件夹".into();
+    }
+    let first = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    if ["CON", "PRN", "AUX", "NUL"].contains(&first.as_str())
+        || ((first.starts_with("COM") || first.starts_with("LPT"))
+            && first.len() == 4
+            && matches!(first.as_bytes()[3], b'1'..=b'9'))
+    {
+        name = format!("_{name}");
+    }
+    if name.len() > 100 {
+        name = trim_utf8(&name, 100)
+            .trim_end_matches(['.', ' '])
+            .to_string();
+        if name.is_empty() {
+            name = "未命名文件夹".into();
+        }
+    }
+    name
+}
+pub fn join_safe_rel_dir(base: &std::path::Path, segments: &[String]) -> Result<std::path::PathBuf> {
+    if !base.is_absolute() {
+        return Err(err("INVALID_ARG", "下载根目录必须是绝对路径"));
+    }
+    if segments.len() > 32 {
+        return Err(err("INVALID_ARG", "下载目录层级过深（最多支持 32 级子目录）"));
+    }
+    let mut out = base.to_path_buf();
+    for raw in segments {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let seg = safe_dir_segment(trimmed);
+        out.push(seg);
+    }
+    if !out.starts_with(base) {
+        return Err(err("INVALID_ARG", "下载子目录路径无效"));
+    }
+    Ok(out)
+}
 fn trim_utf8(s: &str, n: usize) -> &str {
     let mut end = s.len().min(n);
     while !s.is_char_boundary(end) {
@@ -180,5 +234,33 @@ mod tests {
     #[test]
     fn prefix_context_is_signed_in_the_observed_header_position() {
         assert_eq!(put_meta_with_ctx("text/plain", "date", "b", "k", 2, "u", Some("Y3R4")), format!("PUT\n\ntext/plain\ndate\nX-Oss-Hash-Ctx:Y3R4\nx-oss-date:date\nx-oss-user-agent:{OSS_USER_AGENT}\n/b/k?partNumber=2&uploadId=u"));
+    }
+    #[test]
+    fn safe_rel_dir_sanitizes_windows_chars_reserved_names_and_traversal() {
+        let base = std::env::temp_dir().join("qdl-base");
+        let joined = join_safe_rel_dir(
+            &base,
+            &[
+                "2026/Q1:报表*?".into(),
+                "..".into(),
+                "CON".into(),
+                "trailing. ".into(),
+            ],
+        )
+        .unwrap();
+        assert!(joined.starts_with(&base));
+        let rel: Vec<String> = joined
+            .strip_prefix(&base)
+            .unwrap()
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(rel, vec!["2026_Q1_报表__", "未命名文件夹", "_CON", "trailing"]);
+        // Depth limit enforced
+        let too_deep: Vec<String> = (0..33).map(|i| format!("d{i}")).collect();
+        assert_eq!(
+            join_safe_rel_dir(&base, &too_deep).unwrap_err().code,
+            "INVALID_ARG"
+        );
     }
 }
