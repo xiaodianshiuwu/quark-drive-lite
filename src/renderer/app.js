@@ -2292,12 +2292,16 @@
     }
   }
 
+  var listFrameTimer = null;
   function scheduleRows() {
-    if (listFrame !== null) return;
-    listFrame = requestAnimationFrame(function () {
-      listFrame = null;
+    if (listFrame !== null || listFrameTimer !== null) return;
+    var flush = function () {
+      if (listFrame !== null) { cancelAnimationFrame(listFrame); listFrame = null; }
+      if (listFrameTimer !== null) { clearTimeout(listFrameTimer); listFrameTimer = null; }
       if (state.view === 'files') renderRows(listSeq, false);
-    });
+    };
+    listFrame = requestAnimationFrame(flush);
+    listFrameTimer = setTimeout(flush, 60);
   }
 
   function renderEmpty(message, isError, opts) {
