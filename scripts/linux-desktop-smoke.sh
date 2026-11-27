@@ -26,8 +26,7 @@ openbox &
 wm_pid=$!
 dbus-update-activation-environment DISPLAY XAUTHORITY
 thunar --daemon &
-file_manager_pid=
-drag_pid=$!
+file_manager_pid=$!
 "$binary" &
 app_pid=$!
 
@@ -68,7 +67,7 @@ sleep 0.5
 xdotool key --window "$files" F2
 if ! rename=$(timeout 4 bash -c '
   while true; do
-    id=$(wmctrl -lx | awk -v p="^Rename" "$0 ~ p {print \$1; exit}")
+    id=$(wmctrl -lx | awk -v p="^Rename" '\''$0 ~ p {print $1; exit}'\'')
     if [[ -n "$id" ]]; then echo "$id"; exit 0; fi
     sleep 0.1
   done

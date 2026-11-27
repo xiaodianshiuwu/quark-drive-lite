@@ -19,6 +19,7 @@ export QK_PROFILE_DIR="$profile"
 "$executable" &
 app_pid=$!
 window=$(timeout 45s xdotool search --sync --onlyvisible --name '^夸克网盘 · 极简版$')
+window=${window%%$'\n'*}
 # The native window can appear before Tauri finishes creating the profile.
 for attempt in {1..100}; do
   kill -0 "$app_pid"

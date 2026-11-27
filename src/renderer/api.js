@@ -63,7 +63,7 @@
     if (err instanceof Error) {
       if (!err.code) err.code = code;
       if (!err.message) err.message = message;
-      if (err.raw === undefined) err.raw = err.raw;
+      if (err.raw === undefined && e && typeof e === 'object') err.raw = e;
       return err;
     }
     var e = mkError(code, message, err.raw !== undefined ? err.raw : err);
@@ -537,6 +537,9 @@
 
   function createMockBridge() {
     var now = Date.now();
+    var KB = 1024;
+    var MB = 1024 * KB;
+    var GB = 1024 * MB;
     var mockFeedbacks = [];
     var items = {};          // fid -> FileItem
     var kids = {};           // pdirFid -> [fid]
@@ -1087,7 +1090,7 @@
             prompted: true,
             baseUrl: 'https://qdl.xiaodianshiuwu.space',
             region: '海外节点 · Tokyo (JP)',
-            currentVersion: '1.0.1',
+            currentVersion: '1.0.2',
             platform: 'preview',
             arch: 'mock',
             recommendedAssetKey: 'macos-arm64',
@@ -1132,7 +1135,7 @@
         },
         listFeedback: function () {
           if (!settings.serverOptIn) return Promise.reject({ code: 'OPT_IN_REQUIRED', message: '请先开启连接作者服务器' });
-          return Promise.resolve({ ok: true, items: clone(mockFeedbacks) });
+          return Promise.resolve({ ok: true, items: JSON.parse(JSON.stringify(mockFeedbacks)) });
         },
         replyFeedback: function (p) {
           if (!settings.serverOptIn) return Promise.reject({ code: 'OPT_IN_REQUIRED', message: '请先开启连接作者服务器' });

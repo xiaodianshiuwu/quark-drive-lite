@@ -221,6 +221,7 @@ impl AgentChat {
         generation:u64,
     ) -> Result<SendOutcome, AgentToolError> {
         let mut round: u32 = 0;
+        let mut timed_out = false;
         loop {
             self.ensure_generation(generation)?;
             round += 1;
@@ -231,6 +232,7 @@ impl AgentChat {
             let elapsed = started.elapsed().as_millis() as u64;
             // 剩余不足 1 秒就不再发起新请求：总时长上限是硬约束。
             if TOTAL_TIMEOUT_MS.saturating_sub(elapsed) <= 1000 {
+                timed_out = true;
                 break;
             }
             let remaining = TOTAL_TIMEOUT_MS - elapsed;
@@ -340,6 +342,44 @@ impl AgentChat {
                     st.messages.push(Value::Object(assistant));
                 }
             }
+            if normalized_calls.is_empty() {
+                let reply = message
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "模型未返回有效的工具调用或回复内容。".to_string());
+                let ms = started.elapsed().as_millis() as u64;
+                {
+                    let mut st = self.state.lock().unwrap();
+                    self.ensure_generation(generation)?;
+                    st.transcript.push(json!({
+                        "role": "assistant",
+                        "text": reply,
+                        "at": crate::journal::now_ms(),
+                        "toolCalls": tool_calls.clone(),
+                        "rounds": round,
+                        "ms": ms,
+                    }));
+                }
+                emit(
+                    on_event,
+                    json!({
+                        "type": "done",
+                        "reply": reply,
+                        "rounds": round,
+                        "toolCalls": tool_calls,
+                        "ms": ms,
+                    }),
+                );
+                return Ok(SendOutcome {
+                    reply,
+                    rounds: round,
+                    tool_calls: tool_calls.clone(),
+                    stopped: None,
+                    ms,
+                });
+            }
 
             // 单轮工具数量上限：防止一次返回几十个调用把上游打爆。
             let mut records: Vec<Value> = Vec::new();
@@ -439,11 +479,16 @@ impl AgentChat {
             }
         }
 
-        // 达到轮次上限仍未收敛。
-        let reply = format!(
-            "已达到本轮工具调用上限（{} 次），先停在这里。你可以让我继续，或缩小任务范围重试。",
-            cfg.max_rounds
-        );
+        // 达到总时长上限或轮次上限仍未收敛。
+        let stopped_reason = if timed_out { "timeout" } else { "max_rounds" };
+        let reply = if timed_out {
+            "本轮对话已达到总时长上限，先停在这里。你可以让我继续，或缩小任务范围重试。".to_string()
+        } else {
+            format!(
+                "已达到本轮工具调用上限（{} 次），先停在这里。你可以让我继续，或缩小任务范围重试。",
+                cfg.max_rounds
+            )
+        };
         let ms = started.elapsed().as_millis() as u64;
         {
             let mut st = self.state.lock().unwrap();
@@ -454,7 +499,7 @@ impl AgentChat {
                 "text": reply,
                 "at": crate::journal::now_ms(),
                 "toolCalls": tool_calls.clone(),
-                "stopped": "max_rounds",
+                "stopped": stopped_reason,
                 "ms": ms,
             }));
         }
@@ -463,17 +508,17 @@ impl AgentChat {
             json!({
                 "type": "done",
                 "reply": reply,
-                "rounds": cfg.max_rounds,
+                "rounds": round.min(cfg.max_rounds),
                 "toolCalls": tool_calls,
-                "stopped": "max_rounds",
+                "stopped": stopped_reason,
                 "ms": ms,
             }),
         );
         Ok(SendOutcome {
             reply,
-            rounds: cfg.max_rounds,
+            rounds: round.min(cfg.max_rounds),
             tool_calls: tool_calls.clone(),
-            stopped: Some("max_rounds".to_string()),
+            stopped: Some(stopped_reason.to_string()),
             ms,
         })
     }

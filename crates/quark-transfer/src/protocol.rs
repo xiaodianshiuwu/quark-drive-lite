@@ -22,6 +22,7 @@ pub fn put_meta_with_ctx(
     hash_context: Option<&str>,
 ) -> String {
     // The observed protocol signs this header with exactly this capitalization.
+    let key = key.trim_start_matches('/');
     let context = hash_context
         .map(|s| format!("X-Oss-Hash-Ctx:{s}\n"))
         .unwrap_or_default();
@@ -35,6 +36,7 @@ pub fn complete_meta(
     key: &str,
     upload_id: &str,
 ) -> String {
+    let key = key.trim_start_matches('/');
     format!("POST\n{md5}\napplication/xml\n{date}\nx-oss-callback:{callback}\nx-oss-date:{date}\nx-oss-user-agent:{OSS_USER_AGENT}\n/{bucket}/{key}?uploadId={upload_id}")
 }
 pub fn xml(parts: &[(u64, String)]) -> String {
@@ -87,6 +89,19 @@ pub fn oss_url(raw: &str, bucket: &str, key: &str) -> Result<reqwest::Url> {
         .extend(key.trim_start_matches('/').split('/'));
     Ok(target)
 }
+pub(crate) fn is_windows_reserved_name(name: &str) -> bool {
+    let first = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_ascii_uppercase();
+    ["CON", "PRN", "AUX", "NUL"].contains(&first.as_str())
+        || ((first.starts_with("COM") || first.starts_with("LPT"))
+            && first.len() == 4
+            && matches!(first.as_bytes()[3], b'1'..=b'9'))
+}
+
 pub fn safe_name(input: &str) -> String {
     let mut name: String = input
         .nfc()
@@ -102,26 +117,32 @@ pub fn safe_name(input: &str) -> String {
     if name.is_empty() || name.chars().all(|c| c == '.') {
         name = "未命名文件".into();
     }
-    let first = name.split('.').next().unwrap_or("").to_ascii_uppercase();
-    if ["CON", "PRN", "AUX", "NUL"].contains(&first.as_str())
-        || ((first.starts_with("COM") || first.starts_with("LPT"))
-            && first.len() == 4
-            && matches!(first.as_bytes()[3], b'1'..=b'9'))
-    {
+    if is_windows_reserved_name(&name) {
         name = format!("_{name}");
     }
     if name.len() > 180 {
         let ext = std::path::Path::new(&name)
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| format!(".{}", trim_utf8(s, 19)))
+            .map(|s| trim_utf8(s, 19).trim_end_matches(['.', ' ']))
+            .filter(|s| !s.is_empty())
+            .map(|s| format!(".{s}"))
             .unwrap_or_default();
         let stem = if ext.is_empty() {
             name.as_str()
         } else {
             name.rsplit_once('.').map(|(s, _)| s).unwrap_or(&name)
         };
-        name = format!("{}{}", trim_utf8(stem, 180 - ext.len()), ext);
+        let mut trimmed_stem = trim_utf8(stem, 180usize.saturating_sub(ext.len()))
+            .trim_end_matches(['.', ' '])
+            .to_string();
+        if trimmed_stem.is_empty() {
+            trimmed_stem = "file".into();
+        }
+        name = format!("{trimmed_stem}{ext}");
+        if is_windows_reserved_name(&name) {
+            name = format!("_{name}");
+        }
     }
     name
 }
@@ -140,12 +161,7 @@ pub fn safe_dir_segment(input: &str) -> String {
     if name.is_empty() || name.chars().all(|c| c == '.') {
         name = "未命名文件夹".into();
     }
-    let first = name.split('.').next().unwrap_or("").to_ascii_uppercase();
-    if ["CON", "PRN", "AUX", "NUL"].contains(&first.as_str())
-        || ((first.starts_with("COM") || first.starts_with("LPT"))
-            && first.len() == 4
-            && matches!(first.as_bytes()[3], b'1'..=b'9'))
-    {
+    if is_windows_reserved_name(&name) {
         name = format!("_{name}");
     }
     if name.len() > 100 {
@@ -154,6 +170,9 @@ pub fn safe_dir_segment(input: &str) -> String {
             .to_string();
         if name.is_empty() {
             name = "未命名文件夹".into();
+        }
+        if is_windows_reserved_name(&name) {
+            name = format!("_{name}");
         }
     }
     name

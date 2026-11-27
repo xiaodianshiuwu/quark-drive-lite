@@ -82,6 +82,28 @@ impl Sha1State {
         }
     }
 
+    pub(crate) fn finalize_hex(mut self) -> Result<String> {
+        let bits = self
+            .bytes
+            .checked_mul(8)
+            .ok_or_else(|| err("INVALID_ARG", "上传文件过大"))?;
+        let padding = if self.tail.len() < 56 {
+            56 - self.tail.len()
+        } else {
+            120 - self.tail.len()
+        };
+        let mut tail = vec![0u8; padding + 8];
+        tail[0] = 0x80;
+        tail[padding..].copy_from_slice(&bits.to_be_bytes());
+        self.update(&tail)?;
+        let mut out = String::with_capacity(40);
+        for w in self.words {
+            use std::fmt::Write;
+            let _ = write!(&mut out, "{w:08x}");
+        }
+        Ok(out)
+    }
+
     pub(crate) fn export_base64(&self) -> Result<String> {
         if !self.tail.is_empty() {
             return Err(err("CONTENT_MISMATCH", "上传哈希前缀未按 64 字节对齐"));

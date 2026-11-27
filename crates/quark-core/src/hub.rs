@@ -38,6 +38,9 @@ pub const DEFAULT_X25519_PUB_B64: &str = "JiBk3eOuPSeJfVdmlf69pMVn5XdZdN2OoCswV+
 pub const DEFAULT_ED25519_PUB_B64: &str = "+ruMjuPB615LgeQuCJI+HUn/C/Ie8KCU+cbQEU8r918=";
 
 const MAX_DIAG_ENTRIES: usize = 200;
+const MAX_PENDING_SAMPLES: usize = 100;
+const MAX_UPDATE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_HUB_JSON_BYTES: usize = 2 * 1024 * 1024;
 const OVERSEAS_NET_HINT: &str = "无法连接到海外更新服务器（可能因网络波动或跨境链路受限）。如果您有代理/梯子可开启后重试；不连接也完全不影响本地网盘核心功能。";
 
 #[derive(Clone, Debug, Serialize)]
@@ -49,6 +52,16 @@ pub struct DiagEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     pub msg: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub biz_code: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -62,22 +75,34 @@ pub struct HubConfig {
 
 impl HubConfig {
     pub fn from_env_or_default() -> Self {
-        let base_url = std::env::var("QDL_HUB_URL")
-            .ok()
-            .map(|s| s.trim().trim_end_matches('/').to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| DEFAULT_HUB_URL.to_string());
-        let x25519_b64 = std::env::var("QDL_HUB_X25519_PUB")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_X25519_PUB_B64.to_string());
-        let ed25519_b64 = std::env::var("QDL_HUB_ED25519_PUB")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_ED25519_PUB_B64.to_string());
-        let x25519_pub = decode_key32(&x25519_b64).unwrap_or_else(|| decode_key32(DEFAULT_X25519_PUB_B64).unwrap());
-        let ed25519_pub = decode_key32(&ed25519_b64).unwrap_or_else(|| decode_key32(DEFAULT_ED25519_PUB_B64).unwrap());
-        let allow_insecure_localhost = std::env::var("QDL_HUB_ALLOW_INSECURE_LOCALHOST").as_deref() == Ok("1");
+        #[cfg(any(debug_assertions, test))]
+        let (base_url, x25519_b64, ed25519_b64, allow_insecure_localhost) = (
+            std::env::var("QDL_HUB_URL")
+                .ok()
+                .map(|s| s.trim().trim_end_matches('/').to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| DEFAULT_HUB_URL.to_string()),
+            std::env::var("QDL_HUB_X25519_PUB")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_X25519_PUB_B64.to_string()),
+            std::env::var("QDL_HUB_ED25519_PUB")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_ED25519_PUB_B64.to_string()),
+            std::env::var("QDL_HUB_ALLOW_INSECURE_LOCALHOST").as_deref() == Ok("1"),
+        );
+        #[cfg(not(any(debug_assertions, test)))]
+        let (base_url, x25519_b64, ed25519_b64, allow_insecure_localhost) = (
+            DEFAULT_HUB_URL.to_string(),
+            DEFAULT_X25519_PUB_B64.to_string(),
+            DEFAULT_ED25519_PUB_B64.to_string(),
+            false,
+        );
+        let x25519_pub =
+            decode_key32(&x25519_b64).unwrap_or_else(|| decode_key32(DEFAULT_X25519_PUB_B64).unwrap());
+        let ed25519_pub =
+            decode_key32(&ed25519_b64).unwrap_or_else(|| decode_key32(DEFAULT_ED25519_PUB_B64).unwrap());
         Self {
             base_url,
             region: DEFAULT_SERVER_REGION.to_string(),
@@ -122,6 +147,8 @@ struct HubInner {
     started_at: Instant,
     session_salt: String,
     diag: Mutex<VecDeque<DiagEntry>>,
+    pending_samples: Mutex<VecDeque<Value>>,
+    sample_notify: Arc<tokio::sync::Notify>,
     feedback_token: Mutex<Option<String>>,
 }
 
@@ -156,10 +183,16 @@ impl HubClient {
             category: "lifecycle".into(),
             code: Some("APP_START".into()),
             msg: format!(
-                "app started ({}/{})",
+                "app started v{} ({}/{})",
+                env!("CARGO_PKG_VERSION"),
                 std::env::consts::OS,
                 std::env::consts::ARCH
             ),
+            http_status: None,
+            biz_code: None,
+            duration_ms: None,
+            meta: None,
+            count: None,
         });
 
         Ok(Self {
@@ -170,6 +203,8 @@ impl HubClient {
                 started_at: Instant::now(),
                 session_salt,
                 diag: Mutex::new(diag),
+                pending_samples: Mutex::new(VecDeque::with_capacity(MAX_PENDING_SAMPLES)),
+                sample_notify: Arc::new(tokio::sync::Notify::new()),
                 feedback_token: Mutex::new(None),
             }),
         })
@@ -201,8 +236,24 @@ impl HubClient {
         code: Option<&str>,
         msg: &str,
     ) {
+        self.record_event_rich(level, category, code, msg, None, None, None, None);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_event_rich(
+        &self,
+        level: &str,
+        category: &str,
+        code: Option<&str>,
+        msg: &str,
+        http_status: Option<u16>,
+        biz_code: Option<i64>,
+        duration_ms: Option<u64>,
+        meta: Option<Value>,
+    ) {
+        let now = now_ms();
         let entry = DiagEntry {
-            ts: now_ms(),
+            ts: now,
             level: match level {
                 "error" | "warn" | "info" => level.to_string(),
                 _ => "info".to_string(),
@@ -210,12 +261,176 @@ impl HubClient {
             category: redact_text(category, 32),
             code: code.map(|c| redact_text(c, 64)).filter(|s| !s.is_empty()),
             msg: redact_text(msg, 320),
+            http_status,
+            biz_code,
+            duration_ms,
+            meta: meta.and_then(sanitize_diag_meta),
+            count: None,
         };
         if let Ok(mut buf) = self.inner.diag.lock() {
+            if let Some(last) = buf.back_mut() {
+                if last.level == entry.level
+                    && last.category == entry.category
+                    && last.code == entry.code
+                    && last.msg == entry.msg
+                    && last.http_status == entry.http_status
+                    && last.biz_code == entry.biz_code
+                    && last.meta == entry.meta
+                    && now.saturating_sub(last.ts) <= 30_000
+                {
+                    last.ts = now;
+                    last.count = Some(last.count.unwrap_or(1).saturating_add(1));
+                    return;
+                }
+            }
             if buf.len() >= MAX_DIAG_ENTRIES {
                 buf.pop_front();
             }
             buf.push_back(entry);
+        }
+    }
+
+    /// Record a strictly zero-PII transfer engine completion/failure sample into the local
+    /// diagnostic ring buffer and, when opted in, enqueue it for encrypted batch telemetry upload.
+    pub fn record_transfer_sample(&self, raw: Value) {
+        let Some(sample) = sanitize_transfer_sample(&raw) else {
+            return;
+        };
+        let kind = sample["kind"].as_str().unwrap_or("download");
+        let outcome = sample["outcome"].as_str().unwrap_or("done");
+        let strategy = sample["strategy"].as_str().unwrap_or("unknown");
+        let bucket = sample["sizeBucket"].as_str().unwrap_or("0");
+        let avg_bps = sample["avgBps"].as_u64().unwrap_or(0);
+        let dur_ms = sample["durationMs"].as_u64().unwrap_or(0);
+        let retries = sample["partRetries"].as_u64().unwrap_or(0);
+        let rapid = sample["rapidUpload"].as_bool().unwrap_or(false);
+        let stage = sample["stage"].as_str().unwrap_or("");
+        let err_code = sample["errorCode"].as_str();
+        let http_status = sample["httpStatus"].as_u64().and_then(|v| u16::try_from(v).ok());
+
+        let level = if outcome == "error" {
+            "error"
+        } else if retries > 0 || outcome == "canceled" {
+            "warn"
+        } else {
+            "info"
+        };
+        let diag_code = err_code.unwrap_or(match (kind, outcome, rapid) {
+            ("upload", "done", true) => "UPLOAD_RAPID_DONE",
+            ("upload", "done", false) => "UPLOAD_DONE",
+            ("download", "done", _) => "DOWNLOAD_DONE",
+            (_, "canceled", _) => "TRANSFER_CANCELED",
+            _ => "TRANSFER_ERROR",
+        });
+        let msg = format!(
+            "{} {} [{}] strat={} avg={}KB/s dur={}ms retries={}{}",
+            kind,
+            outcome,
+            bucket,
+            strategy,
+            avg_bps / 1024,
+            dur_ms,
+            retries,
+            if stage.is_empty() {
+                String::new()
+            } else {
+                format!(" stage={stage}")
+            }
+        );
+        self.record_event_rich(
+            level,
+            "transfer",
+            Some(diag_code),
+            &msg,
+            http_status,
+            None,
+            Some(dur_ms),
+            Some(sample.clone()),
+        );
+
+        if self.is_opted_in() {
+            if let Ok(mut q) = self.inner.pending_samples.lock() {
+                if q.len() >= MAX_PENDING_SAMPLES {
+                    q.pop_front();
+                }
+                q.push_back(sample);
+            }
+            self.inner.sample_notify.notify_one();
+        }
+    }
+
+    pub fn pending_sample_count(&self) -> usize {
+        self.inner
+            .pending_samples
+            .lock()
+            .map(|q| q.len())
+            .unwrap_or(0)
+    }
+
+    fn take_pending_samples(&self, max_count: usize) -> Vec<Value> {
+        let Ok(mut q) = self.inner.pending_samples.lock() else {
+            return Vec::new();
+        };
+        let n = q.len().min(max_count);
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            if let Some(item) = q.pop_front() {
+                out.push(item);
+            }
+        }
+        out
+    }
+
+    fn requeue_samples(&self, samples: Vec<Value>) {
+        if samples.is_empty() {
+            return;
+        }
+        if let Ok(mut q) = self.inner.pending_samples.lock() {
+            for item in samples.into_iter().rev() {
+                if q.len() >= MAX_PENDING_SAMPLES {
+                    break;
+                }
+                q.push_front(item);
+            }
+        }
+    }
+
+    /// Flush buffered transfer samples to `/api/v1/telemetry` (E2EE) with accurate bytes-weighted averages.
+    pub async fn flush_transfer_telemetry(&self, app_version: &str) -> Result<Value> {
+        self.require_opt_in()?;
+        let samples = self.take_pending_samples(50);
+        if samples.is_empty() {
+            return Ok(json!({ "ok": true, "flushed": 0 }));
+        }
+        let summary = aggregate_transfer_samples(&samples);
+        let res = self
+            .send_telemetry_with_samples(app_version, summary, samples.clone())
+            .await;
+        if res.is_err() {
+            self.requeue_samples(samples);
+        }
+        res
+    }
+
+    /// Background loop that debounces and flushes zero-PII transfer engine telemetry when opted in.
+    /// Callers in Tauri setup (which runs on the OS main thread outside Tokio) should spawn this via
+    /// `tauri::async_runtime::spawn`.
+    pub async fn run_telemetry_flusher_loop(self, app_version: &'static str) {
+        loop {
+            self.inner.sample_notify.notified().await;
+            if !self.is_opted_in() {
+                continue;
+            }
+            // Debounce up to 8s to batch bursts, or flush immediately when >= 20 samples are queued.
+            for _ in 0..16 {
+                if self.pending_sample_count() >= 20 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            if self.is_opted_in() && self.pending_sample_count() > 0 {
+                let _ = self.flush_transfer_telemetry(app_version).await;
+            }
         }
     }
 
@@ -356,7 +571,7 @@ impl HubClient {
             .map_err(|e| Error::new("IO", format!("无法创建下载目录：{e}")))?;
 
         let final_path = target_dir.join(filename);
-        let part_path = target_dir.join(format!("{filename}.qkupdate.part"));
+        let part_path = target_dir.join(format!(".{filename}.{}.qkupdate.part", uuid::Uuid::new_v4()));
 
         let mut resp = self
             .inner
@@ -373,10 +588,17 @@ impl HubClient {
             ));
         }
 
+        let declared_size = asset["size"].as_u64().filter(|n| *n > 0);
+        let max_bytes = declared_size
+            .map(|n| n.saturating_add(1024 * 1024).min(MAX_UPDATE_BYTES))
+            .unwrap_or(MAX_UPDATE_BYTES);
         let total = resp
             .content_length()
-            .or_else(|| asset["size"].as_u64())
+            .or(declared_size)
             .unwrap_or(0);
+        if total > MAX_UPDATE_BYTES {
+            return Err(Error::new("INVALID_MANIFEST", "更新包体积超出安全上限"));
+        }
         let mut file = tokio::fs::File::create(&part_path)
             .await
             .map_err(|e| Error::new("IO", format!("无法创建临时更新文件：{e}")))?;
@@ -392,36 +614,47 @@ impl HubClient {
             "percent": 0
         }));
 
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|_| Error::new("NETWORK", OVERSEAS_NET_HINT))?
-        {
-            hasher.update(&chunk);
-            file.write_all(&chunk)
+        let download_res: Result<()> = async {
+            while let Some(chunk) = resp
+                .chunk()
                 .await
-                .map_err(|e| Error::new("IO", format!("写入更新包失败：{e}")))?;
-            downloaded = downloaded.saturating_add(chunk.len() as u64);
-            if last_emit.elapsed() >= Duration::from_millis(150) {
-                let pct = if total > 0 {
-                    ((downloaded as f64 / total as f64) * 100.0).min(99.0) as u64
-                } else {
-                    0
-                };
-                on_progress(json!({
-                    "phase": "downloading",
-                    "filename": filename,
-                    "downloaded": downloaded,
-                    "total": total,
-                    "percent": pct
-                }));
-                last_emit = Instant::now();
+                .map_err(|_| Error::new("NETWORK", OVERSEAS_NET_HINT))?
+            {
+                downloaded = downloaded.saturating_add(chunk.len() as u64);
+                if downloaded > max_bytes {
+                    return Err(Error::new("INVALID_MANIFEST", "更新包实际体积超出清单限制"));
+                }
+                hasher.update(&chunk);
+                file.write_all(&chunk)
+                    .await
+                    .map_err(|e| Error::new("IO", format!("写入更新包失败：{e}")))?;
+                if last_emit.elapsed() >= Duration::from_millis(150) {
+                    let pct = if total > 0 {
+                        ((downloaded as f64 / total as f64) * 100.0).min(99.0) as u64
+                    } else {
+                        0
+                    };
+                    on_progress(json!({
+                        "phase": "downloading",
+                        "filename": filename,
+                        "downloaded": downloaded,
+                        "total": total,
+                        "percent": pct
+                    }));
+                    last_emit = Instant::now();
+                }
             }
+            file.flush()
+                .await
+                .map_err(|e| Error::new("IO", format!("刷新更新包失败：{e}")))?;
+            Ok(())
         }
-        file.flush()
-            .await
-            .map_err(|e| Error::new("IO", format!("刷新更新包失败：{e}")))?;
+        .await;
         drop(file);
+        if let Err(err) = download_res {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err(err);
+        }
 
         let actual_sha256 = hex::encode(hasher.finalize());
         if actual_sha256 != expected_sha256 {
@@ -433,12 +666,26 @@ impl HubClient {
             ));
         }
 
-        if final_path.exists() {
+        if tokio::fs::try_exists(&final_path).await.unwrap_or(false) {
             let _ = tokio::fs::remove_file(&final_path).await;
         }
-        tokio::fs::rename(&part_path, &final_path)
-            .await
-            .map_err(|e| Error::new("IO", format!("保存更新包失败：{e}")))?;
+        let mut rename_err = None;
+        for attempt in 0..5 {
+            match tokio::fs::rename(&part_path, &final_path).await {
+                Ok(()) => {
+                    rename_err = None;
+                    break;
+                }
+                Err(e) => {
+                    rename_err = Some(e);
+                    tokio::time::sleep(Duration::from_millis(40 * (attempt + 1))).await;
+                }
+            }
+        }
+        if let Some(e) = rename_err {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err(Error::new("IO", format!("保存更新包失败：{e}")));
+        }
 
         on_progress(json!({
             "phase": "done",
@@ -471,6 +718,34 @@ impl HubClient {
     /// Encrypt and upload strictly sanitized non-sensitive telemetry when opted in.
     pub async fn send_telemetry(&self, app_version: &str, input: Value) -> Result<Value> {
         self.require_opt_in()?;
+        let explicit_samples: Vec<Value> = input["transferSamples"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(sanitize_transfer_sample)
+            .take(50)
+            .collect();
+        let (samples, drained_from_queue) = if !explicit_samples.is_empty() {
+            (explicit_samples, false)
+        } else {
+            (self.take_pending_samples(50), true)
+        };
+        let res = self
+            .send_telemetry_with_samples(app_version, input, samples.clone())
+            .await;
+        if res.is_err() && drained_from_queue {
+            self.requeue_samples(samples);
+        }
+        res
+    }
+
+    async fn send_telemetry_with_samples(
+        &self,
+        app_version: &str,
+        input: Value,
+        samples: Vec<Value>,
+    ) -> Result<Value> {
+        self.require_opt_in()?;
         let origin = self.inner.config.validated_origin()?;
         let path = "/api/v1/telemetry";
         let url = format!("{}{}", origin.as_str().trim_end_matches('/'), path);
@@ -479,11 +754,22 @@ impl HubClient {
             .log_preview()
             .into_iter()
             .rev()
-            .take(20)
+            .take(30)
             .collect::<Vec<_>>()
             .into_iter()
             .rev()
             .collect();
+
+        let agg = if !samples.is_empty() {
+            Some(aggregate_transfer_samples(&samples))
+        } else {
+            None
+        };
+        let pick_u64 = |key: &str| -> Option<u64> {
+            json_u64(&input[key])
+                .or_else(|| agg.as_ref().and_then(|a| json_u64(&a[key])))
+        };
+        let mem_mb = json_u64(&input["memMb"]).or_else(current_process_rss_mb);
 
         let payload = json!({
             "appVersion": app_version,
@@ -491,17 +777,25 @@ impl HubClient {
             "arch": std::env::consts::ARCH,
             "eventType": redact_text(input["eventType"].as_str().unwrap_or("heartbeat"), 32),
             "clientHash": self.inner.session_salt,
-            "errorCode": input["errorCode"].as_str().map(|s| redact_text(s, 64)),
-            "errorSummary": input["errorSummary"].as_str().map(|s| redact_text(s, 240)),
-            "avgDlBps": input["avgDlBps"].as_u64(),
-            "peakDlBps": input["peakDlBps"].as_u64(),
-            "avgUlBps": input["avgUlBps"].as_u64(),
-            "dlTasks": input["dlTasks"].as_u64(),
-            "ulTasks": input["ulTasks"].as_u64(),
-            "retries": input["retries"].as_u64(),
-            "memMb": input["memMb"].as_u64(),
+            "errorCode": input["errorCode"]
+                .as_str()
+                .or_else(|| agg.as_ref().and_then(|a| a["errorCode"].as_str()))
+                .map(|s| redact_text(s, 64)),
+            "errorSummary": input["errorSummary"]
+                .as_str()
+                .or_else(|| agg.as_ref().and_then(|a| a["errorSummary"].as_str()))
+                .map(|s| redact_text(s, 240)),
+            "avgDlBps": pick_u64("avgDlBps"),
+            "peakDlBps": pick_u64("peakDlBps"),
+            "avgUlBps": pick_u64("avgUlBps"),
+            "peakUlBps": pick_u64("peakUlBps"),
+            "dlTasks": pick_u64("dlTasks"),
+            "ulTasks": pick_u64("ulTasks"),
+            "retries": pick_u64("retries"),
+            "memMb": mem_mb,
             "uptimeSec": self.inner.started_at.elapsed().as_secs(),
             "recentEvents": recent_events,
+            "transferSamples": samples,
         });
 
         let envelope = encrypt_envelope(
@@ -527,24 +821,29 @@ impl HubClient {
                 format!("遥测上报失败（HTTP {}）", resp.status().as_u16()),
             ));
         }
-        Ok(json!({ "ok": true, "encrypted": true }))
+        Ok(json!({ "ok": true, "encrypted": true, "flushed": samples.len() }))
     }
 
     /// Load or generate a persistent, local-only 256-bit anonymous feedback token.
     /// Never exposed to renderer JS and never tied to Quark account or hardware ID.
     fn feedback_client_token(&self) -> Result<String> {
-        let mut guard = self.inner.feedback_token.lock().unwrap();
-        if let Some(tok) = guard.as_ref() {
-            return Ok(tok.clone());
+        if let Some(tok) = self.inner.feedback_token.lock().unwrap().clone() {
+            return Ok(tok);
         }
         let dir = self.inner.core.profile_dir();
         let token_path = dir.join("hub-feedback-token");
-        if let Ok(raw) = std::fs::read_to_string(&token_path) {
-            let trimmed = raw.trim();
-            if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
-                let owned = trimmed.to_ascii_lowercase();
-                *guard = Some(owned.clone());
-                return Ok(owned);
+        if let Ok(meta) = std::fs::symlink_metadata(&token_path) {
+            if !meta.file_type().is_file() {
+                return Err(Error::new("LOCAL_IO", "本地反馈凭证必须为普通文件"));
+            }
+            if let Ok(raw) = std::fs::read_to_string(&token_path) {
+                let trimmed = raw.trim();
+                if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    let owned = trimmed.to_ascii_lowercase();
+                    let mut guard = self.inner.feedback_token.lock().unwrap();
+                    let final_tok = guard.get_or_insert_with(|| owned.clone()).clone();
+                    return Ok(final_tok);
+                }
             }
         }
         let mut bytes = [0u8; 32];
@@ -552,24 +851,34 @@ impl HubClient {
         let token = hex::encode(bytes);
         std::fs::create_dir_all(&dir)
             .map_err(|_| Error::new("LOCAL_IO", "无法创建本地反馈凭证目录"))?;
-        let tmp_path = dir.join(format!("hub-feedback-token.tmp.{}", std::process::id()));
-        std::fs::write(&tmp_path, &token)
-            .map_err(|_| Error::new("LOCAL_IO", "无法写入本地反馈凭证"))?;
-        #[cfg(unix)]
+        let tmp_path = dir.join(format!("hub-feedback-token.tmp.{}", uuid::Uuid::new_v4()));
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+            use std::io::Write;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut f = opts
+                .open(&tmp_path)
+                .map_err(|_| Error::new("LOCAL_IO", "无法写入本地反馈凭证"))?;
+            f.write_all(token.as_bytes())
+                .and_then(|_| f.sync_all())
+                .map_err(|_| Error::new("LOCAL_IO", "无法写入本地反馈凭证"))?;
         }
         #[cfg(windows)]
         {
             let _ = std::fs::remove_file(&token_path);
         }
-        std::fs::rename(&tmp_path, &token_path)
-            .or_else(|_| std::fs::write(&token_path, &token))
-            .map_err(|_| Error::new("LOCAL_IO", "无法保存本地反馈凭证"))?;
-        let _ = std::fs::remove_file(&tmp_path);
-        *guard = Some(token.clone());
-        Ok(token)
+        if std::fs::rename(&tmp_path, &token_path).is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(Error::new("LOCAL_IO", "无法保存本地反馈凭证"));
+        }
+        let mut guard = self.inner.feedback_token.lock().unwrap();
+        let final_tok = guard.get_or_insert_with(|| token.clone()).clone();
+        Ok(final_tok)
     }
 
     /// Encrypt and submit user feedback (optionally attaching redacted diagnostic logs).
@@ -630,7 +939,9 @@ impl HubClient {
             .map_err(|_| Error::new("NETWORK", OVERSEAS_NET_HINT))?;
 
         let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+        let body: Value = read_json_bounded(resp, MAX_HUB_JSON_BYTES)
+            .await
+            .unwrap_or_else(|_| json!({}));
         if !status.is_success() || body["ok"] != Value::Bool(true) {
             let msg = body["error"]
                 .as_str()
@@ -677,7 +988,9 @@ impl HubClient {
             .map_err(|_| Error::new("NETWORK", OVERSEAS_NET_HINT))?;
 
         let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+        let body: Value = read_json_bounded(resp, MAX_HUB_JSON_BYTES)
+            .await
+            .unwrap_or_else(|_| json!({}));
         if !status.is_success() || body["ok"] != Value::Bool(true) {
             let msg = body["error"]
                 .as_str()
@@ -732,7 +1045,9 @@ impl HubClient {
             .map_err(|_| Error::new("NETWORK", OVERSEAS_NET_HINT))?;
 
         let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+        let body: Value = read_json_bounded(resp, MAX_HUB_JSON_BYTES)
+            .await
+            .unwrap_or_else(|_| json!({}));
         if !status.is_success() || body["ok"] != Value::Bool(true) {
             let msg = body["error"]
                 .as_str()
@@ -766,8 +1081,7 @@ impl HubClient {
                 format!("检查更新失败（HTTP {}）", resp.status().as_u16()),
             ));
         }
-        let body: Value = resp
-            .json()
+        let body: Value = read_json_bounded(resp, MAX_HUB_JSON_BYTES)
             .await
             .map_err(|_| Error::new("PARSE", "更新清单响应格式无效"))?;
         let manifest_json = body["manifestJson"]
@@ -898,7 +1212,12 @@ pub fn version_is_newer(candidate: &str, current: &str) -> bool {
 }
 
 fn parse_semver(raw: &str) -> (u64, u64, u64, u8, u64) {
-    let trimmed = raw.trim().trim_start_matches('v');
+    let trimmed = raw
+        .trim()
+        .trim_start_matches('v')
+        .split('+')
+        .next()
+        .unwrap_or("");
     let (core, pre) = match trimmed.split_once('-') {
         Some((c, p)) => (c, Some(p)),
         None => (trimmed, None),
@@ -929,9 +1248,276 @@ fn parse_semver(raw: &str) -> (u64, u64, u64, u8, u64) {
     (major, minor, patch, pre_rank, pre_num)
 }
 
+async fn read_json_bounded(mut resp: reqwest::Response, max_bytes: usize) -> Result<Value> {
+    if resp.content_length().is_some_and(|n| n > max_bytes as u64) {
+        return Err(Error::new("PARSE", "响应体过大"));
+    }
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|_| Error::new("NETWORK", OVERSEAS_NET_HINT))?
+    {
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(Error::new("PARSE", "响应体过大"));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&buf).map_err(|_| Error::new("PARSE", "响应 JSON 格式无效"))
+}
+
+fn json_u64(v: &Value) -> Option<u64> {
+    v.as_u64().or_else(|| {
+        v.as_f64()
+            .filter(|f| f.is_finite() && *f >= 0.0 && *f <= u64::MAX as f64)
+            .map(|f| f.round() as u64)
+    })
+}
+
+fn current_process_rss_mb() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if let Some(rest) = line.strip_prefix("VmRSS:") {
+                    if let Some(kb) = rest
+                        .split_whitespace()
+                        .next()
+                        .and_then(|s| s.parse::<u64>().ok())
+                    {
+                        return Some((kb / 1024).max(1));
+                    }
+                }
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+            .output()
+            .ok()?;
+        let kb = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<u64>()
+            .ok()?;
+        Some((kb / 1024).max(1))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+fn sanitize_code_token(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() || t.len() > 48 {
+        return None;
+    }
+    if t.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    {
+        Some(t.to_string())
+    } else {
+        None
+    }
+}
+
+fn sanitize_diag_meta(val: Value) -> Option<Value> {
+    let obj = val.as_object()?;
+    let mut out = serde_json::Map::new();
+    for (k, v) in obj.iter().take(24) {
+        if k.len() > 40 {
+            continue;
+        }
+        let clean = match v {
+            Value::Null | Value::Bool(_) | Value::Number(_) => v.clone(),
+            Value::String(s) => Value::String(redact_text(s, 80)),
+            _ => continue,
+        };
+        out.insert(k.clone(), clean);
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(Value::Object(out))
+    }
+}
+
+/// Strictly allowlist-validate a transfer sample so zero PII (no filenames, paths, FIDs, URLs) can enter.
+fn sanitize_transfer_sample(raw: &Value) -> Option<Value> {
+    let kind = match raw["kind"].as_str()? {
+        k @ ("download" | "upload") => k,
+        _ => return None,
+    };
+    let outcome = match raw["outcome"].as_str().unwrap_or("done") {
+        o @ ("done" | "error" | "canceled") => o,
+        _ => "error",
+    };
+    let size_bytes = json_u64(&raw["sizeBytes"]).unwrap_or(0);
+    let size_bucket = match raw["sizeBucket"].as_str() {
+        Some(b @ ("0" | "<1M" | "1M-10M" | "10M-100M" | "100M-1G" | "1G-10G" | ">10G")) => b,
+        _ => size_bucket_for(size_bytes),
+    };
+    let transferred_bytes = json_u64(&raw["transferredBytes"]).unwrap_or(0);
+    let duration_ms = json_u64(&raw["durationMs"]).unwrap_or(0);
+    let hash_ms = json_u64(&raw["hashMs"]).unwrap_or(0);
+    let avg_bps = json_u64(&raw["avgBps"]).unwrap_or_else(|| {
+        if duration_ms > 0 {
+            transferred_bytes.saturating_mul(1000) / duration_ms.max(1)
+        } else {
+            0
+        }
+    });
+    let peak_bps = json_u64(&raw["peakBps"]).unwrap_or(avg_bps).max(avg_bps);
+    let chunk_size = json_u64(&raw["chunkSize"]).unwrap_or(0);
+    let parallel = json_u64(&raw["parallel"]).unwrap_or(1).min(256);
+    let concurrency = json_u64(&raw["concurrency"]).unwrap_or(1).min(64);
+    let strategy = raw["strategy"]
+        .as_str()
+        .and_then(sanitize_code_token)
+        .unwrap_or_else(|| "unknown".into());
+    let attempts = json_u64(&raw["attempts"]).unwrap_or(1).min(1000);
+    let part_retries = json_u64(&raw["partRetries"]).unwrap_or(0).min(10_000);
+    let link_refreshes = json_u64(&raw["linkRefreshes"]).unwrap_or(0).min(10_000);
+    let rapid_upload = raw["rapidUpload"].as_bool().unwrap_or(false);
+    let resumed = raw["resumed"].as_bool().unwrap_or(false);
+    let rate_limited = raw["rateLimited"].as_bool().unwrap_or(false);
+    let error_code = raw["errorCode"].as_str().and_then(sanitize_code_token);
+    let http_status = json_u64(&raw["httpStatus"])
+        .filter(|&s| (100..=599).contains(&s));
+    let stage = raw["stage"].as_str().and_then(sanitize_code_token);
+    let ts = raw["ts"].as_i64().unwrap_or_else(now_ms);
+
+    Some(json!({
+        "ts": ts,
+        "kind": kind,
+        "outcome": outcome,
+        "sizeBytes": size_bytes,
+        "sizeBucket": size_bucket,
+        "transferredBytes": transferred_bytes,
+        "durationMs": duration_ms,
+        "hashMs": hash_ms,
+        "avgBps": avg_bps,
+        "peakBps": peak_bps,
+        "chunkSize": chunk_size,
+        "parallel": parallel,
+        "concurrency": concurrency,
+        "strategy": strategy,
+        "attempts": attempts,
+        "partRetries": part_retries,
+        "linkRefreshes": link_refreshes,
+        "rapidUpload": rapid_upload,
+        "resumed": resumed,
+        "rateLimited": rate_limited,
+        "errorCode": error_code,
+        "httpStatus": http_status,
+        "stage": stage,
+    }))
+}
+
+fn size_bucket_for(bytes: u64) -> &'static str {
+    const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * MIB;
+    if bytes == 0 {
+        "0"
+    } else if bytes < MIB {
+        "<1M"
+    } else if bytes < 10 * MIB {
+        "1M-10M"
+    } else if bytes < 100 * MIB {
+        "10M-100M"
+    } else if bytes < GIB {
+        "100M-1G"
+    } else if bytes < 10 * GIB {
+        "1G-10G"
+    } else {
+        ">10G"
+    }
+}
+
+fn aggregate_transfer_samples(samples: &[Value]) -> Value {
+    let mut dl_bytes: u128 = 0;
+    let mut dl_ms: u128 = 0;
+    let mut dl_peak: u64 = 0;
+    let mut dl_tasks: u64 = 0;
+    let mut ul_bytes: u128 = 0;
+    let mut ul_ms: u128 = 0;
+    let mut ul_peak: u64 = 0;
+    let mut ul_tasks: u64 = 0;
+    let mut retries: u64 = 0;
+    let mut err_code: Option<String> = None;
+    let mut err_summary: Option<String> = None;
+
+    for s in samples {
+        let kind = s["kind"].as_str().unwrap_or("");
+        let outcome = s["outcome"].as_str().unwrap_or("");
+        let rapid = s["rapidUpload"].as_bool().unwrap_or(false);
+        let throttled = s["rateLimited"].as_bool().unwrap_or(false);
+        let bytes = s["transferredBytes"].as_u64().unwrap_or(0);
+        let dur = s["durationMs"].as_u64().unwrap_or(0);
+        let peak = s["peakBps"].as_u64().unwrap_or(0);
+        retries = retries.saturating_add(s["partRetries"].as_u64().unwrap_or(0));
+
+        if kind == "download" {
+            dl_tasks += 1;
+            if outcome == "done" && !throttled && bytes > 0 && dur > 0 {
+                dl_bytes += bytes as u128;
+                dl_ms += dur as u128;
+                dl_peak = dl_peak.max(peak);
+            }
+        } else if kind == "upload" {
+            ul_tasks += 1;
+            if outcome == "done" && !rapid && !throttled && bytes > 0 && dur > 0 {
+                ul_bytes += bytes as u128;
+                ul_ms += dur as u128;
+                ul_peak = ul_peak.max(peak);
+            }
+        }
+        if outcome == "error" && err_code.is_none() {
+            err_code = s["errorCode"].as_str().map(str::to_string);
+            err_summary = Some(format!(
+                "{} failed at {} ({})",
+                kind,
+                s["stage"].as_str().unwrap_or("unknown"),
+                err_code.as_deref().unwrap_or("ERROR")
+            ));
+        }
+    }
+
+    let avg_dl = if dl_ms > 0 {
+        Some((dl_bytes.saturating_mul(1000) / dl_ms) as u64)
+    } else {
+        None
+    };
+    let avg_ul = if ul_ms > 0 {
+        Some((ul_bytes.saturating_mul(1000) / ul_ms) as u64)
+    } else {
+        None
+    };
+
+    json!({
+        "eventType": if err_code.is_some() { "transfer_error" } else { "transfer_batch" },
+        "avgDlBps": avg_dl,
+        "peakDlBps": if dl_peak > 0 { Some(dl_peak) } else { None },
+        "avgUlBps": avg_ul,
+        "peakUlBps": if ul_peak > 0 { Some(ul_peak) } else { None },
+        "dlTasks": dl_tasks,
+        "ulTasks": ul_tasks,
+        "retries": retries,
+        "errorCode": err_code,
+        "errorSummary": err_summary,
+    })
+}
+
 /// Strict client-side PII redaction before storing in diagnostic ring buffer or encrypting for upload.
 pub fn redact_text(input: &str, max_chars: usize) -> String {
     let mut s: String = input.chars().take(max_chars).collect();
+    // 0. Redact full Cookie/Authorization header lines up to EOL
+    s = redact_header_line_ci(&s, "cookie:", "[REDACTED_COOKIE]");
+    s = redact_header_line_ci(&s, "set-cookie:", "[REDACTED_COOKIE]");
+    s = redact_header_line_ci(&s, "authorization:", "[REDACTED_TOKEN]");
     // 1. Redact known cookie key=value pairs
     for cookie_key in [
         "__pus=",
@@ -942,11 +1528,10 @@ pub fn redact_text(input: &str, max_chars: usize) -> String {
         "__uid=",
         "ctoken=",
         "b-user-id=",
-        "cookie:",
     ] {
         s = redact_key_value_ci(&s, cookie_key, "[REDACTED_COOKIE]");
     }
-    // 2. Redact sensitive query params
+    // 2. Redact sensitive query params (including Quark signed download params)
     for qp in [
         "auth_key=",
         "token=",
@@ -957,18 +1542,109 @@ pub fn redact_text(input: &str, max_chars: usize) -> String {
         "api_key=",
         "apikey=",
         "ossaccesskeyid=",
+        "st=",
+        "kps=",
+        "ktd=",
     ] {
         s = redact_key_value_ci(&s, qp, "[REDACTED]");
+    }
+    // 2b. Redact JSON secret key-value pairs like "token":"..." / "cookie":"..."
+    for jk in [
+        "\"token\"",
+        "\"cookie\"",
+        "\"cookies\"",
+        "\"password\"",
+        "\"secret\"",
+        "\"apikey\"",
+        "\"api_key\"",
+        "\"authorization\"",
+        "\"clienttoken\"",
+    ] {
+        s = redact_json_secret_ci(&s, jk);
     }
     // 3. Redact Bearer / Basic / sk- tokens
     s = redact_prefix_token_ci(&s, "bearer ", "Bearer [REDACTED_TOKEN]");
     s = redact_prefix_token_ci(&s, "basic ", "Basic [REDACTED_TOKEN]");
     s = redact_sk_keys(&s);
-    // 4. Redact macOS/Linux/Windows user home directory names
+    // 4. Redact macOS/Linux/Windows user home directory paths (including private filenames)
     s = redact_home_paths(&s);
-    // 5. Redact IPv4 addresses
+    // 5. Redact IPv4 & IPv6 addresses
     s = redact_ipv4(&s);
+    s = redact_ipv6(&s);
     s
+}
+
+fn redact_header_line_ci(input: &str, needle_lower: &str, replacement: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if lower[i..].starts_with(needle_lower) {
+            let key_end = i + needle_lower.len();
+            out.push_str(&input[i..key_end]);
+            out.push(' ');
+            out.push_str(replacement);
+            let mut j = key_end;
+            while j < input.len() {
+                let ch = input[j..].chars().next().unwrap();
+                if matches!(ch, '\r' | '\n') {
+                    break;
+                }
+                j += ch.len_utf8();
+            }
+            i = j;
+        } else {
+            let ch = input[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+fn redact_json_secret_ci(input: &str, key_quoted_lower: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if lower[i..].starts_with(key_quoted_lower) {
+            let key_end = i + key_quoted_lower.len();
+            let mut j = key_end;
+            while j < input.len() && input.as_bytes()[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < input.len() && input.as_bytes()[j] == b':' {
+                j += 1;
+                while j < input.len() && input.as_bytes()[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < input.len() && input.as_bytes()[j] == b'"' {
+                    out.push_str(&input[i..=j]);
+                    out.push_str("[REDACTED]\"");
+                    j += 1;
+                    while j < input.len() {
+                        let b = input.as_bytes()[j];
+                        if b == b'\\' && j + 1 < input.len() {
+                            j += 2;
+                            continue;
+                        }
+                        if b == b'"' {
+                            j += 1;
+                            break;
+                        }
+                        let ch = input[j..].chars().next().unwrap();
+                        j += ch.len_utf8();
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        let ch = input[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 fn redact_key_value_ci(input: &str, needle_lower: &str, replacement: &str) -> String {
@@ -1051,17 +1727,18 @@ fn redact_sk_keys(input: &str) -> String {
 }
 
 fn redact_home_paths(input: &str) -> String {
+    let lower = input.to_ascii_lowercase();
     let mut out = String::with_capacity(input.len());
     let mut i = 0;
     let bytes = input.as_bytes();
     while i < input.len() {
-        if input[i..].starts_with("/Users/") || input[i..].starts_with("/home/") {
-            let prefix_len = if input[i..].starts_with("/Users/") { 7 } else { 6 };
-            out.push_str("/[USER_HOME]");
+        if lower[i..].starts_with("/users/") || lower[i..].starts_with("/home/") {
+            let prefix_len = if lower[i..].starts_with("/users/") { 7 } else { 6 };
+            out.push_str("/[USER_HOME]/[REDACTED_PATH]");
             let mut j = i + prefix_len;
             while j < input.len() {
                 let ch = input[j..].chars().next().unwrap();
-                if matches!(ch, '/' | ' ' | '\t' | '\r' | '\n' | '"' | '\'' | ',' | ')') {
+                if matches!(ch, ' ' | '\t' | '\r' | '\n' | '"' | '\'' | ',' | ')' | ']' | '>') {
                     break;
                 }
                 j += ch.len_utf8();
@@ -1071,19 +1748,57 @@ fn redact_home_paths(input: &str) -> String {
         }
         if i + 9 <= bytes.len()
             && bytes[i].is_ascii_alphabetic()
-            && &bytes[i + 1..i + 9] == b":\\Users\\"
+            && (lower[i + 1..].starts_with(":\\users\\") || lower[i + 1..].starts_with(":/users/"))
         {
-            out.push_str("C:\\[USER_HOME]");
+            out.push_str("C:\\[USER_HOME]\\[REDACTED_PATH]");
             let mut j = i + 9;
             while j < input.len() {
                 let ch = input[j..].chars().next().unwrap();
-                if matches!(ch, '\\' | '/' | ' ' | '\t' | '\r' | '\n' | '"' | '\'' | ',' | ')') {
+                if matches!(ch, '\t' | '\r' | '\n' | '"' | '\'' | ',' | ')' | ']' | '>') {
                     break;
+                }
+                if ch == ' ' {
+                    // Continue past spaces inside Windows user/folder names if followed by a slash segment
+                    let rest = &input[j + 1..];
+                    let next_space = rest.find([' ', '\t', '\r', '\n', '"', '\'']).unwrap_or(rest.len());
+                    if !rest[..next_space].contains(['\\', '/']) {
+                        break;
+                    }
                 }
                 j += ch.len_utf8();
             }
             i = j;
             continue;
+        }
+        let ch = input[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn redact_ipv6(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    let bytes = input.as_bytes();
+    while i < bytes.len() {
+        if bytes[i].is_ascii_hexdigit() || bytes[i] == b':' {
+            let mut j = i;
+            let mut colons = 0usize;
+            while j < bytes.len() && (bytes[j].is_ascii_hexdigit() || bytes[j] == b':') {
+                if bytes[j] == b':' {
+                    colons += 1;
+                }
+                j += 1;
+            }
+            if colons >= 2 && (j - i) >= 4 {
+                let candidate = &input[i..j];
+                if candidate.parse::<std::net::Ipv6Addr>().is_ok() {
+                    out.push_str("[REDACTED_IP]");
+                    i = j;
+                    continue;
+                }
+            }
         }
         let ch = input[i..].chars().next().unwrap();
         out.push(ch);
@@ -1147,20 +1862,30 @@ mod tests {
 
     #[test]
     fn redact_text_strips_cookies_tokens_paths_urls_and_ips() {
-        let raw = "err __pus=secret123; Bearer tok_abc987654321 sk-live1234567890abcdef /Users/alice/Desktop/secret.pdf C:\\Users\\Bob\\Downloads\\a.zip https://dl.example/f?auth_key=xyz999&a=1 from 192.168.31.101";
+        let raw = "Cookie: a=1; __pus=secret123\nAuthorization: Bearer tok_abc987654321\n{\"token\":\"json_secret_99\",\"cookie\":\"c_val\"} sk-live1234567890abcdef /Users/alice/Desktop/secret.pdf /home/charlie/private/movie.mkv C:\\Users\\Bob\\Downloads\\a.zip https://dl.example/f?auth_key=xyz999&st=quark_st_1&kps=quark_kps_2&ktd=quark_ktd_3&a=1 from 192.168.31.101 and 2001:db8::42";
         let clean = redact_text(raw, 2000);
         assert!(!clean.contains("secret123"));
         assert!(!clean.contains("tok_abc987654321"));
+        assert!(!clean.contains("json_secret_99"));
+        assert!(!clean.contains("c_val"));
         assert!(!clean.contains("sk-live1234567890abcdef"));
         assert!(!clean.contains("alice"));
+        assert!(!clean.contains("secret.pdf"));
+        assert!(!clean.contains("charlie"));
+        assert!(!clean.contains("movie.mkv"));
         assert!(!clean.contains("Bob"));
+        assert!(!clean.contains("a.zip"));
         assert!(!clean.contains("xyz999"));
+        assert!(!clean.contains("quark_st_1"));
+        assert!(!clean.contains("quark_kps_2"));
+        assert!(!clean.contains("quark_ktd_3"));
         assert!(!clean.contains("192.168.31.101"));
+        assert!(!clean.contains("2001:db8::42"));
         assert!(clean.contains("[REDACTED_COOKIE]"));
         assert!(clean.contains("[REDACTED_TOKEN]"));
         assert!(clean.contains("[REDACTED_API_KEY]"));
-        assert!(clean.contains("/[USER_HOME]"));
-        assert!(clean.contains("C:\\[USER_HOME]"));
+        assert!(clean.contains("/[USER_HOME]/[REDACTED_PATH]"));
+        assert!(clean.contains("C:\\[USER_HOME]\\[REDACTED_PATH]"));
         assert!(clean.contains("[REDACTED_IP]"));
     }
 
@@ -1452,8 +2177,92 @@ mod tests {
             .unwrap();
         assert_eq!(tel["ok"], true);
 
-        // 5. Submit X25519 + AES-256-GCM encrypted feedback with redacted logs!
-        hub.record_event("error", "transfer", Some("NET"), "failed for /Users/secretuser/a.zip __pus=abc");
+        // 4b. Record zero-PII transfer engine samples & flush them over E2EE!
+        hub.record_transfer_sample(json!({
+            "kind": "download",
+            "outcome": "done",
+            "sizeBytes": 50_000_000u64,
+            "transferredBytes": 50_000_000u64,
+            "durationMs": 2500u64,
+            "avgBps": 20_000_000u64,
+            "peakBps": 25_000_000u64,
+            "chunkSize": 4_194_304u64,
+            "parallel": 4u64,
+            "concurrency": 2u64,
+            "strategy": "range_multipart",
+            "attempts": 1u64,
+            "partRetries": 0u64,
+            "linkRefreshes": 0u64,
+            "rapidUpload": false,
+            "resumed": false,
+            "rateLimited": false,
+            "filename": "MUST_NEVER_BE_STORED.mkv"
+        }));
+        hub.record_transfer_sample(json!({
+            "kind": "upload",
+            "outcome": "done",
+            "sizeBytes": 20_000_000u64,
+            "transferredBytes": 20_000_000u64,
+            "durationMs": 2000u64,
+            "hashMs": 180u64,
+            "avgBps": 10_000_000u64,
+            "peakBps": 12_000_000u64,
+            "chunkSize": 4_194_304u64,
+            "parallel": 3u64,
+            "concurrency": 2u64,
+            "strategy": "oss_multipart",
+            "attempts": 1u64,
+            "partRetries": 1u64,
+            "rapidUpload": false,
+            "resumed": false,
+            "rateLimited": false
+        }));
+        hub.record_transfer_sample(json!({
+            "kind": "upload",
+            "outcome": "done",
+            "sizeBytes": 100_000_000u64,
+            "transferredBytes": 0u64,
+            "durationMs": 120u64,
+            "hashMs": 110u64,
+            "avgBps": 0u64,
+            "peakBps": 0u64,
+            "parallel": 1u64,
+            "strategy": "rapid",
+            "rapidUpload": true,
+            "rateLimited": false
+        }));
+        hub.record_transfer_sample(json!({
+            "kind": "download",
+            "outcome": "error",
+            "sizeBytes": 30_000_000u64,
+            "transferredBytes": 4_000_000u64,
+            "durationMs": 1500u64,
+            "chunkSize": 4_194_304u64,
+            "parallel": 4u64,
+            "strategy": "range_multipart",
+            "partRetries": 3u64,
+            "linkRefreshes": 1u64,
+            "errorCode": "RATE_LIMIT",
+            "httpStatus": 429u64,
+            "stage": "range_chunk"
+        }));
+        assert_eq!(hub.pending_sample_count(), 4);
+        let flush_res = hub.flush_transfer_telemetry("0.3.0-beta.1").await.unwrap();
+        assert_eq!(flush_res["ok"], true);
+        assert_eq!(flush_res["flushed"], 4);
+        assert_eq!(hub.pending_sample_count(), 0);
+
+        // 5. Submit X25519 + AES-256-GCM encrypted feedback with rich redacted logs!
+        hub.record_event_rich(
+            "error",
+            "transfer",
+            Some("NET"),
+            "failed for /Users/secretuser/a.zip __pus=abc",
+            Some(429),
+            None,
+            Some(1500),
+            Some(json!({"stage": "range_chunk", "parallel": 4})),
+        );
         let fb = hub
             .submit_feedback(
                 "0.3.0-beta.1",
@@ -1479,7 +2288,7 @@ mod tests {
         let saved = std::fs::read(dl["path"].as_str().unwrap()).unwrap();
         assert_eq!(saved, pkg_bytes);
 
-        // 7. Confirm Admin API stats & feedback contain decrypted & scrubbed data!
+        // 7. Confirm Admin API stats, transfer analytics & structured feedback logs!
         let stats: Value = probe
             .get(format!("{base_url}/api/admin/stats"))
             .header("Cookie", &cookie)
@@ -1489,9 +2298,35 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(stats["totals"]["totalEvents"], 1);
+        assert_eq!(stats["totals"]["totalEvents"], 2);
+        assert_eq!(stats["totals"]["sampleCount7d"], 4);
+        assert_eq!(stats["totals"]["avgDlBps7d"], 20_000_000);
+        assert_eq!(stats["totals"]["avgUlBps7d"], 10_000_000);
         assert_eq!(stats["feedbackSummary"]["openCount"], 1);
 
+        let tstats: Value = probe
+            .get(format!("{base_url}/api/admin/transfer-stats?days=7"))
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(tstats["ok"], true);
+        assert_eq!(tstats["summary"]["totalSamples"], 4);
+        assert_eq!(tstats["summary"]["dlWeightedAvgBps"], 20_000_000);
+        assert_eq!(tstats["summary"]["ulWeightedAvgBps"], 10_000_000);
+        assert_eq!(tstats["summary"]["rapidUploadCount"], 1);
+        assert_eq!(tstats["summary"]["rapidUploadRate"], 50.0);
+        assert_eq!(tstats["topErrors"][0]["code"], "RATE_LIMIT");
+        assert_eq!(tstats["topErrors"][0]["httpStatus"], 429);
+        assert!(
+            !tstats.to_string().contains("MUST_NEVER_BE_STORED"),
+            "zero-PII allowlist must drop unexpected filename fields"
+        );
+
+        let fb_id = fb["id"].as_i64().unwrap();
         let fb_list: Value = probe
             .get(format!("{base_url}/api/admin/feedback"))
             .header("Cookie", &cookie)
@@ -1501,14 +2336,29 @@ mod tests {
             .json()
             .await
             .unwrap();
-        let logs_str = fb_list["items"][0]["logs_json"].as_str().unwrap();
-        assert!(!logs_str.contains("secretuser"), "home path must be redacted");
-        assert!(!logs_str.contains("abc"), "cookie value must be redacted");
-        assert!(logs_str.contains("[REDACTED_COOKIE]"));
+        assert_eq!(fb_list["items"][0]["has_logs"], true);
+        assert!(fb_list["items"][0]["log_count"].as_u64().unwrap_or(0) >= 1);
+        assert!(fb_list["items"][0]["error_log_count"].as_u64().unwrap_or(0) >= 1);
         assert_eq!(fb_list["items"][0]["has_client_token"], true);
 
+        let fb_logs: Value = probe
+            .get(format!("{base_url}/api/admin/feedback/{fb_id}/logs"))
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(fb_logs["ok"], true);
+        let logs_str = fb_logs["logs"].to_string();
+        assert!(!logs_str.contains("secretuser"), "home path must be redacted");
+        assert!(!logs_str.contains("a.zip"), "filename inside home path must be redacted");
+        assert!(!logs_str.contains("abc"), "cookie value must be redacted");
+        assert!(logs_str.contains("[REDACTED_COOKIE]"));
+        assert!(fb_logs["logs"].as_array().unwrap().iter().any(|l| l["httpStatus"] == 429));
+
         // 8. Verify my feedback history + two-way replies + strict cross-client isolation!
-        let fb_id = fb["id"].as_i64().unwrap();
         let mine = hub.list_feedback().await.unwrap();
         assert_eq!(mine["items"].as_array().unwrap().len(), 1);
         assert_eq!(mine["items"][0]["id"], fb_id);

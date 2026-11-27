@@ -195,7 +195,8 @@
 
   function fmtSize(bytes) {
     var b = Number(bytes);
-    if (!isFinite(b) || b <= 0) return b === 0 ? '—' : '—';
+    if (!isFinite(b) || b < 0) return '—';
+    if (b === 0) return '0 B';
     var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
     var i = 0;
     while (b >= 1024 && i < units.length - 1) { b /= 1024; i += 1; }
@@ -230,7 +231,8 @@
     if (item.dir) return 'folder';
     var ext = String(item.ext || '').toLowerCase();
     if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'heic', 'tiff'].indexOf(ext) >= 0) return 'file-image';
-    if (['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ts'].indexOf(ext) >= 0) return 'file-video';
+    if (['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v'].indexOf(ext) >= 0) return 'file-video';
+    if (ext === 'ts' && item.category === 1) return 'file-video';
     if (['mp3', 'flac', 'wav', 'aac', 'ogg', 'm4a', 'wma'].indexOf(ext) >= 0) return 'file-audio';
     if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso'].indexOf(ext) >= 0) return 'file-archive';
     if (['js', 'ts', 'json', 'html', 'css', 'py', 'java', 'go', 'c', 'cpp', 'cs', 'sh', 'xml', 'yml', 'yaml', 'sql'].indexOf(ext) >= 0) return 'file-code';
@@ -460,12 +462,28 @@
     }
   }
 
+  function recordDiag(level, category, code, msg) {
+    try {
+      if (API.injected && API.has('hub', 'recordEvent')) {
+        API.hub.recordEvent({
+          level: level || 'info',
+          category: category || 'ui',
+          code: code || undefined,
+          msg: String(msg || '').slice(0, 280)
+        }).catch(function () {});
+      }
+    } catch (_) {}
+  }
+
   /** 统一错误上报：NEED_LOGIN 由 QKAPI.onNeedLogin 统一驱动提示条，这里只负责文案。 */
   function reportError(err, fallback) {
     var e = API.normalizeError(err, fallback);
     if (API.isNeedLogin(e)) {
       toast('error', '登录状态已失效，请重新登录');
       return e;
+    }
+    if (e.code !== 'ABORTED' && e.code !== 'OPT_IN_REQUIRED') {
+      recordDiag('error', 'ui', e.code || 'UI_ERROR', (fallback ? fallback + ': ' : '') + (e.message || ''));
     }
     toast('error', e.message || fallback || '操作失败');
     return e;
@@ -486,7 +504,8 @@
       var b = h('button', 'btn btn-sm ' + (a.primary ? 'btn-primary' : ''));
       b.type = 'button';
       b.textContent = a.label;
-      b.addEventListener('click', a.onClick);
+      var handler = typeof a.onClick === 'function' ? a.onClick : a.run;
+      if (typeof handler === 'function') b.addEventListener('click', handler);
       node.appendChild(b);
     });
     var close = h('button', 'banner-close');
@@ -564,11 +583,14 @@
     }
   }
 
-  /** 登出或切换账号时清空对话视图与回收站中的上个账号状态（保留大模型连接配置）。 */
+  /** 登出或切换账号时清空对话视图、传输队列与回收站中的上个账号状态（保留大模型连接配置）。 */
   function resetSessionViews() {
     prevTaskStatus.clear();
     transferBatchWasBulk = false;
     pendingFilesRefresh = false;
+    state.transfers = [];
+    state.transfersLoaded = false;
+    renderTransfers(true);
     dirDetailCache.clear();
     dirDetailInflight.clear();
     state.recycle.items = [];
@@ -850,6 +872,8 @@
     setTimeout(function () { if (node.parentNode) node.parentNode.removeChild(node); }, 140);
   }
 
+  var overlayStack = [];
+
   function openOverlay(build) {
     var prevFocus = document.activeElement;
     var wrap = h('div', 'overlay');
@@ -860,9 +884,14 @@
     el.overlayRoot.appendChild(wrap);
     requestAnimationFrame(function () { wrap.classList.add('overlay-in'); });
     var closed = false;
+    var resolveFn = null;
+    var api = { wrap: wrap, panel: panel, close: close, setResolve: function (fn) { resolveFn = fn; } };
+    overlayStack.push(api);
     function close(result) {
       if (closed) return;
       closed = true;
+      var sIdx = overlayStack.indexOf(api);
+      if (sIdx >= 0) overlayStack.splice(sIdx, 1);
       document.removeEventListener('keydown', onKey, true);
       closeOverlay(wrap);
       if (prevFocus && typeof prevFocus.focus === 'function') {
@@ -870,15 +899,16 @@
       }
       if (resolveFn) resolveFn(result);
     }
-    var resolveFn = null;
-    var api = { wrap: wrap, panel: panel, close: close, setResolve: function (fn) { resolveFn = fn; } };
-    wrap.addEventListener('mousedown', function (e) { if (e.target === wrap) close(null); });
+    wrap.addEventListener('mousedown', function (e) {
+      if (e.target === wrap && overlayStack[overlayStack.length - 1] === api) close(null);
+    });
     function onKey(e) {
-      if (e.key === 'Escape') { e.stopPropagation(); close(null); return; }
+      if (overlayStack[overlayStack.length - 1] !== api) return;
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null); return; }
       if (e.key === 'Tab' && typeof panel.querySelectorAll === 'function') {
-        var all = Array.prototype.slice.call(panel.querySelectorAll('button')).concat(
-          Array.prototype.slice.call(panel.querySelectorAll('input'))
-        ).filter(function (n) { return !n.disabled && !n.hidden; });
+        var all = Array.prototype.slice.call(
+          panel.querySelectorAll('button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])')
+        ).filter(function (n) { return !n.disabled && !n.hidden && n.offsetParent !== null; });
         if (all.length > 1) {
           var idx = all.indexOf(document.activeElement);
           if (e.shiftKey && idx <= 0) { e.preventDefault(); all[all.length - 1].focus(); }
@@ -888,7 +918,7 @@
     }
     document.addEventListener('keydown', onKey, true);
     build(api);
-    var focusable = panel.querySelector('[data-autofocus="1"]') || panel.querySelector('input') || panel.querySelector('button');
+    var focusable = panel.querySelector('[data-autofocus="1"]') || panel.querySelector('input, textarea, select') || panel.querySelector('button');
     if (focusable && typeof focusable.focus === 'function') {
       setTimeout(function () { try { focusable.focus(); } catch (e) {} }, 30);
     }
@@ -1115,7 +1145,8 @@
         });
         if (name === null) return;
         try {
-          await API.fs.mkdir({ pdirFid: cur.fid, name: name });
+          var accepted = await API.fs.mkdir({ pdirFid: cur.fid, name: name });
+          await waitAcceptedTask(accepted);
           invalidateDirCache(cur.fid);
           toast('ok', '已创建「' + name + '」');
           loadDir(cur.fid);
@@ -1531,11 +1562,13 @@
     if (state.filter === next) return;
     state.filter = next;
     state.focusIndex = -1;
+    state.lastIndex = -1;
     updateFilterPills();
     el.listwrap.scrollTop = 0;
     listVersion += 1;
     renderRows(listSeq, true);
     renderStatusBar();
+    maybeAutoFill();
   }
 
   function updateSortIndicators() {
@@ -1582,6 +1615,8 @@
       return;
     }
     state.sortBy = sortBy;
+    state.focusIndex = -1;
+    state.lastIndex = -1;
     updateSortIndicators();
     if (persist) saveSettings({ sortBy: sortBy });
     if (state.mode === 'search') {
@@ -2189,9 +2224,27 @@
 
     var range;
     if (isGrid) {
-      var maxGrid = Math.min(count, 200);
-      range = { start: 0, end: maxGrid, before: 0, after: 0 };
+      var listW = (el.list && el.list.clientWidth) || (el.listwrap && el.listwrap.clientWidth) || 800;
+      var gridCols = Math.max(1, Math.floor((listW - 28 + 10) / (178 + 10)));
+      var gridRowH = 152;
+      var totalRows = Math.ceil(count / gridCols);
+      var rowRange = window.QKVirtualList.range(totalRows, el.listwrap.scrollTop,
+        el.listwrap.clientHeight || 600, gridRowH, 3);
+      range = {
+        start: Math.min(count, rowRange.start * gridCols),
+        end: Math.min(count, rowRange.end * gridCols),
+        before: rowRange.before,
+        after: rowRange.after
+      };
+      topSpacer.style.gridColumn = '1 / -1';
+      bottomSpacer.style.gridColumn = '1 / -1';
+      topSpacer.style.display = range.before > 0 ? 'block' : 'none';
+      bottomSpacer.style.display = range.after > 0 ? 'block' : 'none';
     } else {
+      topSpacer.style.gridColumn = '';
+      bottomSpacer.style.gridColumn = '';
+      topSpacer.style.display = '';
+      bottomSpacer.style.display = '';
       range = window.QKVirtualList.range(count, el.listwrap.scrollTop,
         el.listwrap.clientHeight || 600, cachedRowHeight, VIRTUAL_OVERSCAN);
     }
@@ -2269,10 +2322,30 @@
       if (msgStr.indexOf('登录后即可') < 0 && msgStr.indexOf('登录夸克账号后即可') < 0) {
         box.appendChild(h('div', 'empty-sub', '扫码登录后即可高速浏览、上传、下载与增量备份。'));
       }
-    } else if (!isError) {
+    } else if (isError) {
+      var retryBtn = h('button', 'btn btn-sm btn-primary empty-action', '重新加载');
+      retryBtn.type = 'button';
+      retryBtn.addEventListener('click', function () { reloadCurrent(); });
+      box.appendChild(retryBtn);
+    } else {
       box.appendChild(h('div', 'empty-sub', state.mode === 'search'
         ? '换个关键词试试，或点击「返回目录」恢复浏览。'
-        : '把文件拖拽到窗口，或点击右上角「上传」。'));
+        : '把文件拖拽到窗口，或点击下方快捷操作开始使用。'));
+      if (state.mode === 'browse') {
+        var emptyBtns = h('div', 'empty-actions');
+        emptyBtns.style.display = 'inline-flex';
+        emptyBtns.style.gap = '8px';
+        emptyBtns.style.marginTop = '10px';
+        var upBtn = h('button', 'btn btn-sm btn-primary', '上传文件');
+        upBtn.type = 'button';
+        upBtn.addEventListener('click', onUploadClick);
+        var mkBtn = h('button', 'btn btn-sm', '新建文件夹');
+        mkBtn.type = 'button';
+        mkBtn.addEventListener('click', onMkdirClick);
+        emptyBtns.appendChild(upBtn);
+        emptyBtns.appendChild(mkBtn);
+        box.appendChild(emptyBtns);
+      }
     }
     // 关键：挂载在 #list 内部，确保空态/登录引导始终居中显示在可视区
     el.list.appendChild(box);
@@ -2295,7 +2368,12 @@
     }
     if (!state.loadedOnce) return;
     if (state.hasMore) {
-      foot.appendChild(h('div', 'foot-line muted', '向下滚动加载更多'));
+      var moreWrap = h('div', 'foot-line muted');
+      var moreBtn = h('button', 'btn btn-sm btn-ghost', '加载更多');
+      moreBtn.type = 'button';
+      moreBtn.addEventListener('click', function () { loadPage({}); });
+      moreWrap.appendChild(moreBtn);
+      foot.appendChild(moreWrap);
       return;
     }
     var visibleCount = displayItems().length;
@@ -2347,25 +2425,29 @@
     var box = el.checkAll;
     var items = displayItems();
     var loaded = items.length;
-    var selCount = 0;
+    var visibleSet = new Set();
+    for (var i = 0; i < loaded; i++) visibleSet.add(String(items[i].fid));
+    var visibleSelCount = 0;
+    var totalSelCount = 0;
     var selBytes = 0;
     state.selected.forEach(function (fid) {
       var it = state.itemMap[fid];
       if (it) {
-        selCount += 1;
+        totalSelCount += 1;
+        if (visibleSet.has(fid)) visibleSelCount += 1;
         if (!it.dir && it.size > 0) selBytes += Number(it.size) || 0;
       }
     });
-    box.checked = loaded > 0 && selCount >= loaded;
-    box.indeterminate = selCount > 0 && selCount < loaded;
+    box.checked = loaded > 0 && visibleSelCount >= loaded;
+    box.indeterminate = visibleSelCount > 0 && visibleSelCount < loaded;
     box.disabled = loaded === 0;
 
-    var n = state.selected.size;
-    if (n > 0) {
+    var hiddenSel = Math.max(0, totalSelCount - visibleSelCount);
+    if (totalSelCount > 0) {
       el.bulkbar.hidden = false;
-      el.bulkCount.textContent = '已选 ' + n + ' 项'
+      el.bulkCount.textContent = '已选 ' + totalSelCount + ' 项'
         + (selBytes > 0 ? ' · ' + fmtSize(selBytes) : '')
-        + (selCount !== n ? '（含已隐藏项）' : '');
+        + (hiddenSel > 0 ? ('（含 ' + hiddenSel + ' 个已筛选隐藏项）') : '');
     } else {
       el.bulkbar.hidden = true;
     }
@@ -2510,6 +2592,7 @@
       var fid = String(d.fid);
       var cached = dirDetailCache.get(fid);
       if (cached && cached.finished && (now - cached.ts) < 60000) continue;
+      if (cached && !cached.finished && cached.nextRetryAt && now < cached.nextRetryAt) continue;
       if (dirDetailInflight.has(fid)) continue;
       queue.push(fid);
     }
@@ -2523,11 +2606,12 @@
           if (!nextFid) continue;
           var entry = await fetchDirDetail(nextFid);
           if (entry && !entry.finished && seq === listSeq && state.view === 'files') {
+            entry.nextRetryAt = Date.now() + 8000;
             (function (retryFid) {
               setTimeout(function () {
                 if (seq !== listSeq || state.view !== 'files' || needsLoginState()) return;
                 fetchDirDetail(retryFid, { force: true });
-              }, 1500);
+              }, 2000);
             })(nextFid);
           }
         }
@@ -2966,6 +3050,7 @@
     var password = '';
     var extracting = false;
     var finishedToFid = '';
+    var userPickedTarget = false;
     var target = {
       fid: (item.pdirFid !== undefined && item.pdirFid !== null && String(item.pdirFid) !== '')
         ? String(item.pdirFid)
@@ -3156,10 +3241,17 @@
           title: '选择云解压目标目录',
           confirmText: '解压到此处'
         });
-        if (picked === null || picked === undefined) return;
+        if (!alive || picked === null || picked === undefined) return;
+        userPickedTarget = true;
         target.fid = String(picked);
         target.name = await dirNameOf(picked);
+        if (!alive) return;
         targetStrong.textContent = target.name;
+        if (finishedToFid) {
+          finishedToFid = '';
+          gotoBtn.hidden = true;
+          updateSelectionButtons();
+        }
       });
 
       function renderEntries(entries, hasMore, page) {
@@ -3240,11 +3332,23 @@
           });
           if (!alive || seq !== previewSeq) return;
           pwdBar.hidden = true;
-          if (res && res.finish === false && pollAttempt < 12) {
-            var gap = Math.max(500, Math.min(2500, Number(res.tqGap) || 800));
-            setTimeout(function () {
-              if (alive && seq === previewSeq) loadPreview(pathNo, page, append, pollAttempt + 1);
-            }, gap);
+          if (res && res.finish === false) {
+            if (pollAttempt < 12) {
+              var gap = Math.max(500, Math.min(2500, Number(res.tqGap) || 800));
+              setTimeout(function () {
+                if (alive && seq === previewSeq) loadPreview(pathNo, page, append, pollAttempt + 1);
+              }, gap);
+              return;
+            }
+            listBox.textContent = '';
+            var retryWrap = h('div', 'picker-empty');
+            retryWrap.appendChild(h('div', null, '云端仍在解析压缩包结构，请稍后重试'));
+            var retryBtn = h('button', 'btn btn-sm btn-primary', '重试加载');
+            retryBtn.type = 'button';
+            retryBtn.style.marginTop = '10px';
+            retryBtn.addEventListener('click', function () { loadPreview(pathNo, page, append, 0); });
+            retryWrap.appendChild(retryBtn);
+            listBox.appendChild(retryWrap);
             return;
           }
           var list = (res && Array.isArray(res.list)) ? res.list : [];
@@ -3378,7 +3482,7 @@
       // 并发预拉取建议目录、权益提示与首层内容
       if (API.has('archive', 'targetDir')) {
         API.archive.targetDir(fid).then(function (td) {
-          if (!alive || !td || !td.dirFid) return;
+          if (!alive || userPickedTarget || !td || !td.dirFid) return;
           target.fid = String(td.dirFid);
           if (td.dirName) target.name = td.dirName;
           targetStrong.textContent = target.name;
@@ -3698,14 +3802,36 @@
     }
   }
 
+  async function waitAcceptedTask(accepted) {
+    if (!accepted || accepted.done === true || !accepted.taskId) return;
+    for (var i = 0; i < TASK_POLL_MAX; i++) {
+      await sleep(TASK_POLL_MS);
+      var arr = await API.fs.taskStatus({ taskIds: [accepted.taskId] });
+      var st = Array.isArray(arr) ? arr[0] : arr;
+      if (st && st.done === true) return;
+    }
+  }
+
+  function removeRecycleLocally(recordIds) {
+    var drop = new Set((recordIds || []).map(String));
+    if (!drop.size) return;
+    state.recycle.items = state.recycle.items.filter(function (x) { return !drop.has(String(x.recordId)); });
+    drop.forEach(function (id) { state.recycle.selected.delete(id); });
+    state.recycle.total = Math.max(0, state.recycle.total - drop.size);
+    renderRecycle();
+  }
+
   async function doRecycleRecover(items) {
     if (!ensureLoggedInForWrite('还原')) return;
     var list = (items || []).filter(Boolean);
     if (!list.length) return;
+    var rids = list.map(function (x) { return x.recordId; });
     try {
-      await API.recycle.recover({ recordIds: list.map(function (x) { return x.recordId; }) });
+      var accepted = await API.recycle.recover({ recordIds: rids });
       invalidateDirCache();
+      removeRecycleLocally(rids);
       toast('ok', '已还原 ' + list.length + ' 个项目到原目录');
+      await waitAcceptedTask(accepted).catch(function () {});
       loadRecycle({ reset: true });
       silentRefreshAccountAndQuota({ force: true });
     } catch (err) {
@@ -3726,9 +3852,12 @@
       list: list.map(function (i) { return i.name + (i.dir ? '（文件夹）' : ''); })
     });
     if (!ok) return;
+    var rids = list.map(function (x) { return x.recordId; });
     try {
-      await API.recycle.remove({ recordIds: list.map(function (x) { return x.recordId; }), clearAll: false });
+      var accepted = await API.recycle.remove({ recordIds: rids, clearAll: false });
+      removeRecycleLocally(rids);
       toast('ok', '已彻底删除 ' + list.length + ' 个项目');
+      await waitAcceptedTask(accepted).catch(function () {});
       loadRecycle({ reset: true });
       silentRefreshAccountAndQuota({ force: true });
     } catch (err) {
@@ -3747,8 +3876,13 @@
     });
     if (!ok) return;
     try {
-      await API.recycle.remove({ clearAll: true });
+      var accepted = await API.recycle.remove({ clearAll: true });
+      state.recycle.items = [];
+      state.recycle.selected.clear();
+      state.recycle.total = 0;
+      renderRecycle();
       toast('ok', '回收站已清空');
+      await waitAcceptedTask(accepted).catch(function () {});
       loadRecycle({ reset: true });
       silentRefreshAccountAndQuota({ force: true });
     } catch (err) {
@@ -3975,12 +4109,18 @@
     return { entries: entries, scannedDirs: scannedDirs, truncated: truncated };
   }
 
+  var folderDownloadScanning = false;
+
   async function downloadItems(items, opts) {
     var o = opts || {};
     if (!ensureLoggedInForWrite('下载')) return;
     var selected = (items || []).filter(Boolean);
     if (!selected.length) { toast('warn', '请先选择要下载的项目'); return; }
     var hasDirs = selected.some(function (i) { return !!i.dir; });
+    if (hasDirs && folderDownloadScanning) {
+      toast('info', '正在扫描文件夹子文件，请稍候…');
+      return;
+    }
 
     var dir = state.settings.downloadDir;
     var shouldPick = !!o.pickDir || !!state.settings.askDownloadDir || !dir;
@@ -3997,6 +4137,7 @@
     var scannedDirs = 0;
     var truncated = false;
     if (hasDirs) {
+      folderDownloadScanning = true;
       toast('info', '正在扫描文件夹内的子文件…');
       try {
         var collected = await collectDownloadEntries(selected);
@@ -4006,6 +4147,8 @@
       } catch (err) {
         reportError(err, '扫描文件夹内容失败');
         return;
+      } finally {
+        folderDownloadScanning = false;
       }
       if (!entries.length) {
         toast('warn', '所选文件夹内没有可下载的文件');
@@ -4566,7 +4709,6 @@
         paused += 1;
       } else if (st === 'error') {
         failed += 1;
-        finished += 1;
       } else if (st === 'done' || st === 'canceled') {
         finished += 1;
       }
@@ -5062,7 +5204,6 @@
       ag.statusError = agentErrText(err);
     }
     ag.loading = false;
-    ag.loaded = true;
     renderAgent();
   }
 
@@ -6146,7 +6287,7 @@
       var plat = info.platform ? (' · ' + info.platform + (info.arch ? '/' + info.arch : '')) : '';
       el.appVersionText.textContent = '夸克网盘极简版 v' + info.version + ' · ' + (info.runtime || 'Tauri 2 + Rust') + plat;
     } else {
-      el.appVersionText.textContent = '夸克网盘极简版 v1.0.1 · Tauri 2 + Rust';
+      el.appVersionText.textContent = '夸克网盘极简版 v1.0.2 · Tauri 2 + Rust';
     }
   }
 
@@ -6454,6 +6595,12 @@
         input.rows = 1;
         input.maxLength = 2000;
         input.placeholder = '追加补充说明或回复作者（Ctrl/⌘+Enter 发送）…';
+        var draftKey = String(item.id);
+        if (feedbackReplyDrafts.has(draftKey)) input.value = feedbackReplyDrafts.get(draftKey);
+        input.addEventListener('input', function () {
+          if (input.value) feedbackReplyDrafts.set(draftKey, input.value);
+          else feedbackReplyDrafts.delete(draftKey);
+        });
         var btn = h('button', 'btn btn-sm btn-primary', '追加回复');
         btn.type = 'button';
         btn.disabled = state.hub.replyingId === item.id;
@@ -6475,6 +6622,7 @@
     });
   }
 
+  var feedbackReplyDrafts = new Map();
   var FB_SEEN_REPLY_KEY = 'qdl_seen_admin_reply_id';
 
   function getLastSeenAdminReplyId() {
@@ -6567,6 +6715,7 @@
     if (btnEl) btnEl.disabled = true;
     try {
       var res = await API.hub.replyFeedback({ feedbackId: feedbackId, message: text });
+      feedbackReplyDrafts.delete(String(feedbackId));
       if (inputEl) inputEl.value = '';
       if (res && res.reply) {
         var target = state.hub.feedbackItems.filter(function (x) { return x && x.id === feedbackId; })[0];
@@ -6683,6 +6832,10 @@
     try {
       var res = await API.hub.checkUpdate();
       state.hub.latest = res;
+      if (state.hub.downloadedPath && state.hub.downloadedVersion && res && res.latestVersion && String(res.latestVersion) !== String(state.hub.downloadedVersion)) {
+        state.hub.downloadedPath = '';
+        state.hub.downloadedVersion = '';
+      }
       if (el.hubUpdateSummary) {
         el.hubUpdateSummary.textContent = res.hasUpdate
           ? ('发现新版本 v' + res.latestVersion + '，已通过 Ed25519 签名验证，可直接从作者服务器下载。')
@@ -6692,13 +6845,14 @@
       if (res.hasUpdate) {
         if (!o.silent || state.hub.dismissedUpdateVersion !== String(res.latestVersion || '')) {
           banner('hub-update', 'info', '发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），可前往设置页直链下载。', [
-            { label: '查看更新', primary: true, run: function () {
+            { label: '查看更新', primary: true, onClick: function () {
+              clearBanner('hub-update');
               setView('settings');
               if (el.hubCard && typeof el.hubCard.scrollIntoView === 'function') {
                 el.hubCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
               }
             } },
-            { label: '稍后再说', run: function () {
+            { label: '稍后再说', onClick: function () {
               state.hub.dismissedUpdateVersion = String(res.latestVersion || '');
               clearBanner('hub-update');
             } }
@@ -6707,7 +6861,7 @@
       } else if (res.notice && o.silent) {
         if (state.hub.dismissedNotice !== String(res.notice)) {
           banner('hub-notice', 'info', '作者公告：' + res.notice, [
-            { label: '我知道了', run: function () {
+            { label: '我知道了', onClick: function () {
               state.hub.dismissedNotice = String(res.notice);
               clearBanner('hub-notice');
             } }
@@ -6760,6 +6914,7 @@
         localDir: state.settings.downloadDir || undefined
       });
       state.hub.downloadedPath = res && res.path ? String(res.path) : '';
+      state.hub.downloadedVersion = (res && res.version) ? String(res.version) : (info && info.latestVersion ? String(info.latestVersion) : '');
       toast('ok', '更新包已下载并通过 SHA-256 校验：' + (res.filename || ''));
       renderHubUpdateResult(info);
     } catch (err) {
@@ -6790,7 +6945,7 @@
         }
       }
       var avg = function (arr) { return arr.length ? Math.round(arr.reduce(function (a, b) { return a + b; }, 0) / arr.length) : undefined; };
-      var peak = function (arr) { return arr.length ? Math.max.apply(null, arr) : undefined; };
+      var peak = function (arr) { return arr.length ? Math.round(Math.max.apply(null, arr)) : undefined; };
       var memMb;
       if (typeof performance !== 'undefined' && performance.memory && performance.memory.usedJSHeapSize) {
         memMb = Math.round(performance.memory.usedJSHeapSize / (1024 * 1024));
@@ -6800,6 +6955,7 @@
         avgDlBps: avg(dlSpeeds),
         peakDlBps: peak(dlSpeeds),
         avgUlBps: avg(ulSpeeds),
+        peakUlBps: peak(ulSpeeds),
         dlTasks: dlTasks || undefined,
         ulTasks: ulTasks || undefined,
         memMb: memMb
@@ -7012,7 +7168,7 @@
           counter.textContent = (step + 1) + ' / ' + TUTORIAL_STEPS.length;
           heroIc.textContent = '';
           heroIc.appendChild(icon(s.icon));
-          var ver = (state.appInfo && state.appInfo.version) ? state.appInfo.version : '1.0.1';
+          var ver = (state.appInfo && state.appInfo.version) ? state.appInfo.version : '1.0.2';
           titleEl.textContent = s.showVersion ? (s.title + ' v' + ver) : s.title;
           subEl.textContent = s.sub;
           pointsBox.textContent = '';
@@ -7190,7 +7346,7 @@
    * ================================================================== */
 
   function showDropMask() {
-    if (!el.dropmask || state.view !== 'files') return;
+    if (!el.dropmask || state.view !== 'files' || hasActiveOverlay()) return;
     el.dropmask.hidden = false;
     el.dropSub.textContent = state.mode === 'search'
       ? '搜索模式下请先返回浏览目录再拖拽上传'
@@ -7822,6 +7978,17 @@
       }
     });
 
+    // 全局未捕获异常自动记录到脱敏诊断缓冲，便于用户提交反馈时定位真实问题
+    window.addEventListener('error', function (ev) {
+      var msg = (ev && ev.message) ? String(ev.message) : 'window error';
+      recordDiag('error', 'window', 'JS_ERROR', msg);
+    });
+    window.addEventListener('unhandledrejection', function (ev) {
+      var r = ev && ev.reason;
+      var msg = r && r.message ? String(r.message) : String(r || 'unhandled rejection');
+      recordDiag('error', 'window', 'UNHANDLED_REJECTION', msg);
+    });
+
     // 完整桌面端快捷键工作流（严格守卫模态框与输入框）
     document.addEventListener('keydown', function (e) {
       var tag = (e.target && e.target.tagName) || '';
@@ -7840,6 +8007,20 @@
           e.preventDefault();
           el.searchInput.focus();
           if (typeof el.searchInput.select === 'function') el.searchInput.select();
+          return;
+        }
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'i' || e.key === 'I')) {
+        if (state.view === 'files' && !typing) {
+          e.preventDefault();
+          setInspectorOpen(!state.inspectorOpen);
+          return;
+        }
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'n' || e.key === 'N')) {
+        if (state.view === 'files' && !typing && state.mode !== 'search') {
+          e.preventDefault();
+          onMkdir();
           return;
         }
       }
@@ -8348,6 +8529,6 @@
     openStorageDetailModal: openStorageDetailModal,
     loadRecycle: loadRecycle,
     getRowCount: function () { return rowMap.size; },
-    version: '1.0.1'
+    version: '1.0.2'
   };
 })();

@@ -1084,10 +1084,20 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await until('document.querySelectorAll(".fb-thread-card[data-fb-id=\\"101\\"] .fb-chat-msg").length===2', 'user follow-up appended to thread');
     assert.ok((await evaluate('document.getElementById("fb-history-list").textContent')).includes('感谢回复，期待新版！'));
 
-    // 4. 下载更新包完成后出现「立即打开安装包」并调用 dialog.openPath
+    // 4. 更新横幅按钮「稍后再说」「查看更新」真实可点击 + 下载更新包后出现「立即打开安装包」
     await evaluate('QKUI.setView("settings")');
     await click('#btn-hub-check');
-    await until('!document.getElementById("btn-hub-download").hidden', 'update download button shown');
+    await until('!!document.querySelector("[data-banner=\\"hub-update\\"]") && !document.getElementById("btn-hub-download").hidden', 'update banner and download button shown');
+    // 点「稍后再说」必须关闭横幅并记住忽略版本
+    await click('[data-banner="hub-update"] .btn:not(.btn-primary)');
+    await until('!document.querySelector("[data-banner=\\"hub-update\\"]")', 'dismiss later button closed update banner');
+    assert.equal(await evaluate('QKUI.state.hub.dismissedUpdateVersion'), '1.0.1');
+    // 手动再查一次并切回文件视图，点「查看更新」必须跳转设置视图并收起横幅
+    await click('#btn-hub-check');
+    await until('!!document.querySelector("[data-banner=\\"hub-update\\"]")', 'update banner shown again');
+    await evaluate('QKUI.setView("files")');
+    await click('[data-banner="hub-update"] .btn-primary');
+    await until('QKUI.state.view==="settings" && !document.querySelector("[data-banner=\\"hub-update\\"]")', 'view update button navigated to settings and closed banner');
     await click('#btn-hub-download');
     await until('!document.getElementById("btn-hub-open-pkg").hidden', 'open package button shown after verified download');
     await click('#btn-hub-open-pkg');

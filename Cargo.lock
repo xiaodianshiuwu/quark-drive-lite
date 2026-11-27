@@ -2984,7 +2984,7 @@ dependencies = [
 
 [[package]]
 name = "quark-core"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -3005,7 +3005,7 @@ dependencies = [
 
 [[package]]
 name = "quark-drive-lite-tauri"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "fs2",
  "gtk",

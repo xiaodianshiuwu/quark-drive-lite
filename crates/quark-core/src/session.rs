@@ -200,7 +200,20 @@ pub(crate) fn merge_set_cookie(doc: &mut Value, headers: &[String], response_pat
             continue;
         }
         if let Some(index) = old {
-            cookies[index] = record;
+            let prev = &cookies[index];
+            let unchanged_except_sliding_expiry = prev["value"] == record["value"]
+                && prev["hostOnly"] == record["hostOnly"]
+                && prev["httpOnly"] == record["httpOnly"]
+                && prev["secure"] == record["secure"]
+                && prev["sameSite"] == record["sameSite"]
+                && match (prev["expires"].as_i64(), record["expires"].as_i64()) {
+                    (Some(a), Some(b)) => (b - a).abs() < 300_000,
+                    (None, None) => true,
+                    _ => false,
+                };
+            if !unchanged_except_sliding_expiry {
+                cookies[index] = record;
+            }
         } else {
             cookies.push(record);
         }

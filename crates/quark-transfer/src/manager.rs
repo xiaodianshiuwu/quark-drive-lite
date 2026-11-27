@@ -44,6 +44,137 @@ pub(crate) async fn cancellable<T>(
     tokio::select! { biased; _ = token.cancelled() => Err(err("ABORTED", "操作已停止")), result = f => result }
 }
 
+pub(crate) struct RunTelemetry {
+    pub started_at: std::time::Instant,
+    pub transferred_bytes: AtomicU64,
+    pub peak_bps: AtomicU64,
+    pub hash_ms: AtomicU64,
+    pub chunk_size: AtomicU64,
+    pub parallel: AtomicU64,
+    pub size_bytes: AtomicU64,
+    pub part_retries: AtomicU64,
+    pub link_refreshes: AtomicU64,
+    pub http_status: AtomicU64,
+    pub rapid_upload: AtomicBool,
+    pub resumed: AtomicBool,
+    pub rate_limited: bool,
+    pub concurrency: u16,
+    pub attempts: u32,
+    pub meta: Mutex<(&'static str, &'static str)>,
+}
+
+impl RunTelemetry {
+    pub(crate) fn new(attempts: u32, concurrency: u16, rate_limited: bool) -> Arc<Self> {
+        Arc::new(Self {
+            started_at: std::time::Instant::now(),
+            transferred_bytes: AtomicU64::new(0),
+            peak_bps: AtomicU64::new(0),
+            hash_ms: AtomicU64::new(0),
+            chunk_size: AtomicU64::new(0),
+            parallel: AtomicU64::new(1),
+            size_bytes: AtomicU64::new(0),
+            part_retries: AtomicU64::new(0),
+            link_refreshes: AtomicU64::new(0),
+            http_status: AtomicU64::new(0),
+            rapid_upload: AtomicBool::new(false),
+            resumed: AtomicBool::new(false),
+            rate_limited,
+            concurrency,
+            attempts,
+            meta: Mutex::new(("unknown", "init")),
+        })
+    }
+    pub(crate) fn set_strategy(&self, s: &'static str) {
+        if let Ok(mut m) = self.meta.lock() {
+            m.0 = s;
+        }
+    }
+    pub(crate) fn set_stage(&self, s: &'static str) {
+        if let Ok(mut m) = self.meta.lock() {
+            m.1 = s;
+        }
+    }
+    pub(crate) fn set_size(&self, n: u64) {
+        self.size_bytes.store(n, Ordering::Relaxed);
+    }
+    pub(crate) fn set_chunk_size(&self, n: u64) {
+        self.chunk_size.store(n, Ordering::Relaxed);
+    }
+    pub(crate) fn set_parallel(&self, n: usize) {
+        self.parallel.store(n as u64, Ordering::Relaxed);
+    }
+    pub(crate) fn set_resumed(&self, v: bool) {
+        self.resumed.store(v, Ordering::Relaxed);
+    }
+    pub(crate) fn set_rapid(&self, v: bool) {
+        self.rapid_upload.store(v, Ordering::Relaxed);
+    }
+    pub(crate) fn add_hash_ms(&self, ms: u64) {
+        self.hash_ms.fetch_add(ms, Ordering::Relaxed);
+    }
+    pub(crate) fn inc_retry(&self) {
+        self.part_retries.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn inc_link_refresh(&self) {
+        self.link_refreshes.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn set_http_status(&self, status: u16) {
+        self.http_status.store(status as u64, Ordering::Relaxed);
+    }
+    pub(crate) fn add_wire_bytes(&self, n: u64) {
+        if n > 0 {
+            self.transferred_bytes.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+    pub(crate) fn update_peak_bps(&self, bps: u64) {
+        if bps > 0 {
+            self.peak_bps.fetch_max(bps, Ordering::Relaxed);
+        }
+    }
+    pub(crate) fn to_sample(
+        &self,
+        kind: &str,
+        outcome: &str,
+        error_code: Option<&str>,
+    ) -> Value {
+        let dur_ms = self.started_at.elapsed().as_millis().max(1) as u64;
+        let transferred = self.transferred_bytes.load(Ordering::Relaxed);
+        let size = self.size_bytes.load(Ordering::Relaxed);
+        let avg_bps = if transferred > 0 {
+            transferred.saturating_mul(1000) / dur_ms
+        } else {
+            0
+        };
+        let peak_bps = self.peak_bps.load(Ordering::Relaxed).max(avg_bps);
+        let (strategy, stage) = self.meta.lock().map(|m| *m).unwrap_or(("unknown", "unknown"));
+        let http = self.http_status.load(Ordering::Relaxed);
+        json!({
+            "ts": now() as i64,
+            "kind": kind,
+            "outcome": outcome,
+            "sizeBytes": size,
+            "transferredBytes": transferred,
+            "durationMs": dur_ms,
+            "hashMs": self.hash_ms.load(Ordering::Relaxed),
+            "avgBps": avg_bps,
+            "peakBps": peak_bps,
+            "chunkSize": self.chunk_size.load(Ordering::Relaxed),
+            "parallel": self.parallel.load(Ordering::Relaxed),
+            "concurrency": self.concurrency,
+            "strategy": strategy,
+            "attempts": self.attempts,
+            "partRetries": self.part_retries.load(Ordering::Relaxed),
+            "linkRefreshes": self.link_refreshes.load(Ordering::Relaxed),
+            "rapidUpload": self.rapid_upload.load(Ordering::Relaxed),
+            "resumed": self.resumed.load(Ordering::Relaxed),
+            "rateLimited": self.rate_limited,
+            "errorCode": error_code,
+            "httpStatus": if (100..=599).contains(&http) { Some(http) } else { None },
+            "stage": stage,
+        })
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Task {
@@ -79,7 +210,7 @@ pub(crate) struct Task {
     #[serde(default)]
     pub rate_limit_bps: u64,
     #[serde(skip)]
-    pub sample: Option<(u64, u64)>,
+    pub sample: Option<(std::time::Instant, u64)>,
 }
 fn unknown_eta() -> i64 {
     -1
@@ -89,6 +220,7 @@ struct Active {
     done: Arc<Notify>,
     kind: String,
 }
+type TelemetryObserver = Arc<dyn Fn(Value) + Send + Sync>;
 pub(crate) struct Inner {
     pub core: Core,
     tasks: Mutex<Vec<Task>>,
@@ -100,9 +232,10 @@ pub(crate) struct Inner {
     wake: Arc<Notify>,
     changed: Arc<Notify>,
     revision: AtomicU64,
+    last_progress_notify: AtomicU64,
+    observer: Mutex<Option<TelemetryObserver>>,
     pub(crate) download_slots: Semaphore,
     pub(crate) upload_buffers: Semaphore,
-    pub(crate) upload_rate_next: Arc<AsyncMutex<tokio::time::Instant>>,
 }
 #[derive(Clone)]
 pub struct TransferManager {
@@ -118,23 +251,57 @@ pub(crate) fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     std::fs::create_dir_all(parent).map_err(io_err)?;
     let temporary = parent.join(format!(".qk-{}.tmp", Uuid::new_v4()));
     let write = (|| {
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut file = opts.open(&temporary).map_err(io_err)?;
+            serde_json::to_writer(&mut file, value)
+                .map_err(|_| err("LOCAL_IO", "任务进度序列化失败"))?;
+            file.flush().map_err(io_err)?;
+            file.sync_all().map_err(io_err)?;
+            // Explicitly drop `file` before rename so Windows never fails with ERROR_SHARING_VIOLATION.
         }
-        let mut file = opts.open(&temporary).map_err(io_err)?;
-        serde_json::to_writer(&mut file, value)
-            .map_err(|_| err("LOCAL_IO", "任务进度序列化失败"))?;
-        file.flush().map_err(io_err)?;
-        file.sync_all().map_err(io_err)?;
-        std::fs::rename(&temporary, path).map_err(io_err)?;
+        let mut last_err = None;
+        for attempt in 0..5u64 {
+            match std::fs::rename(&temporary, path) {
+                Ok(()) => {
+                    last_err = None;
+                    break;
+                }
+                Err(e) => {
+                    #[cfg(windows)]
+                    let retryable = e.kind() == std::io::ErrorKind::PermissionDenied
+                        || matches!(e.raw_os_error(), Some(5 | 32));
+                    #[cfg(not(windows))]
+                    let retryable = false;
+                    if retryable && attempt < 4 {
+                        last_err = Some(e);
+                        std::thread::sleep(std::time::Duration::from_millis(15 * (attempt + 1)));
+                        continue;
+                    }
+                    last_err = Some(e);
+                    break;
+                }
+            }
+        }
+        if let Some(e) = last_err {
+            return Err(io_err(e));
+        }
         #[cfg(unix)]
-        std::fs::File::open(parent)
-            .and_then(|d| d.sync_all())
-            .map_err(io_err)?;
+        if let Err(e) = std::fs::File::open(parent).and_then(|d| d.sync_all()) {
+            let ignorable = matches!(
+                e.kind(),
+                std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
+            ) || matches!(e.raw_os_error(), Some(1 | 9 | 22 | 45 | 95 | 102));
+            if !ignorable {
+                return Err(io_err(e));
+            }
+        }
         Ok(())
     })();
     if write.is_err() {
@@ -173,13 +340,43 @@ impl TransferManager {
                 wake: Arc::new(Notify::new()),
                 changed: Arc::new(Notify::new()),
                 revision: AtomicU64::new(0),
+                last_progress_notify: AtomicU64::new(0),
+                observer: Mutex::new(None),
                 download_slots: Semaphore::new(1024),
                 upload_buffers: Semaphore::new(512 * 1024),
-                upload_rate_next: Arc::new(AsyncMutex::new(tokio::time::Instant::now())),
             }),
         };
         result.persist()?;
         Ok(result)
+    }
+    pub fn set_observer(&self, observer: Arc<dyn Fn(Value) + Send + Sync>) {
+        if let Ok(mut guard) = self.inner.observer.lock() {
+            *guard = Some(observer);
+        }
+    }
+    pub(crate) fn emit_telemetry(&self, sample: Value) {
+        let cb = self.inner.observer.lock().ok().and_then(|g| g.clone());
+        if let Some(cb) = cb {
+            cb(sample);
+        }
+    }
+    pub(crate) fn is_local_path_reserved(
+        &self,
+        exclude_id: &str,
+        normalized_key: &str,
+        key_fn: impl Fn(&str) -> String,
+    ) -> bool {
+        self.inner
+            .tasks
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|t| {
+                t.id != exclude_id
+                    && t.local_path
+                        .as_deref()
+                        .is_some_and(|p| key_fn(p) == normalized_key)
+            })
     }
     fn start_scheduler(&self) {
         if self.inner.started.swap(true, Ordering::SeqCst) {
@@ -356,29 +553,65 @@ impl TransferManager {
         self.mark_changed();
         Ok(())
     }
+    pub(crate) fn reset_sample(&self, id: &str) {
+        if let Ok(mut tasks) = self.inner.tasks.lock() {
+            if let Some(t) = tasks.iter_mut().find(|t| t.id == id) {
+                t.sample = None;
+            }
+        }
+    }
     pub(crate) fn progress(&self, id: &str, bytes: u64, total: u64) -> Result<()> {
-        self.update(
-            id,
-            |t| {
-                let ts = now();
-                if let Some((at, old)) = t.sample {
-                    if ts.saturating_sub(at) >= 250 {
-                        t.speed = bytes.saturating_sub(old) * 1000 / ts.saturating_sub(at).max(1);
-                        t.sample = Some((ts, bytes));
+        self.progress_with_telemetry(id, bytes, total, None)
+    }
+    pub(crate) fn progress_with_telemetry(
+        &self,
+        id: &str,
+        bytes: u64,
+        total: u64,
+        tel: Option<&RunTelemetry>,
+    ) -> Result<()> {
+        let mut computed_bps = 0u64;
+        {
+            let mut tasks = self.inner.tasks.lock().unwrap();
+            let t = tasks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or_else(|| err("NOT_FOUND", "任务不存在"))?;
+            let inst = std::time::Instant::now();
+            if let Some((at, old)) = t.sample {
+                let elapsed_ms = inst.duration_since(at).as_millis() as u64;
+                if elapsed_ms >= 250 {
+                    if bytes >= old {
+                        let bps = bytes.saturating_sub(old).saturating_mul(1000) / elapsed_ms.max(1);
+                        t.speed = bps;
+                        computed_bps = bps;
                     }
-                } else {
-                    t.sample = Some((ts, bytes));
+                    t.sample = Some((inst, bytes));
                 }
-                t.size = total;
-                t.transferred = bytes;
-                t.eta = if t.speed > 0 {
-                    (total.saturating_sub(bytes) / t.speed) as i64
-                } else {
-                    -1
-                };
-            },
-            false,
-        )
+            } else {
+                t.sample = Some((inst, bytes));
+            }
+            t.size = total;
+            t.transferred = bytes;
+            t.eta = if t.speed > 0 {
+                (total.saturating_sub(bytes) / t.speed) as i64
+            } else {
+                -1
+            };
+            t.updated_at = now();
+        }
+        if let Some(tel) = tel {
+            if computed_bps > 0 {
+                tel.update_peak_bps(computed_bps);
+            }
+        }
+        let now_ms = now();
+        let prev = self.inner.last_progress_notify.load(Ordering::Relaxed);
+        if bytes == 0 || bytes >= total || now_ms.saturating_sub(prev) >= 80 {
+            self.inner.last_progress_notify.store(now_ms, Ordering::Relaxed);
+            self.mark_changed();
+        }
+        Ok(())
     }
     pub(crate) fn checkpoint(&self, id: &str, checkpoint: Value) -> Result<()> {
         self.update(id, |t| t.checkpoint = checkpoint, true)
@@ -444,26 +677,38 @@ impl TransferManager {
             };
             let id = task.id.clone();
             let kind = task.kind.clone();
+            let tel = RunTelemetry::new(task.attempts, limit as u16, task.rate_limit_bps > 0);
             tokio::spawn(async move {
                 let result = if kind == "upload" {
-                    crate::upload::run(&manager, &id, &token).await
+                    crate::upload::run(&manager, &id, &token, &tel).await
                 } else {
-                    crate::download::run(&manager, &id, &token).await
+                    crate::download::run(&manager, &id, &token, &tel).await
                 };
+                let mut outcome_opt: Option<(&'static str, Option<String>)> = None;
                 let _ = manager.update(
                     &id,
                     |t| {
-                        if t.status == "running" {
-                            match result {
-                                Ok(()) => {
+                        match &result {
+                            Ok(()) => {
+                                // Even if pause raced right after final publication, never lose a completed transfer.
+                                if t.status == "running" || t.status == "paused" {
                                     t.status = "done".into();
                                     t.transferred = t.size;
                                     t.eta = 0;
+                                    outcome_opt = Some(("done", None));
                                 }
-                                Err(e) => {
+                            }
+                            Err(e) => {
+                                if let Some(st) = e.http_status {
+                                    tel.set_http_status(st);
+                                }
+                                if t.status == "running" {
                                     t.status = "error".into();
-                                    t.error = Some(e.message);
-                                    t.error_code = Some(e.code);
+                                    t.error = Some(e.message.clone());
+                                    t.error_code = Some(e.code.clone());
+                                    outcome_opt = Some(("error", Some(e.code.clone())));
+                                } else if t.status == "canceled" {
+                                    outcome_opt = Some(("canceled", None));
                                 }
                             }
                         }
@@ -471,6 +716,10 @@ impl TransferManager {
                     },
                     true,
                 );
+                if let Some((outcome, err_code)) = outcome_opt {
+                    let sample = tel.to_sample(&kind, outcome, err_code.as_deref());
+                    manager.emit_telemetry(sample);
+                }
                 manager.inner.active.lock().unwrap().remove(&id);
                 done.notify_waiters();
                 manager.notify_scheduler();
@@ -479,6 +728,7 @@ impl TransferManager {
         drop(tasks);
         drop(active);
         if mutated {
+            let _ = self.persist();
             self.mark_changed();
         }
     }
@@ -515,6 +765,12 @@ impl TransferManager {
                 if items.len() > 10000 {
                     return Err(err("INVALID_ARG", "一次最多创建 10000 个任务"));
                 }
+                let settings = self.inner.core.settings();
+                let default_dl_dir = settings["downloadDir"].as_str().unwrap_or("").to_string();
+                let rate_limit = params["rateLimitBps"]
+                    .as_u64()
+                    .map(|v| if v == 0 { 0 } else { v.clamp(16 * 1024, 1_099_511_627_776) })
+                    .unwrap_or(0);
                 let mut additions = Vec::new();
                 for (index, item) in items.iter().enumerate() {
                     let value = item
@@ -526,11 +782,10 @@ impl TransferManager {
                     }
                     let ts = now();
                     let id = Uuid::new_v4().to_string();
-                    let settings = self.inner.core.settings();
                     let base_local_dir = params["localDir"]
                         .as_str()
                         .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| settings["downloadDir"].as_str().unwrap_or(""))
+                        .unwrap_or(default_dl_dir.as_str())
                         .to_string();
                     if !upload && !Path::new(&base_local_dir).is_absolute() {
                         return Err(err("INVALID_ARG", "请选择下载目录"));
@@ -596,10 +851,7 @@ impl TransferManager {
                         eta: -1,
                         checkpoint: json!({}),
                         account_key: Some(account_key.clone()),
-                        rate_limit_bps: params["rateLimitBps"]
-                            .as_u64()
-                            .unwrap_or(0)
-                            .min(1_099_511_627_776),
+                        rate_limit_bps: rate_limit,
                         sample: None,
                     });
                 }
@@ -690,7 +942,8 @@ impl TransferManager {
                     .collect();
                 for t in &cleanup {
                     self.wait_stop(&t.id).await;
-                    crate::download::cleanup(t).await?;
+                    // Best-effort cleanup during clear so corrupt checkpoints or unmounted drives never leave permanent ghost tasks.
+                    let _ = crate::download::cleanup(t).await;
                 }
                 let active = self.inner.active.lock().unwrap();
                 self.inner.tasks.lock().unwrap().retain(|t| {
@@ -728,76 +981,133 @@ impl TransferManager {
         }
     }
     async fn stop_task(&self, id: &str, cancel: bool) -> Result<()> {
-        let _control = self.inner.controls.lock().await;
-        let task = match self.task(id) {
-            Ok(t) => t,
-            Err(_) => return Ok(()),
-        };
-        if task.status == "done" || task.status == "canceled" {
-            return Ok(());
-        }
-        self.update(
-            id,
-            |t| {
+        let kind: String;
+        let mut applied = false;
+        {
+            let _control = self.inner.controls.lock().await;
+            let mut tasks = self.inner.tasks.lock().unwrap();
+            let Some(t) = tasks.iter_mut().find(|t| t.id == id) else {
+                return Ok(());
+            };
+            kind = t.kind.clone();
+            if t.status == "done" {
+                return Ok(());
+            }
+            if t.status != "canceled" {
                 t.status = if cancel { "canceled" } else { "paused" }.into();
                 t.speed = 0;
                 t.eta = -1;
-            },
-            true,
-        )?;
+                t.updated_at = now();
+                applied = true;
+            }
+            drop(tasks);
+            if applied {
+                self.persist()?;
+                self.mark_changed();
+            }
+            // Cancel token immediately while releasing `controls` before waiting on any in-flight HTTP call (fixes C7).
+            if let Some(a) = self.inner.active.lock().unwrap().get(id) {
+                a.token.cancel();
+            }
+        }
         self.wait_stop(id).await;
-        if cancel && task.kind == "download" {
-            crate::download::cleanup(&self.task(id)?).await?;
+        if cancel && kind == "download" {
+            let _control = self.inner.controls.lock().await;
+            if let Ok(t) = self.task(id) {
+                if t.status == "canceled" {
+                    crate::download::cleanup(&t).await?;
+                }
+            }
         }
         Ok(())
     }
     async fn requeue_task(&self, id: &str, retry: bool, rate_limit_bps: Option<u64>) -> Result<()> {
-        let _control = self.inner.controls.lock().await;
-        let t = self.task(id)?;
-        if t.account_key.is_none() || t.account_key != self.inner.core.account_key() {
-            return Err(err(
-                "ACCOUNT_MISMATCH",
-                "请登录创建此任务的账号后继续；旧版未绑定任务请重新创建",
-            ));
-        }
-        if t.status != "paused"
-            && t.status != "error"
-            && !(retry && t.status == "canceled")
         {
-            return Ok(());
+            let _control = self.inner.controls.lock().await;
+            let t = self.task(id)?;
+            if t.account_key.is_none() || t.account_key != self.inner.core.account_key() {
+                return Err(err(
+                    "ACCOUNT_MISMATCH",
+                    "请登录创建此任务的账号后继续；旧版未绑定任务请重新创建",
+                ));
+            }
+            if t.status != "paused"
+                && t.status != "error"
+                && !(retry && t.status == "canceled")
+            {
+                return Ok(());
+            }
         }
         self.wait_stop(id).await;
-        self.update(
-            id,
-            |t| {
-                if t.status == "canceled" && t.kind == "download" {
-                    t.checkpoint = json!({});
-                    t.local_path = None;
-                }
-                if let Some(rate) = rate_limit_bps {
-                    t.rate_limit_bps = rate.min(1_099_511_627_776);
-                }
-                t.status = "pending".into();
-                t.error = None;
-                t.error_code = None;
-            },
-            true,
-        )?;
+        {
+            let _control = self.inner.controls.lock().await;
+            self.update(
+                id,
+                |t| {
+                    if t.status == "canceled" && t.kind == "download" {
+                        t.checkpoint = json!({});
+                        t.local_path = None;
+                        t.transferred = 0;
+                        t.size = 0;
+                    }
+                    if let Some(rate) = rate_limit_bps {
+                        t.rate_limit_bps = if rate == 0 {
+                            0
+                        } else {
+                            rate.clamp(16 * 1024, 1_099_511_627_776)
+                        };
+                    }
+                    t.status = "pending".into();
+                    t.error = None;
+                    t.error_code = None;
+                    t.sample = None;
+                },
+                true,
+            )?;
+        }
         self.notify_scheduler();
         Ok(())
     }
     pub async fn pause_all(&self) -> Result<()> {
-        let ids: Vec<String> = self
-            .inner
-            .tasks
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|t| t.status == "running" || t.status == "pending")
-            .map(|t| t.id.clone())
-            .collect();
-        for id in ids {
-            self.stop_task(&id, false).await?;
+        let running_ids: Vec<String>;
+        {
+            let _control = self.inner.controls.lock().await;
+            let mut mutated = false;
+            let mut active_ids = Vec::new();
+            {
+                let mut tasks = self.inner.tasks.lock().unwrap();
+                for t in tasks.iter_mut() {
+                    if t.status == "pending" || t.status == "running" {
+                        if t.status == "running" {
+                            active_ids.push(t.id.clone());
+                        }
+                        t.status = "paused".into();
+                        t.speed = 0;
+                        t.eta = -1;
+                        t.updated_at = now();
+                        mutated = true;
+                    }
+                }
+            }
+            if mutated {
+                self.persist()?;
+                self.mark_changed();
+            }
+            {
+                let active = self.inner.active.lock().unwrap();
+                for a in active.values() {
+                    a.token.cancel();
+                }
+                for id in active.keys() {
+                    if !active_ids.contains(id) {
+                        active_ids.push(id.clone());
+                    }
+                }
+            }
+            running_ids = active_ids;
+        }
+        for id in running_ids {
+            self.wait_stop(&id).await;
         }
         Ok(())
     }
@@ -816,7 +1126,7 @@ fn current_file_stamp(path: &str) -> Option<(u64, u128, Option<String>)> {
         .modified()
         .ok()?
         .duration_since(UNIX_EPOCH)
-        .ok()?
+        .unwrap_or_default()
         .as_nanos();
     #[cfg(unix)]
     let identity = {

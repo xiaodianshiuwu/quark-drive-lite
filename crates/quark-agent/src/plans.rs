@@ -324,6 +324,75 @@ impl PlanStore {
         Ok(plan.clone())
     }
 
+    /// 原子校验并认领计划为 executing（同一把锁内完成，消除并发重复执行竞态）。
+    pub fn claim_executable(
+        &self,
+        plan_id: &str,
+        revision: Option<u64>,
+        content_hash: Option<&str>,
+    ) -> Result<Plan, AgentToolError> {
+        let mut inner = self.inner.lock().unwrap();
+        let now = Self::now();
+        let plan = inner
+            .map
+            .get_mut(plan_id)
+            .ok_or_else(|| AgentToolError::new(AgentError::NotFound, "未找到该计划").with_hint("请重新生成计划"))?;
+        if plan.status == "pending" && plan.expires_at <= now {
+            plan.status = "expired".into();
+        }
+        match plan.status.as_str() {
+            "expired" => {
+                return Err(AgentToolError::new(AgentError::PlanStale, "计划已过期，请重新生成"));
+            }
+            "executed" => {
+                return Err(AgentToolError::new(AgentError::Conflict, "该计划已经执行过，不能重复执行")
+                    .with_hint("如需再次改动，请重新生成计划"));
+            }
+            "executing" => {
+                return Err(AgentToolError::new(AgentError::Conflict, "该计划正在执行中"));
+            }
+            _ => {}
+        }
+        let (rev, hash) = match (revision, content_hash) {
+            (Some(r), Some(h)) if !h.is_empty() => (r, h),
+            _ => {
+                return Err(AgentToolError::new(AgentError::PlanStale, "缺少计划授权参数")
+                    .with_hint("请先用 get_plan 读取计划，再把 revision 与 content_hash 一起回传"));
+            }
+        };
+        if rev != plan.revision {
+            return Err(AgentToolError::new(
+                AgentError::PlanStale,
+                format!("计划版本不匹配（当前 {}）", plan.revision),
+            ));
+        }
+        if hash != plan.hash {
+            return Err(AgentToolError::new(AgentError::PlanStale, "计划内容已变化，授权不再有效"));
+        }
+        let recomputed = Plan::compute_hash(&plan.kind, &plan.root_fid, &plan.rules, plan.entries.clone());
+        if recomputed != plan.hash {
+            return Err(AgentToolError::new(AgentError::PlanStale, "计划内容与授权时不一致"));
+        }
+        plan.status = "executing".into();
+        Ok(plan.clone())
+    }
+
+    /// 当执行 Future 被中止且未进入 mark_executed 时，回收卡死的 executing 状态。
+    pub fn abort_executing(&self, plan_id: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(plan) = inner.map.get_mut(plan_id) {
+            if plan.status == "executing" {
+                plan.status = "executed".into();
+                plan.executed_at = Some(Self::now());
+                plan.result = Some(json!({
+                    "executed_at": plan.executed_at,
+                    "aborted": true,
+                    "note": "执行被中途取消，请核对目标目录后再重新生成计划"
+                }));
+            }
+        }
+    }
+
     pub fn mark_executing(&self, plan_id: &str) -> Result<(), AgentToolError> {
         let mut inner = self.inner.lock().unwrap();
         let plan = inner

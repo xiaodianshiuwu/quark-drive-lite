@@ -188,6 +188,7 @@ impl Core {
     fn update(&self, change: impl FnOnce(&mut Value)) -> Result<()> {
         self.update_state(None, false, change)
     }
+    #[cfg(test)]
     fn update_in_session(&self, generation: u64, change: impl FnOnce(&mut Value)) -> Result<()> {
         self.update_state(Some(generation), false, change)
     }
@@ -382,7 +383,14 @@ impl Core {
             .map_err(|_| Error::new("SERVER", "服务端未返回有效 JSON"))?;
         if let Some(error) = envelope_error(status, &env) {
             if error.code == "NEED_LOGIN" {
-                self.update_in_session(generation, |doc| doc["expired"] = json!(true))?;
+                let _ = self.update_in_session_if_changed(generation, |doc| {
+                    if doc["expired"] == true {
+                        false
+                    } else {
+                        doc["expired"] = json!(true);
+                        true
+                    }
+                });
             }
             return Err(error);
         }
@@ -634,13 +642,13 @@ fn envelope_error(http_status: u16, env: &Value) -> Option<Error> {
         ("FORBIDDEN", "没有权限执行该操作")
     } else if biz == 21001 || http_status == 404 || status == 404 {
         ("NOT_FOUND", "资源不存在")
-    } else if http_status == 429 {
+    } else if http_status == 429 || status == 429 {
         ("RATE_LIMIT", "请求过于频繁，请稍后再试")
-    } else if http_status == 409 {
+    } else if http_status == 409 || status == 409 {
         ("CONFLICT", "目标位置已存在同名文件或目录")
-    } else if biz == 14001 || http_status == 400 {
+    } else if biz == 14001 || http_status == 400 || status == 400 {
         ("INVALID_ARG", "请求参数有误")
-    } else if biz == 500 || http_status >= 500 {
+    } else if biz == 500 || http_status >= 500 || status >= 500 {
         ("SERVER", "服务端暂时不可用，请稍后重试")
     } else {
         ("UNKNOWN", "操作失败，请重试")
@@ -648,7 +656,7 @@ fn envelope_error(http_status: u16, env: &Value) -> Option<Error> {
     // Remote messages can contain signed URLs or reflected credentials. Expose
     // stable, local error text; protocol codes retain the useful diagnostics.
     let mut error = Error::new(code, fallback);
-    error.biz_code = Some(biz);
+    error.biz_code = (biz != i64::MIN).then_some(biz);
     error.http_status = Some(http_status);
     Some(error)
 }

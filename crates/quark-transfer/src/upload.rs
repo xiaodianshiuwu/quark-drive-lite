@@ -1,5 +1,7 @@
 use crate::{
-    manager::{cancellable, check, err, io_err, net_err, now, Result, TransferManager},
+    manager::{
+        cancellable, check, err, io_err, net_err, now, Result, RunTelemetry, TransferManager,
+    },
     protocol::{complete_meta, oss_url, put_meta_with_ctx, xml, OSS_USER_AGENT},
     sha1_state::Sha1State,
 };
@@ -12,11 +14,13 @@ use sha1::Sha1;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::fs;
 use tokio_util::sync::CancellationToken;
 const INSPECT_BUF_CAP: usize = 2 * 1024 * 1024;
+const STREAM_CHUNK_BYTES: usize = 256 * 1024;
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Checkpoint {
     #[serde(default)]
@@ -45,6 +49,8 @@ struct Checkpoint {
     parallel_disabled: bool,
     #[serde(default)]
     part_thread: u64,
+    #[serde(default)]
+    returned_fid: Option<String>,
 }
 fn store(m: &TransferManager, id: &str, cp: &Checkpoint) -> Result<()> {
     m.checkpoint(
@@ -89,7 +95,7 @@ impl FileStamp {
                 .modified()
                 .map_err(io_err)?
                 .duration_since(UNIX_EPOCH)
-                .map_err(|_| err("LOCAL_IO", "上传文件修改时间无效"))?
+                .unwrap_or_default()
                 .as_nanos(),
             identity,
         })
@@ -117,8 +123,17 @@ async fn inspect(
             return Err(err("CONFLICT", "本地文件已被替换，已停止上传"));
         }
         let mut md5 = Md5::new();
-        let mut sha1 = Sha1::new();
-        let mut prefix = Sha1State::new();
+        // When part_size is Some, compute SHA-1 ONCE via Sha1State (exports prefix + finalizes full digest).
+        let mut sha1_only = if part_size.is_none() {
+            Some(Sha1::new())
+        } else {
+            None
+        };
+        let mut prefix = if part_size.is_some() {
+            Some(Sha1State::new())
+        } else {
+            None
+        };
         let mut part_md5 = Md5::new();
         let mut result = Inspection {
             md5: String::new(),
@@ -130,11 +145,11 @@ async fn inspect(
         let mut position = 0u64;
         loop {
             check(&tok)?;
-            if let Some(span) = part_size {
+            if let (Some(span), Some(pref)) = (part_size, prefix.as_ref()) {
                 if position > 0 && position < expected.size && position % span == 0 {
                     result
                         .contexts
-                        .insert(position / span + 1, prefix.export_base64()?);
+                        .insert(position / span + 1, pref.export_base64()?);
                 }
             }
             let max = part_size
@@ -145,9 +160,11 @@ async fn inspect(
                 break;
             }
             md5.update(&buffer[..count]);
-            sha1.update(&buffer[..count]);
-            if let Some(span) = part_size {
-                prefix.update(&buffer[..count])?;
+            if let Some(ref mut s) = sha1_only {
+                s.update(&buffer[..count]);
+            }
+            if let (Some(span), Some(ref mut pref)) = (part_size, prefix.as_mut()) {
+                pref.update(&buffer[..count])?;
                 part_md5.update(&buffer[..count]);
                 position += count as u64;
                 if position % span == 0 || position == expected.size {
@@ -170,7 +187,11 @@ async fn inspect(
             return Err(err("CONFLICT", "本地文件在上传期间发生变化，已停止提交"));
         }
         result.md5 = format!("{:x}", md5.finalize());
-        result.sha1 = format!("{:x}", sha1.finalize());
+        result.sha1 = if let Some(pref) = prefix {
+            pref.finalize_hex()?
+        } else {
+            format!("{:x}", sha1_only.unwrap().finalize())
+        };
         Ok(result)
     })
     .await
@@ -186,7 +207,27 @@ async fn signature(
     let env=cancellable(token,m.inner.core.post_in_session(generation,"/1/clouddrive/file/upload/auth",json!({"task_id":required(pre,"task_id")?,"auth_info":pre["auth_info"],"auth_meta":meta}))).await?;
     required(&env["data"], "auth_key").map(str::to_string)
 }
-pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Result<()> {
+fn is_definitive_rejection(e: &quark_core::Error) -> bool {
+    e.http_status.is_some()
+        || matches!(
+            e.code.as_str(),
+            "NEED_LOGIN"
+                | "INVALID_ARG"
+                | "FORBIDDEN"
+                | "NO_SPACE"
+                | "CONFLICT"
+                | "RATE_LIMIT"
+                | "NOT_FOUND"
+        )
+}
+
+pub(crate) async fn run(
+    m: &TransferManager,
+    id: &str,
+    token: &CancellationToken,
+    tel: &RunTelemetry,
+) -> Result<()> {
+    tel.set_stage("init");
     let generation = m.bound_generation()?;
     let task = m.task(id)?;
     if task.account_key.is_none() || task.account_key != m.inner.core.account_key() {
@@ -209,6 +250,9 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         serde_json::from_value(task.checkpoint.clone())
             .map_err(|_| err("LOCAL_IO", "上传进度格式无效，原记录已保留"))?
     };
+    if !cp.phase.is_empty() || !cp.parts.is_empty() {
+        tel.set_resumed(true);
+    }
     if (!cp.md5.is_empty()
         && (cp.md5.len() != 32
             || !cp.md5.bytes().all(|b| b.is_ascii_hexdigit())
@@ -220,6 +264,9 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         return Err(err("LOCAL_IO", "上传进度缺少内容绑定信息，原记录已保留"));
     }
     if cp.phase == "result" {
+        tel.set_strategy("confirm_only");
+        tel.set_stage("confirm");
+        tel.set_size(cp.size);
         return confirm(m, id, parent, name, &cp, false, token, generation).await;
     }
     if [
@@ -230,6 +277,8 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
     ]
     .contains(&cp.phase.as_str())
     {
+        tel.set_stage("confirm_uncertain");
+        tel.set_size(cp.size);
         // A crash or lost HTTP response at a mutating endpoint cannot safely be replayed.
         // First recognize an attributable completed cloud file; otherwise preserve the checkpoint for explicit inspection.
         if confirm(m, id, parent, name, &cp, true, token, generation)
@@ -238,7 +287,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         {
             cp.phase = "result".into();
             store(m, id, &cp)?;
-            return m.progress(id, cp.size, cp.size);
+            return m.progress_with_telemetry(id, cp.size, cp.size, Some(tel));
         }
         check(token)?;
         m.inner.core.ensure_session(generation)?;
@@ -253,6 +302,8 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
     // Once OSS completion is acknowledged, finishing that same task does not
     // need the local file to remain available. Its digest is already pinned.
     if cp.phase == "completed" {
+        tel.set_stage("finish_api");
+        tel.set_size(cp.size);
         let pre = cp
             .pre
             .clone()
@@ -263,16 +314,33 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         m.inner.core.ensure_session(generation)?;
         cp.phase = "finish_started".into();
         store(m, id, &cp)?;
-        m.inner
+        match m
+            .inner
             .core
             .post_in_session(generation, "/1/clouddrive/file/upload/finish", finish)
-            .await?;
+            .await
+        {
+            Ok(env) => {
+                if let Some(fid) = env["data"]["fid"].as_str().filter(|s| !s.is_empty()) {
+                    cp.returned_fid = Some(fid.to_string());
+                }
+            }
+            Err(e) => {
+                if is_definitive_rejection(&e) {
+                    cp.phase = "completed".into();
+                    store(m, id, &cp)?;
+                }
+                return Err(e);
+            }
+        }
         cp.phase = "result".into();
         store(m, id, &cp)?;
+        tel.set_stage("confirm");
         return confirm(m, id, parent, name, &cp, false, token, generation).await;
     }
     let stamp = FileStamp::from(&fs::metadata(&local).await.map_err(io_err)?)?;
     let size = stamp.size;
+    tel.set_size(size);
     if (!cp.md5.is_empty() || cp.pre.is_some())
         && (cp.size != size
             || cp.modified != stamp.modified
@@ -289,14 +357,18 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
     cp.size = size;
     cp.modified = stamp.modified;
     cp.identity = stamp.identity.clone();
-    m.progress(id, 0, size)?;
+    m.progress_with_telemetry(id, 0, size, Some(tel))?;
     if cp.baseline.is_none() {
+        tel.set_stage("baseline");
         cp.baseline = Some(matching(m, parent, name, token, generation).await?);
         store(m, id, &cp)?;
     }
     // Rehash on resume, including when a process changed bytes and restored the
     // mtime. Never mix saved multipart ETags with a different local source.
+    tel.set_stage("inspect_initial");
+    let hash_start = Instant::now();
     let inspected = inspect(&local, &stamp, None, token).await?;
+    tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
     if cp.md5.is_empty() {
         cp.md5 = inspected.md5;
         cp.sha1 = inspected.sha1;
@@ -312,6 +384,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         .essence_str()
         .to_string();
     if cp.pre.is_none() {
+        tel.set_stage("pre");
         check(token)?;
         cp.parallel_requested = m.inner.core.settings()["uploadPartConcurrency"]
             .as_u64()
@@ -324,7 +397,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         let env = match result {
             Ok(env) => env,
             Err(e) => {
-                if e.code == "NEED_LOGIN" {
+                if is_definitive_rejection(&e) {
                     cp.phase.clear();
                     store(m, id, &cp)?;
                 }
@@ -340,19 +413,27 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
             .or_else(|| env["data"]["part_thread"].as_u64())
             .unwrap_or(3)
             .max(1);
+        if let Some(fid) = env["data"]["fid"].as_str().filter(|s| !s.is_empty()) {
+            cp.returned_fid = Some(fid.to_string());
+        }
         cp.pre = Some(env["data"].clone());
         cp.phase = "prepared".into();
         store(m, id, &cp)?;
     }
+    tel.set_chunk_size(cp.part_size);
     let pre = cp.pre.clone().unwrap();
     if pre["finish"].as_bool() == Some(true) {
+        tel.set_rapid(true);
+        tel.set_strategy("rapid_pre");
+        tel.set_stage("confirm");
         cp.phase = "result".into();
         store(m, id, &cp)?;
-        m.progress(id, size, size)?;
+        m.progress_with_telemetry(id, size, size, Some(tel))?;
         return confirm(m, id, parent, name, &cp, false, token, generation).await;
     }
     check(token)?;
     if cp.phase == "prepared" {
+        tel.set_stage("update_hash");
         let hash_request = json!({"md5":cp.md5,"sha1":cp.sha1,"task_id":required(&pre,"task_id")?});
         check(token)?;
         cp.phase = "hash_started".into();
@@ -364,16 +445,20 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
             .await;
         match hash_result {
             Ok(env) if env["data"]["finish"].as_bool() == Some(true) => {
+                if let Some(fid) = env["data"]["fid"].as_str().filter(|s| !s.is_empty()) {
+                    cp.returned_fid = Some(fid.to_string());
+                }
+                tel.set_rapid(true);
+                tel.set_strategy("rapid_hash");
+                tel.set_stage("confirm");
                 cp.phase = "result".into();
                 store(m, id, &cp)?;
-                m.progress(id, size, size)?;
+                m.progress_with_telemetry(id, size, size, Some(tel))?;
                 return confirm(m, id, parent, name, &cp, false, token, generation).await;
             }
             Ok(_) => {}
             Err(e) => {
-                // A lost hash-update response may already have finalized an
-                // instant upload. Preserve ambiguity instead of sending PUTs.
-                if e.code == "NEED_LOGIN" {
+                if is_definitive_rejection(&e) {
                     cp.phase = "prepared".into();
                     store(m, id, &cp)?;
                 }
@@ -386,21 +471,39 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
     let key = required(&pre, "obj_key")?;
     let task_id = required(&pre, "task_id")?;
     if size == 0 {
+        tel.set_strategy("zero_byte");
         if cp.phase != "result" {
+            tel.set_stage("finish_api");
             check(token)?;
             cp.phase = "finish_started".into();
             store(m, id, &cp)?;
-            m.inner
+            match m
+                .inner
                 .core
                 .post_in_session(
                     generation,
                     "/1/clouddrive/file/upload/finish",
                     json!({"obj_key":key,"task_id":task_id}),
                 )
-                .await?;
+                .await
+            {
+                Ok(env) => {
+                    if let Some(fid) = env["data"]["fid"].as_str().filter(|s| !s.is_empty()) {
+                        cp.returned_fid = Some(fid.to_string());
+                    }
+                }
+                Err(e) => {
+                    if is_definitive_rejection(&e) {
+                        cp.phase = "parts".into();
+                        store(m, id, &cp)?;
+                    }
+                    return Err(e);
+                }
+            }
             cp.phase = "result".into();
             store(m, id, &cp)?;
         }
+        tel.set_stage("confirm");
         return confirm(m, id, parent, name, &cp, false, token, generation).await;
     }
     let part_size = cp.part_size;
@@ -418,7 +521,10 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         if count > 10_000 {
             return Err(err("INVALID_ARG", "服务端分片参数会超过 10000 片上限"));
         }
+        tel.set_stage("inspect_parts");
+        let hash_start = Instant::now();
         let inspected = inspect(&local, &stamp, Some(part_size), token).await?;
+        tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
         if inspected.md5 != cp.md5 || inspected.sha1 != cp.sha1 {
             return Err(err("CONFLICT", "上传源文件内容已变化，已停止分片提交"));
         }
@@ -434,13 +540,11 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
                 ));
             }
         }
+        // Per-task rate limiter (fixes H3: one slow task can no longer stall all other uploads).
         let rate = if task.rate_limit_bps == 0 {
             None
         } else {
-            Some(std::sync::Arc::new(UploadRate {
-                bps: task.rate_limit_bps,
-                next: m.inner.upload_rate_next.clone(),
-            }))
+            Some(Arc::new(UploadRate::new(task.rate_limit_bps.max(16 * 1024))))
         };
         loop {
             let concurrency = if cp.parallel_requested && !cp.parallel_disabled {
@@ -452,6 +556,15 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
             } else {
                 1
             };
+            tel.set_parallel(concurrency);
+            tel.set_strategy(if cp.parallel_disabled {
+                "seq_fallback"
+            } else if concurrency > 1 {
+                "parallel_oss"
+            } else {
+                "seq_oss"
+            });
+            tel.set_stage("put_parts");
             let contexts = &inspected.contexts;
             let part_hashes = &inspected.part_md5;
             let with_context = cp.parallel_requested && !cp.parallel_disabled;
@@ -461,50 +574,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
             let base_ref = &base;
             let mime_ref = mime.as_str();
             let rate = &rate;
-            let launch = |number| async move {
-                let _buffer = cancellable(token, async {
-                    m.inner
-                        .upload_buffers
-                        .acquire_many(part_size.div_ceil(1024) as u32)
-                        .await
-                        .map_err(|_| err("ABORTED", "上传已停止"))
-                })
-                .await?;
-                let bytes = read_part(
-                    local_ref,
-                    stamp_ref,
-                    part_size,
-                    number,
-                    part_hashes
-                        .get(&number)
-                        .ok_or_else(|| err("CONTENT_MISMATCH", "缺少上传分片摘要"))?,
-                    token,
-                )
-                .await?;
-                let length = bytes.len() as u64;
-                let context = if with_context {
-                    contexts.get(&number).map(String::as_str)
-                } else {
-                    None
-                };
-                let etag = put_part(
-                    m,
-                    pre_ref,
-                    base_ref,
-                    mime_ref,
-                    bucket,
-                    key,
-                    upload_id,
-                    number,
-                    bytes,
-                    context,
-                    token,
-                    generation,
-                    rate.clone(),
-                )
-                .await?;
-                Ok::<_, quark_core::Error>((number, length, etag))
-            };
+            let workers_token = token.child_token();
             let pending = (1..=count)
                 .filter(|n| !cp.parts.contains_key(n))
                 .collect::<Vec<_>>();
@@ -513,23 +583,97 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
                 .keys()
                 .map(|n| part_size.min(size - (n - 1) * part_size))
                 .sum::<u64>();
-            m.progress(id, uploaded, size)?;
+            m.progress_with_telemetry(id, uploaded, size, Some(tel))?;
+            let live = Arc::new(Mutex::new((uploaded, BTreeMap::<u64, u64>::new())));
+            let launch = |number: u64| {
+                let wtok = workers_token.clone();
+                let live = live.clone();
+                let manager = m.clone();
+                let task_id_owned = id.to_string();
+                async move {
+                    let _buffer = cancellable(&wtok, async {
+                        m.inner
+                            .upload_buffers
+                            .acquire_many(part_size.div_ceil(1024) as u32)
+                            .await
+                            .map_err(|_| err("ABORTED", "上传已停止"))
+                    })
+                    .await?;
+                    let expected_md5 = part_hashes
+                        .get(&number)
+                        .ok_or_else(|| err("CONTENT_MISMATCH", "缺少上传分片摘要"))?;
+                    let bytes = read_part(
+                        local_ref,
+                        stamp_ref,
+                        part_size,
+                        number,
+                        expected_md5,
+                        &wtok,
+                    )
+                    .await?;
+                    let length = bytes.len() as u64;
+                    let context = if with_context {
+                        contexts.get(&number).map(String::as_str)
+                    } else {
+                        None
+                    };
+                    let progress: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |sent| {
+                        let mut guard = live.lock().unwrap();
+                        guard.1.insert(number, sent);
+                        let cur = guard.0 + guard.1.values().sum::<u64>();
+                        let _ = manager.progress(&task_id_owned, cur, size);
+                    });
+                    let etag = put_part(
+                        m,
+                        pre_ref,
+                        base_ref,
+                        mime_ref,
+                        bucket,
+                        key,
+                        upload_id,
+                        number,
+                        bytes,
+                        expected_md5,
+                        context,
+                        &wtok,
+                        generation,
+                        rate.clone(),
+                        Some(progress),
+                        Some(tel),
+                    )
+                    .await?;
+                    Ok::<_, quark_core::Error>((number, length, etag))
+                }
+            };
             let mut unsaved_parts: u32 = 0;
             let mut last_flush = tokio::time::Instant::now();
-            let result = part_window(pending, concurrency, launch, |number, length, etag| {
-                uploaded += length;
-                cp.parts.insert(number, etag);
-                unsaved_parts += 1;
-                let should_flush = unsaved_parts >= 4
-                    || last_flush.elapsed() >= Duration::from_millis(1500)
-                    || cp.parts.len() as u64 == count;
-                store_batched(m, id, &cp, should_flush)?;
-                if should_flush {
-                    unsaved_parts = 0;
-                    last_flush = tokio::time::Instant::now();
-                }
-                m.progress(id, uploaded, size)
-            })
+            let live_done = live.clone();
+            let result = part_window(
+                pending,
+                concurrency,
+                &workers_token,
+                launch,
+                |number, length, etag| {
+                    uploaded += length;
+                    let cur = {
+                        let mut guard = live_done.lock().unwrap();
+                        guard.0 = uploaded;
+                        guard.1.remove(&number);
+                        guard.0 + guard.1.values().sum::<u64>()
+                    };
+                    cp.parts.insert(number, etag);
+                    unsaved_parts += 1;
+                    let should_flush = unsaved_parts >= 4
+                        || last_flush.elapsed() >= Duration::from_millis(1500)
+                        || cp.parts.len() as u64 == count;
+                    if should_flush {
+                        store_batched(m, id, &cp, true)?;
+                        unsaved_parts = 0;
+                        last_flush = tokio::time::Instant::now();
+                    }
+                    m.progress_with_telemetry(id, cur, size, Some(tel))
+                },
+            )
             .await;
             if unsaved_parts > 0 {
                 let _ = store(m, id, &cp);
@@ -554,10 +698,12 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         if cp.parts.len() as u64 != count {
             return Err(err("CONTENT_MISMATCH", "上传分片未完整提交"));
         }
-        let final_source = inspect(&local, &stamp, None, token).await?;
-        if final_source.md5 != cp.md5 || final_source.sha1 != cp.sha1 {
+        // Every part was already MD5-verified on read + ETag-verified by OSS + FileStamp-checked before/after read.
+        // Re-verify FileStamp here instead of a redundant 4th full-disk read + hash pass (P1).
+        if FileStamp::from(&fs::metadata(&local).await.map_err(io_err)?)? != stamp {
             return Err(err("CONFLICT", "本地文件在上传过程中发生变化，已停止提交"));
         }
+        tel.set_stage("complete_oss");
         let parts: Vec<_> = cp.parts.iter().map(|(n, tag)| (*n, tag.clone())).collect();
         let xml = xml(&parts);
         let digest = STANDARD.encode(Md5::digest(xml.as_bytes()));
@@ -597,6 +743,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
             .map_err(net_err)?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
+            tel.set_http_status(status);
             let text = small_response(response).await?;
             let code = text
                 .split_once("<Code>")
@@ -604,10 +751,15 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
                 .map(|(s, _)| s)
                 .filter(|s| s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric()))
                 .unwrap_or("Rejected");
-            return Err(err(
+            // Definitive HTTP rejection from OSS means the commit did NOT succeed — revert phase so user can retry.
+            cp.phase = "parts".into();
+            store(m, id, &cp)?;
+            let mut e = err(
                 "SERVER",
                 format!("对象存储完成上传返回 HTTP {status} ({code})"),
-            ));
+            );
+            e.http_status = Some(status);
+            return Err(e);
         }
         let text = small_response(response).await?;
         validate_completion(&text)?;
@@ -615,26 +767,44 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         store(m, id, &cp)?;
     }
     if cp.phase == "completed" {
+        tel.set_stage("finish_api");
         check(token)?;
         cp.phase = "finish_started".into();
         store(m, id, &cp)?;
-        m.inner
+        match m
+            .inner
             .core
             .post_in_session(
                 generation,
                 "/1/clouddrive/file/upload/finish",
                 json!({"obj_key":key,"task_id":task_id}),
             )
-            .await?;
+            .await
+        {
+            Ok(env) => {
+                if let Some(fid) = env["data"]["fid"].as_str().filter(|s| !s.is_empty()) {
+                    cp.returned_fid = Some(fid.to_string());
+                }
+            }
+            Err(e) => {
+                if is_definitive_rejection(&e) {
+                    cp.phase = "completed".into();
+                    store(m, id, &cp)?;
+                }
+                return Err(e);
+            }
+        }
         cp.phase = "result".into();
         store(m, id, &cp)?;
     }
-    m.progress(id, size, size)?;
+    tel.set_stage("confirm");
+    m.progress_with_telemetry(id, size, size, Some(tel))?;
     confirm(m, id, parent, name, &cp, false, token, generation).await
 }
 async fn part_window<F, Fut, S>(
     pending: Vec<u64>,
     concurrency: usize,
+    workers_token: &CancellationToken,
     launch: F,
     mut save: S,
 ) -> Result<()>
@@ -656,17 +826,20 @@ where
         match result {
             Ok((number, length, etag)) => {
                 if let Err(error) = save(number, length, etag) {
-                    failure = Some(error);
+                    if failure.is_none() {
+                        failure = Some(error);
+                        workers_token.cancel();
+                    }
                 }
             }
             Err(error) => {
                 if failure.is_none() || error.code != "PARALLEL_UNSUPPORTED" {
                     failure = Some(error);
+                    workers_token.cancel();
                 }
             }
         }
-        // Stop issuing new PUTs on first failure, then drain and checkpoint
-        // already in-flight successes before a caller may retry sequentially.
+        // Stop issuing new PUTs on first failure and cancel siblings immediately (H6).
         if failure.is_none() {
             if let Some(number) = pending.next() {
                 work.push(launch(number));
@@ -762,6 +935,7 @@ fn validate_completion(text: &str) -> Result<()> {
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn put_part(
     m: &TransferManager,
     pre: &Value,
@@ -772,47 +946,70 @@ async fn put_part(
     upload_id: &str,
     number: u64,
     bytes: bytes::Bytes,
+    expected_md5: &str,
     hash_context: Option<&str>,
     token: &CancellationToken,
     generation: u64,
-    rate: Option<std::sync::Arc<UploadRate>>,
+    rate: Option<Arc<UploadRate>>,
+    on_progress: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+    tel: Option<&RunTelemetry>,
 ) -> Result<String> {
-    for attempt in 0..3 {
+    for attempt in 0..5u32 {
         check(token)?;
-        let date = httpdate::fmt_http_date(SystemTime::now());
-        let auth = signature(
-            m,
-            pre,
-            put_meta_with_ctx(mime, &date, bucket, key, number, upload_id, hash_context),
-            token,
-            generation,
-        )
-        .await?;
-        let mut url = base.clone();
-        url.query_pairs_mut()
-            .append_pair("partNumber", &number.to_string())
-            .append_pair("uploadId", upload_id);
-        let result = cancellable(
-            token,
-            put_request_limited(
-                &m.inner.core.http_client(),
-                url,
-                mime,
-                &date,
-                &auth,
-                bytes.clone(),
-                hash_context,
-                rate.clone(),
-            ),
-        )
+        if attempt > 0 {
+            if let Some(progress) = &on_progress {
+                progress(0);
+            }
+        }
+        let result = async {
+            let date = httpdate::fmt_http_date(SystemTime::now());
+            let auth = signature(
+                m,
+                pre,
+                put_meta_with_ctx(mime, &date, bucket, key, number, upload_id, hash_context),
+                token,
+                generation,
+            )
+            .await?;
+            let mut url = base.clone();
+            url.query_pairs_mut()
+                .append_pair("partNumber", &number.to_string())
+                .append_pair("uploadId", upload_id);
+            cancellable(
+                token,
+                put_request_streaming(
+                    &m.inner.core.http_client(),
+                    url,
+                    mime,
+                    &date,
+                    &auth,
+                    bytes.clone(),
+                    Some(expected_md5),
+                    hash_context,
+                    rate.clone(),
+                    on_progress.clone(),
+                    tel,
+                ),
+            )
+            .await
+        }
         .await;
         match result {
             Ok(etag) => return Ok(etag),
             Err(e)
-                if attempt < 2 && ["NETWORK", "SIGNATURE_EXPIRED"].contains(&e.code.as_str()) =>
+                if attempt < 4
+                    && ["NETWORK", "TIMEOUT", "RATE_LIMIT", "SIGNATURE_EXPIRED"]
+                        .contains(&e.code.as_str()) =>
             {
+                if let Some(tel) = tel {
+                    tel.inc_retry();
+                    if let Some(st) = e.http_status {
+                        tel.set_http_status(st);
+                    }
+                }
+                let base_ms = if e.code == "RATE_LIMIT" { 800 } else { 400 };
                 cancellable(token, async {
-                    tokio::time::sleep(Duration::from_millis(500 * (1 << attempt))).await;
+                    tokio::time::sleep(Duration::from_millis((base_ms * (1u64 << attempt)).min(4800))).await;
                     Ok(())
                 })
                 .await?;
@@ -825,14 +1022,13 @@ async fn put_part(
 
 struct UploadRate {
     bps: u64,
-    next: std::sync::Arc<tokio::sync::Mutex<tokio::time::Instant>>,
+    next: Arc<tokio::sync::Mutex<tokio::time::Instant>>,
 }
-#[cfg(test)]
 impl UploadRate {
     fn new(bps: u64) -> Self {
         Self {
-            bps,
-            next: std::sync::Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now())),
+            bps: bps.max(16 * 1024),
+            next: Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now())),
         }
     }
 }
@@ -849,6 +1045,8 @@ async fn put_request(
     put_request_limited(client, url, mime, date, auth, bytes, hash_context, None).await
 }
 
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 async fn put_request_limited(
     client: &reqwest::Client,
     url: reqwest::Url,
@@ -857,37 +1055,88 @@ async fn put_request_limited(
     auth: &str,
     bytes: bytes::Bytes,
     hash_context: Option<&str>,
-    rate: Option<std::sync::Arc<UploadRate>>,
+    rate: Option<Arc<UploadRate>>,
 ) -> Result<String> {
-    let expected = format!("{:x}", Md5::digest(&bytes));
+    put_request_streaming(
+        client,
+        url,
+        mime,
+        date,
+        auth,
+        bytes,
+        None,
+        hash_context,
+        rate,
+        None,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn put_request_streaming(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+    mime: &str,
+    date: &str,
+    auth: &str,
+    bytes: bytes::Bytes,
+    expected_md5: Option<&str>,
+    hash_context: Option<&str>,
+    rate: Option<Arc<UploadRate>>,
+    on_progress: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+    tel: Option<&RunTelemetry>,
+) -> Result<String> {
+    let expected = match expected_md5 {
+        Some(h) if h.len() == 32 => h.to_string(),
+        _ => format!("{:x}", Md5::digest(&bytes)),
+    };
     let length = bytes.len();
     let timeout = 180
         + rate
             .as_ref()
             .map(|r| 64 * length as u64 / r.bps.max(1))
             .unwrap_or(0);
-    let body = if let Some(rate) = rate {
+    let wire_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let body = if rate.is_some() || on_progress.is_some() || length > STREAM_CHUNK_BYTES {
+        let step = if rate.is_some() { 64 * 1024 } else { STREAM_CHUNK_BYTES };
+        let wc = wire_counter.clone();
         let stream = futures_util::stream::unfold(
-            (bytes, 0usize, rate),
-            |(bytes, offset, rate)| async move {
-                if offset >= bytes.len() {
-                    return None;
+            (bytes, 0usize, rate, on_progress),
+            move |(bytes, offset, rate, on_progress)| {
+                let wc = wc.clone();
+                async move {
+                    if offset >= bytes.len() {
+                        return None;
+                    }
+                    let end = (offset + step).min(bytes.len());
+                    let delta = (end - offset) as u64;
+                    if let Some(ref rate) = rate {
+                        let mut next = rate.next.lock().await;
+                        let now_inst = tokio::time::Instant::now();
+                        if *next > now_inst {
+                            tokio::time::sleep_until(*next).await;
+                        }
+                        let after = tokio::time::Instant::now();
+                        let dt = Duration::from_secs_f64(delta as f64 / rate.bps.max(1) as f64);
+                        // Token-bucket style advancement avoids Windows 15.6ms sleep overshoot capping throughput.
+                        let floor = after.checked_sub(Duration::from_millis(50)).unwrap_or(after);
+                        *next = (*next + dt).max(floor);
+                    }
+                    wc.fetch_add(delta, std::sync::atomic::Ordering::Relaxed);
+                    if let Some(ref prog) = on_progress {
+                        prog(end as u64);
+                    }
+                    Some((
+                        Ok::<_, std::io::Error>(bytes.slice(offset..end)),
+                        (bytes, end, rate, on_progress),
+                    ))
                 }
-                let end = (offset + 64 * 1024).min(bytes.len());
-                {
-                    let mut next = rate.next.lock().await;
-                    tokio::time::sleep_until((*next).max(tokio::time::Instant::now())).await;
-                    *next = tokio::time::Instant::now()
-                        + Duration::from_secs_f64((end - offset) as f64 / rate.bps.max(1) as f64);
-                }
-                Some((
-                    Ok::<_, std::io::Error>(bytes.slice(offset..end)),
-                    (bytes, end, rate),
-                ))
             },
         );
         reqwest::Body::wrap_stream(stream)
     } else {
+        wire_counter.store(length as u64, std::sync::atomic::Ordering::Relaxed);
         reqwest::Body::from(bytes)
     };
     let mut request = client
@@ -914,26 +1163,32 @@ async fn put_request_limited(
     if !status.is_success() {
         let lower = text.to_ascii_lowercase();
         let protocol_rejection = status.as_u16() == 400
-            && (hash_context.is_some()
-                || [
-                    "partnotsequential",
-                    "contextcomparefailed",
-                    "invalidpartorder",
-                ]
-                .iter()
-                .any(|s| lower.contains(s)));
-        return Err(err(
+            && ([
+                "partnotsequential",
+                "contextcomparefailed",
+                "invalidpartorder",
+                "hash-ctx",
+                "hashctx",
+            ]
+            .iter()
+            .any(|s| lower.contains(s))
+                || (hash_context.is_some() && lower.contains("invalidargument")));
+        let mut e = err(
             if protocol_rejection {
                 "PARALLEL_UNSUPPORTED"
             } else if status.as_u16() == 403 {
                 "SIGNATURE_EXPIRED"
-            } else if status.is_server_error() {
+            } else if status.as_u16() == 429 {
+                "RATE_LIMIT"
+            } else if status.as_u16() == 408 || status.is_server_error() {
                 "NETWORK"
             } else {
                 "SERVER"
             },
             format!("上传分片返回 HTTP {}", status.as_u16()),
-        ));
+        );
+        e.http_status = Some(status.as_u16());
+        return Err(e);
     }
     if text.to_ascii_lowercase().contains("<error") {
         return Err(err("SERVER", "对象存储未接受上传分片"));
@@ -947,6 +1202,9 @@ async fn put_request_limited(
             "CONTENT_MISMATCH",
             "上传分片 ETag 与本地 MD5 不一致，已停止完成上传",
         ));
+    }
+    if let Some(tel) = tel {
+        tel.add_wire_bytes(wire_counter.load(std::sync::atomic::Ordering::Relaxed));
     }
     Ok(etag)
 }
@@ -999,6 +1257,19 @@ async fn confirm(
     token: &CancellationToken,
     generation: u64,
 ) -> Result<()> {
+    // Fast path (P2): if pre/finish already returned the exact fid, verify via a single fs.info call
+    // instead of paginating up to 1,000 fs.list pages.
+    if let Some(fid) = checkpoint.returned_fid.as_deref().filter(|s| !s.is_empty()) {
+        m.inner.core.ensure_session(generation)?;
+        if let Ok(item) = cancellable(token, m.inner.core.call("fs.info", json!(fid))).await {
+            if item["size"].as_u64() == Some(checkpoint.size)
+                && verified_result(&item, checkpoint, require_digest)?
+            {
+                m.update(id, |t| t.fid = Some(fid.to_string()), true)?;
+                return Ok(());
+            }
+        }
+    }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         check(token)?;

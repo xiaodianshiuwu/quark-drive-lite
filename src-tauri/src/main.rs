@@ -30,6 +30,7 @@ struct State {
     /// 可选作者服务器客户端（默认关闭，未开启时零外传）。
     hub: HubClient,
     login: Arc<AtomicBool>,
+    logging_out: Arc<AtomicBool>,
     login_generation: Arc<AtomicU64>,
     account_control: Arc<tokio::sync::Mutex<()>>,
     _profile_lock: Arc<std::fs::File>,
@@ -60,6 +61,33 @@ async fn qk_call(
     if !trusted(&window) {
         return Err(Error::new("FORBIDDEN", "只允许应用主界面调用"));
     }
+    let started = std::time::Instant::now();
+    let result = qk_call_inner(&window, &app, &state, &method, params).await;
+    if let Err(ref err) = result {
+        if err.code != "ABORTED" && err.code != "OPT_IN_REQUIRED" {
+            let dur_ms = started.elapsed().as_millis() as u64;
+            state.hub.record_event_rich(
+                "error",
+                method.split('.').next().unwrap_or("ipc"),
+                Some(&err.code),
+                &format!("{} failed ({})", method, err.code),
+                err.http_status,
+                err.biz_code,
+                Some(dur_ms),
+                None,
+            );
+        }
+    }
+    result
+}
+
+async fn qk_call_inner(
+    window: &tauri::WebviewWindow,
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, State>,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
     if method == "app.quit" {
         app.exit(0);
         return Ok(Value::Null);
@@ -73,15 +101,15 @@ async fn qk_call(
         }));
     }
     if method == "auth.login" {
-        let res = login(app, state.inner().clone()).await;
+        let res = login(app.clone(), state.inner().clone()).await;
         if res.is_ok() {
             state.transfers.notify_change();
         }
         return res;
     }
-    if state.login.load(Ordering::SeqCst)
+    if (state.login.load(Ordering::SeqCst) || state.logging_out.load(Ordering::SeqCst))
         && matches!(
-            method.as_str(),
+            method,
             "transfer.upload"
                 | "transfer.download"
                 | "transfer.resume"
@@ -90,14 +118,14 @@ async fn qk_call(
                 | "transfer.retryFailed"
         )
     {
-        return Err(Error::new("CONFLICT", "请完成或关闭登录窗口后再启动传输"));
+        return Err(Error::new("CONFLICT", "账号状态切换中，请稍后再启动传输"));
     }
     if method.starts_with("dialog.") {
-        return dialog(&app, &method, params).await;
+        return dialog(app, window, method, params).await;
     }
     if method.starts_with("hub.") {
         let ver = env!("CARGO_PKG_VERSION");
-        return match method.as_str() {
+        return match method {
             "hub.config" => Ok(state.hub.config_info(ver)),
             "hub.setOptIn" => {
                 let opt_in = params["optIn"].as_bool().unwrap_or(false);
@@ -116,16 +144,21 @@ async fn qk_call(
                     .await
             }
             "hub.sendTelemetry" => state.hub.send_telemetry(ver, params).await,
+            "hub.flushTelemetry" => state.hub.flush_transfer_telemetry(ver).await,
             "hub.submitFeedback" => state.hub.submit_feedback(ver, params).await,
             "hub.listFeedback" => state.hub.list_feedback().await,
             "hub.replyFeedback" => state.hub.reply_feedback(params).await,
             "hub.logPreview" => Ok(json!({ "logs": state.hub.log_preview() })),
             "hub.recordEvent" => {
-                state.hub.record_event(
+                state.hub.record_event_rich(
                     params["level"].as_str().unwrap_or("info"),
                     params["category"].as_str().unwrap_or("ui"),
                     params["code"].as_str(),
                     params["msg"].as_str().unwrap_or(""),
+                    params["httpStatus"].as_u64().and_then(|n| u16::try_from(n).ok()),
+                    params["bizCode"].as_i64(),
+                    params["durationMs"].as_u64(),
+                    params.get("meta").cloned(),
                 );
                 Ok(json!({ "ok": true }))
             }
@@ -134,44 +167,44 @@ async fn qk_call(
     }
     if method == "transfer.openItem" {
         let id = params["id"].as_str().unwrap_or_default();
-        let tasks = state.transfers.snapshot();
-        let task = tasks
-            .as_array()
-            .and_then(|a| a.iter().find(|t| t["id"] == id))
-            .ok_or_else(|| Error::new("NOT_FOUND", "任务不存在"))?;
-        let path = task["localPath"]
+        let task = state.transfers.task_status(id)?;
+        let local_path = task["localPath"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| task["localDir"].as_str().map(PathBuf::from))
-            .ok_or_else(|| Error::new("NOT_FOUND", "本地路径不存在"))?;
+            .map(PathBuf::from);
+        let local_dir = task["localDir"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+        let path = match (local_path, local_dir) {
+            (Some(p), _) if p.exists() => p,
+            (_, Some(d)) if d.exists() => d,
+            (Some(p), _) => p,
+            (None, Some(d)) => d,
+            (None, None) => return Err(Error::new("NOT_FOUND", "本地路径不存在")),
+        };
         return open_local(path, true).await;
     }
-    let _account_guard = if method == "auth.logout" {
+    struct LogoutGuard(Arc<AtomicBool>);
+    impl Drop for LogoutGuard {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+    let (_account_guard, _logout_guard) = if method == "auth.logout" {
+        state.logging_out.store(true, Ordering::SeqCst);
+        let guard = LogoutGuard(state.logging_out.clone());
         state.login_generation.fetch_add(1, Ordering::SeqCst);
-        Some(state.account_control.lock().await)
+        (Some(state.account_control.lock().await), Some(guard))
     } else {
-        None
+        (None, None)
     };
     if method == "auth.logout" {
-        if let Some(login) = app.get_webview_window("login") {
-            let _ = login.close();
-        }
-        let tasks = state.transfers.snapshot();
-        if let Some(tasks) = tasks.as_array() {
-            for task in tasks {
-                if matches!(task["status"].as_str(), Some("pending" | "running")) {
-                    state
-                        .transfers
-                        .call("transfer.pause", json!({"id":task["id"]}))
-                        .await?;
-                }
-            }
-        }
         if let Some(login) = app.get_webview_window("login") {
             let _ = login.clear_all_browsing_data();
             let _ = login.close();
         }
+        state.transfers.pause_all().await?;
     }
     let ai_beta_patched = method == "settings.set" && params.get("aiBetaEnabled").is_some();
     let result = if method.starts_with("agent.") || method.starts_with("chat.") {
@@ -182,7 +215,7 @@ async fn qk_call(
         });
         state
             .agent
-            .handle(&method, params, Some(event))
+            .handle(method, params, Some(event))
             .await
             .map_err(|e| {
                 // ① code：raw_code（白名单上游语义，如 NEED_LOGIN）优先——
@@ -202,9 +235,9 @@ async fn qk_call(
                 Error::new(code_out, message)
             })
     } else if method.starts_with("transfer.") {
-        state.transfers.call(&method, params).await
+        state.transfers.call(method, params).await
     } else {
-        state.core.call(&method, params).await
+        state.core.call(method, params).await
     };
     if method == "auth.logout" && result.is_ok() {
         // 必须在 state.core.call("auth.logout") 递增 session_generation 之后再清空 Agent 内存态，
@@ -222,16 +255,6 @@ async fn qk_call(
                     state.agent.suspend_gateway().await;
                 }
             }
-        }
-    }
-    if let Err(ref err) = result {
-        if err.code != "ABORTED" && err.code != "OPT_IN_REQUIRED" {
-            state.hub.record_event(
-                "error",
-                method.split('.').next().unwrap_or("ipc"),
-                Some(&err.code),
-                &format!("{} failed ({})", method, err.code),
-            );
         }
     }
     if method.starts_with("auth.")
@@ -295,25 +318,41 @@ async fn login(app: tauri::AppHandle, state: State) -> Result<Value> {
             if !is_current_login() { return Err(Error::new("ABORTED", "登录已取消")); }
             let cookies = cookies.map_err(shell_error)?;
             let items:Vec<Value>=cookies.iter().filter(|c|{
-                let d=c.domain().unwrap_or("").trim_start_matches('.');
+                let d=c.domain().unwrap_or("").trim_start_matches('.').to_ascii_lowercase();
                 d=="quark.cn"||d.ends_with(".quark.cn")
             }).map(|c|json!({"name":c.name(),"value":c.value(),"domain":c.domain(),"path":c.path().unwrap_or("/"),"httpOnly":c.http_only().unwrap_or(false),"secure":c.secure().unwrap_or(false),"expires":c.expires_datetime().map(|t|t.unix_timestamp())})).collect();
             let header=Core::cookies_for_api(Value::Array(items.clone()))?;
             if header.is_empty()||header==last {continue;}
+            let Ok(mut cookie_hdr) = tauri::http::HeaderValue::from_str(&header) else {
+                continue;
+            };
+            cookie_hdr.set_sensitive(true);
             let response=state.core.http_client().get("https://drive-pc.quark.cn/1/clouddrive/config?pr=ucpro&fr=pc")
                 .query(&[("uc_param_str",quark_core::UC_PARAMS),("device_model","pc")])
-                .header("cookie",header.clone()).header("referer","https://pan.quark.cn/").header("origin","https://pan.quark.cn")
+                .header("cookie",cookie_hdr).header("referer","https://pan.quark.cn/").header("origin","https://pan.quark.cn")
                 .timeout(Duration::from_secs(20)).send().await;
             if let Ok(response)=response {
                 if response.status().as_u16()==401 {last=header.clone();}
                 if response.status().is_success() {
-                if let Ok(envelope)=response.json::<Value>().await {if envelope["code"]==0 {
+                if let Ok(envelope)=response.json::<Value>().await {
+                    let biz_code = envelope["code"].as_i64().or_else(|| envelope["code"].as_str().and_then(|s| s.parse().ok()));
+                    if biz_code == Some(31001) {
+                        last = header.clone();
+                        continue;
+                    }
+                    if biz_code == Some(0) {
                     let _account_guard=state.account_control.lock().await;
                     if app.get_webview_window("login").is_none() || state.login_generation.load(Ordering::SeqCst)!=generation {return Err(Error::new("ABORTED","登录已取消"));}
                     state.transfers.pause_all().await?;
                     state.core.replace_cookies(Value::Array(items))?;
                     state.agent.reset_for_account_change();
-                    state.core.call("auth.verify",Value::Null).await?;
+                    let verify_res = state.core.call("auth.verify",Value::Null).await;
+                    if verify_res.is_err() {
+                        if let Ok(auth) = state.core.call("auth.status", Value::Null).await {
+                            let _ = app.emit_to("main", "qk:auth-changed", &auth);
+                        }
+                        verify_res?;
+                    }
                     let _=state.core.call("auth.getUserInfo",Value::Null).await;
                     let auth=state.core.call("auth.status",Value::Null).await?;
                     if state.login_generation.load(Ordering::SeqCst)!=generation {return Err(Error::new("ABORTED","登录已取消"));}
@@ -335,7 +374,15 @@ async fn login(app: tauri::AppHandle, state: State) -> Result<Value> {
 
 #[cfg(any(target_os = "windows", test))]
 fn windows_explorer_select_arg(path: &std::path::Path) -> Result<String> {
-    let raw = path.to_string_lossy();
+    let raw_cow = path.to_string_lossy();
+    let normalized = if let Some(rest) = raw_cow.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = raw_cow.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        raw_cow.into_owned()
+    };
+    let raw = normalized.as_str();
     if raw.is_empty()
         || raw.contains('"')
         || raw.contains('\0')
@@ -430,7 +477,12 @@ async fn open_local(path: PathBuf, reveal: bool) -> Result<Value> {
     Ok(Value::Null)
 }
 
-async fn dialog(app: &tauri::AppHandle, method: &str, params: Value) -> Result<Value> {
+async fn dialog(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
     if matches!(method, "dialog.openPath" | "dialog.showInFolder") {
         return open_local(
             PathBuf::from(params["path"].as_str().unwrap_or("")),
@@ -439,18 +491,28 @@ async fn dialog(app: &tauri::AppHandle, method: &str, params: Value) -> Result<V
         .await;
     }
     #[cfg(target_os = "linux")]
-    return linux_desktop::dialog(app, method, params).await;
+    {
+        let _ = window;
+        return linux_desktop::dialog(app, method, params).await;
+    }
 
     #[cfg(not(target_os = "linux"))]
     {
         let _ = app;
-        platform_dialog(method, params).await
+        platform_dialog(window, method, params).await
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn platform_dialog(method: &str, params: Value) -> Result<Value> {
-    let picker = rfd::AsyncFileDialog::new();
+async fn platform_dialog(
+    window: &tauri::WebviewWindow,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    let mut picker = rfd::AsyncFileDialog::new().set_parent(window);
+    if let Some(p) = params["defaultPath"].as_str().filter(|s| !s.is_empty()) {
+        picker = picker.set_directory(p);
+    }
     match method {
         "dialog.pickFiles" => Ok(json!(picker
             .pick_files()
@@ -466,19 +528,13 @@ async fn platform_dialog(method: &str, params: Value) -> Result<Value> {
             .iter()
             .map(|h| h.path().to_string_lossy().to_string())
             .collect::<Vec<_>>())),
-        "dialog.saveDir" => {
-            let picker = if let Some(p) = params["defaultPath"].as_str().filter(|s| !s.is_empty()) {
-                picker.set_directory(p)
-            } else {
-                picker
-            };
-            Ok(json!(picker
-                .pick_folder()
-                .await
-                .map(|h| h.path().to_string_lossy().to_string())))
-        }
+        "dialog.saveDir" => Ok(json!(picker
+            .pick_folder()
+            .await
+            .map(|h| h.path().to_string_lossy().to_string()))),
         "dialog.confirm" => {
             let result = rfd::AsyncMessageDialog::new()
+                .set_parent(window)
                 .set_title(params["title"].as_str().unwrap_or("确认操作"))
                 .set_description(format!(
                     "{}\n{}",
@@ -537,13 +593,36 @@ fn main() {
             let file_menu = tauri::menu::SubmenuBuilder::new(app, "文件")
                 .quit_with_text("退出客户端")
                 .build()?;
+            #[cfg(target_os = "macos")]
+            let app_menu = {
+                let edit_menu = tauri::menu::SubmenuBuilder::new(app, "编辑")
+                    .undo()
+                    .redo()
+                    .separator()
+                    .cut()
+                    .copy()
+                    .paste()
+                    .select_all()
+                    .build()?;
+                tauri::menu::MenuBuilder::new(app)
+                    .item(&file_menu)
+                    .item(&edit_menu)
+                    .build()?
+            };
+            #[cfg(not(target_os = "macos"))]
             let app_menu = tauri::menu::MenuBuilder::new(app)
                 .item(&file_menu)
                 .build()?;
             app.set_menu(app_menu)?;
-            let profile = std::env::var_os("QK_PROFILE_DIR")
-                .map(PathBuf::from)
-                .unwrap_or(app.path().app_data_dir()?);
+            let profile = match std::env::var_os("QK_PROFILE_DIR") {
+                Some(p) => PathBuf::from(p),
+                None => app.path().app_data_dir()?,
+            };
+            if let Ok(meta) = std::fs::symlink_metadata(&profile) {
+                if !meta.file_type().is_dir() {
+                    return Err(Box::new(Error::new("STORAGE", "资料目录必须为普通目录")));
+                }
+            }
             std::fs::create_dir_all(&profile)?;
             #[cfg(unix)]
             {
@@ -563,6 +642,18 @@ fn main() {
             let core = Core::open(profile.clone())?;
             let transfers = TransferManager::open(core.clone())?;
             let hub = HubClient::new(core.clone(), HubConfig::from_env_or_default())?;
+            {
+                let hub_obs = hub.clone();
+                transfers.set_observer(Arc::new(move |sample| {
+                    hub_obs.record_transfer_sample(sample);
+                }));
+                let hub_flusher = hub.clone();
+                tauri::async_runtime::spawn(async move {
+                    hub_flusher
+                        .run_telemetry_flusher_loop(env!("CARGO_PKG_VERSION"))
+                        .await;
+                });
+            }
             // Agent 子系统：工具宿主 = 真实 Core/TransferManager；generation 供会话绑定。
             let host = ToolHost::new(core.clone(), transfers.clone());
             let generation_core = core.clone();
@@ -578,6 +669,7 @@ fn main() {
                 agent: agent.clone(),
                 hub,
                 login: Arc::new(AtomicBool::new(false)),
+                logging_out: Arc::new(AtomicBool::new(false)),
                 login_generation: Arc::new(AtomicU64::new(0)),
                 account_control: Arc::new(tokio::sync::Mutex::new(())),
                 _profile_lock: Arc::new(profile_lock),
@@ -669,6 +761,7 @@ fn main() {
                             let handle = app.clone();
                             let manager = app.state::<State>().transfers.clone();
                             let agent = app.state::<State>().agent.clone();
+                            let hub = app.state::<State>().hub.clone();
                             let done = shutdown_done.clone();
                             tauri::async_runtime::spawn(async move {
                                 let _ = tokio::time::timeout(
@@ -676,6 +769,13 @@ fn main() {
                                     manager.pause_all(),
                                 )
                                 .await;
+                                if hub.is_opted_in() && hub.pending_sample_count() > 0 {
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_secs(2),
+                                        hub.flush_transfer_telemetry(env!("CARGO_PKG_VERSION")),
+                                    )
+                                    .await;
+                                }
                                 let _ = tokio::time::timeout(
                                     Duration::from_secs(2),
                                     agent.gateway.stop(),

@@ -913,22 +913,21 @@ impl AgentGateway {
                 Err(_) => break,
             };
             buf.extend_from_slice(&scratch[..n]);
-            if buf.len() > MAX_MESSAGE_BYTES {
-                // 只报一次并立即半关闭：否则后续 chunk 会反复触发同一条错误。
-                // 尽力从"当前正在解析的那一行"取 id：调用方据此把错误关联到具体请求。
-                let text = String::from_utf8_lossy(&buf);
-                let id = extract_id_from_buffer(&text);
-                self.write_payload(
-                    &wr,
-                    &limit_payload(id, "消息过大，已断开连接"),
-                    true,
-                )
-                .await;
-                let _ = close_tx.send(true);
-                break;
-            }
             let mut overflowed = false;
             while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+                if pos > MAX_MESSAGE_BYTES {
+                    let text = String::from_utf8_lossy(&buf[..pos.min(ID_SCAN_BYTES)]);
+                    let id = extract_id_from_buffer(&text);
+                    self.write_payload(
+                        &wr,
+                        &limit_payload(id, "消息过大，已断开连接"),
+                        true,
+                    )
+                    .await;
+                    let _ = close_tx.send(true);
+                    overflowed = true;
+                    break;
+                }
                 let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
                 let line = String::from_utf8_lossy(&line_bytes[..line_bytes.len() - 1])
                     .trim()
@@ -967,6 +966,19 @@ impl AgentGateway {
                 }
             }
             if overflowed {
+                break;
+            }
+            // 未出现换行符的残余缓冲超过单条上限，立即断连。
+            if buf.len() > MAX_MESSAGE_BYTES {
+                let text = String::from_utf8_lossy(&buf[..buf.len().min(ID_SCAN_BYTES)]);
+                let id = extract_id_from_buffer(&text);
+                self.write_payload(
+                    &wr,
+                    &limit_payload(id, "消息过大，已断开连接"),
+                    true,
+                )
+                .await;
+                let _ = close_tx.send(true);
                 break;
             }
         }

@@ -109,11 +109,24 @@ impl LocalStore {
             .dir
             .join(format!(".session.key.{}.tmp", uuid::Uuid::new_v4()));
         write_new(&temp, &key)?;
-        let linked = fs::hard_link(&temp, self.dir.join("session.key"));
+        let key_path = self.dir.join("session.key");
+        let linked = fs::hard_link(&temp, &key_path);
         let _ = fs::remove_file(&temp);
         if let Err(e) = linked {
             if e.kind() != std::io::ErrorKind::AlreadyExists {
-                return Err(io_error(e));
+                let hard_link_unsupported = matches!(
+                    e.kind(),
+                    std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
+                ) || matches!(e.raw_os_error(), Some(1 | 18 | 22 | 38 | 45 | 95 | 102));
+                if hard_link_unsupported {
+                    if let Err(we) = write_new(&key_path, &key) {
+                        if !key_path.exists() {
+                            return Err(we);
+                        }
+                    }
+                } else {
+                    return Err(io_error(e));
+                }
             }
         }
         sync_dir(&self.dir)?;
@@ -182,9 +195,15 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 fn sync_dir(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
-        fs::File::open(path)
-            .and_then(|f| f.sync_all())
-            .map_err(io_error)?;
+        if let Err(e) = fs::File::open(path).and_then(|f| f.sync_all()) {
+            let ignorable = matches!(
+                e.kind(),
+                std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
+            ) || matches!(e.raw_os_error(), Some(1 | 9 | 22 | 45 | 95 | 102));
+            if !ignorable {
+                return Err(io_error(e));
+            }
+        }
     }
     #[cfg(not(unix))]
     let _ = path;

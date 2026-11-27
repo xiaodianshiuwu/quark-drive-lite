@@ -25,23 +25,32 @@ const URL_SECRET_PARAMS: [&str; 10] = [
 
 fn is_secret_key(k: &str) -> bool {
     let lower = k.to_ascii_lowercase();
-    SECRET_KEYS.iter().any(|s| lower == *s || lower.ends_with(s) || lower.contains(s))
+    SECRET_KEYS.iter().any(|s| {
+        if *s == "sign" {
+            lower == "sign"
+                || lower.ends_with("_sign")
+                || lower.ends_with("-sign")
+                || lower.starts_with("sign_")
+        } else {
+            lower == *s || lower.ends_with(s) || lower.contains(s)
+        }
+    })
 }
 
 fn looks_like_signed_url(v: &str) -> bool {
-    // 对应 qck URL_WITH_SIGN_RE：携带签名参数的直链。覆盖三种形态：
-    // http(s)://…、协议相对 //cdn…（夸克直链实际形态）、";st=" 分号分隔（qck 同款）。
+    // 对应 qck URL_WITH_SIGN_RE：携带签名参数的直链（包括嵌在句子/错误文案中间的 URL）。
     let lower = v.to_ascii_lowercase();
-    let is_urlish = lower.starts_with("http://")
-        || lower.starts_with("https://")
+    let is_urlish = lower.contains("http://")
+        || lower.contains("https://")
         || lower.starts_with("//")
-        || lower.contains(";http")
-        || lower.contains(";//");
+        || lower.contains(";//")
+        || lower.contains(" //");
     is_urlish
         && URL_SECRET_PARAMS.iter().any(|p| {
-            lower.contains(&format!("{p}="))
-                || lower.contains(&format!("{p}%3d"))
+            lower.contains(&format!("?{p}="))
+                || lower.contains(&format!("&{p}="))
                 || lower.contains(&format!(";{p}="))
+                || lower.contains(&format!("{p}%3d"))
         })
 }
 

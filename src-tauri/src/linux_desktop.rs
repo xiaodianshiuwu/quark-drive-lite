@@ -8,16 +8,22 @@ use tauri::Manager;
 pub async fn show_item(path: &Path) -> Result<()> {
     let uri = tauri::Url::from_file_path(path)
         .map_err(|_| Error::new("INVALID_ARG", "无法生成本地文件地址"))?;
-    let bus = zbus::Connection::session().await.map_err(shell_error)?;
-    bus.call_method(
-        Some("org.freedesktop.FileManager1"),
-        "/org/freedesktop/FileManager1",
-        Some("org.freedesktop.FileManager1"),
-        "ShowItems",
-        &(vec![uri.as_str()], ""),
-    )
-    .await
-    .map_err(shell_error)?;
+    let call = async {
+        let bus = zbus::Connection::session().await.map_err(shell_error)?;
+        bus.call_method(
+            Some("org.freedesktop.FileManager1"),
+            "/org/freedesktop/FileManager1",
+            Some("org.freedesktop.FileManager1"),
+            "ShowItems",
+            &(vec![uri.as_str()], ""),
+        )
+        .await
+        .map_err(shell_error)?;
+        Ok::<(), Error>(())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(3), call)
+        .await
+        .map_err(|_| Error::new("TIMEOUT", "文件管理器响应超时"))??;
     Ok(())
 }
 
@@ -62,6 +68,7 @@ async fn show_dialog(
         dialog.set_default_response(gtk::ResponseType::Cancel);
         let response = dialog.run_future().await;
         dialog.close();
+        unsafe { dialog.destroy(); }
         return Ok(json!(response == gtk::ResponseType::Ok));
     }
 

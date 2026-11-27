@@ -1,6 +1,8 @@
 use crate::{
-    manager::{cancellable, check, err, io_err, net_err, Result, Task, TransferManager},
-    protocol::{content_range, safe_name},
+    manager::{
+        cancellable, check, err, io_err, net_err, Result, RunTelemetry, Task, TransferManager,
+    },
+    protocol::{content_range, is_windows_reserved_name, safe_name},
 };
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use md5::{Digest, Md5};
@@ -11,8 +13,8 @@ use sha2::Sha256;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    time::Duration,
+    sync::{Arc, Mutex, RwLock},
+    time::{Duration, Instant},
 };
 use tokio::{
     fs::{self, OpenOptions},
@@ -22,17 +24,62 @@ use tokio::{
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::sync::CancellationToken;
 const PART: u64 = 1024 * 1024;
-const WRITE_BUF_CAP: usize = 256 * 1024;
+const WRITE_BUF_CAP: usize = 1024 * 1024;
 const HASH_BUF_CAP: usize = 2 * 1024 * 1024;
 const CHECKPOINT_VERSION: u32 = 2;
 
 fn choose_chunk_size(total: u64) -> u64 {
-    if total > 128 * 1024 * 1024 {
+    if total > 2048 * PART {
+        16 * PART
+    } else if total > 512 * PART {
+        8 * PART
+    } else if total > 128 * PART {
         4 * PART
-    } else if total > 32 * 1024 * 1024 {
+    } else if total > 32 * PART {
         2 * PART
     } else {
         PART
+    }
+}
+
+/// Singleflight shared CDN URL so a 403 expiration triggers ONE refresh reused by all active and future workers.
+struct SharedLink {
+    state: RwLock<(String, u64)>,
+    refresh_lock: tokio::sync::Mutex<()>,
+}
+impl SharedLink {
+    fn new(url: String) -> Self {
+        Self {
+            state: RwLock::new((url, 0)),
+            refresh_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+    fn current(&self) -> (String, u64) {
+        self.state.read().unwrap().clone()
+    }
+    async fn refresh_if_stale(
+        &self,
+        seen_gen: u64,
+        m: &TransferManager,
+        fid: &str,
+        token: &CancellationToken,
+        tel: Option<&RunTelemetry>,
+    ) -> Result<String> {
+        let _guard = self.refresh_lock.lock().await;
+        {
+            let cur = self.state.read().unwrap();
+            if cur.1 != seen_gen {
+                return Ok(cur.0.clone());
+            }
+        }
+        let fresh = get_link(m, fid, token).await?;
+        if let Some(tel) = tel {
+            tel.inc_link_refresh();
+        }
+        let mut cur = self.state.write().unwrap();
+        cur.0 = fresh.clone();
+        cur.1 = cur.1.wrapping_add(1);
+        Ok(fresh)
     }
 }
 
@@ -123,9 +170,15 @@ fn path_key(path: &str) -> String {
     }
 }
 
-pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Result<()> {
+pub(crate) async fn run(
+    m: &TransferManager,
+    id: &str,
+    token: &CancellationToken,
+    tel: &RunTelemetry,
+) -> Result<()> {
+    tel.set_stage("fs_info");
     let generation = m.bound_generation()?;
-    let mut task = m.task(id)?;
+    let task = m.task(id)?;
     if task.account_key.is_none() || task.account_key != m.inner.core.account_key() {
         return Err(err("ACCOUNT_MISMATCH", "传输所属账号已改变"));
     }
@@ -141,6 +194,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
     let total = info["size"]
         .as_u64()
         .ok_or_else(|| err("SERVER", "服务端没有返回有效文件大小"))?;
+    tel.set_size(total);
     let name = safe_name(info["name"].as_str().unwrap_or(&task.name));
     let mut cp = parse_checkpoint(&task)?;
     if !cp.temp.is_empty() && (cp.version != CHECKPOINT_VERSION || !valid_chunk_size(cp.chunk_size))
@@ -154,6 +208,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         return Err(err("CONFLICT", "云端文件大小已改变，请取消并重新下载"));
     }
     if cp.target.is_empty() {
+        tel.set_stage("reserve");
         let dir = PathBuf::from(task.local_dir.as_deref().unwrap_or(""));
         fs::create_dir_all(&dir).await.map_err(io_err)?;
         cp.version = CHECKPOINT_VERSION;
@@ -164,9 +219,12 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
             .to_string_lossy()
             .into_owned();
         cp.temp = format!("{}.{}.qkdownloading", cp.target, id);
-        // Record ownership before creating the temporary file; cleanup never derives paths from a display name.
-        store(m, id, &cp)?;
-        m.update(
+        // Record ownership before creating the temporary file; clean up .qkreserve if persistence fails.
+        if let Err(e) = store(m, id, &cp) {
+            let _ = fs::remove_file(format!("{}.qkreserve", cp.target)).await;
+            return Err(e);
+        }
+        if let Err(e) = m.update(
             id,
             |t| {
                 t.local_path = Some(cp.target.clone());
@@ -174,13 +232,22 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
                 t.size = total;
             },
             true,
-        )?;
+        ) {
+            let _ = fs::remove_file(format!("{}.qkreserve", cp.target)).await;
+            return Err(e);
+        }
     }
+    tel.set_chunk_size(cp.chunk_size);
     let temp = PathBuf::from(&cp.temp);
     validate_owned(&task, &cp)?;
     if cp.ready {
+        tel.set_strategy("ready_resume");
+        tel.set_resumed(true);
+        tel.set_stage("publish");
         if fs::try_exists(&cp.target).await.map_err(io_err)? {
+            let hash_start = Instant::now();
             let existing = hash_file(Path::new(&cp.target), token).await?;
+            tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
             if existing != (cp.md5.clone(), cp.sha1.clone(), cp.sha256.clone())
                 || fs::metadata(&cp.target).await.map_err(io_err)?.len() != total
             {
@@ -188,11 +255,13 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
             }
             let _ = fs::remove_file(&temp).await;
             let _ = fs::remove_file(format!("{}.qkreserve", cp.target)).await;
-            return m.progress(id, total, total);
+            return m.progress_with_telemetry(id, total, total, Some(tel));
         }
+        let hash_start = Instant::now();
+        let temp_hash = hash_file(&temp, token).await?;
+        tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
         if fs::metadata(&temp).await.map_err(io_err)?.len() != total
-            || hash_file(&temp, token).await?
-                != (cp.md5.clone(), cp.sha1.clone(), cp.sha256.clone())
+            || temp_hash != (cp.md5.clone(), cp.sha1.clone(), cp.sha256.clone())
         {
             return Err(err(
                 "CONTENT_MISMATCH",
@@ -201,8 +270,108 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         }
         m.check_session()?;
         publish(&temp, Path::new(&cp.target), token).await?;
-        return m.progress(id, total, total);
+        return m.progress_with_telemetry(id, total, total, Some(tel));
     }
+
+    // Probe server FIRST (with retries on transient failures + draining 1-byte body for keep-alive)
+    // before touching disk or spending multi-GB I/O on verify_parts().
+    tel.set_stage("probe");
+    let mut link = get_link(m, &fid, token).await?;
+    let probe = {
+        let mut last_probe_err = None;
+        let mut ok_probe = None;
+        for attempt in 0..3u32 {
+            check(token)?;
+            let mut resp = match send(m, &link, Some((0, 0)), None, token).await {
+                Ok(r) => r,
+                Err(e) if attempt < 2 && matches!(e.code.as_str(), "NETWORK" | "RATE_LIMIT") => {
+                    tel.inc_retry();
+                    last_probe_err = Some(e);
+                    cancellable(token, async {
+                        tokio::time::sleep(Duration::from_millis(400 * (1 << attempt))).await;
+                        Ok(())
+                    })
+                    .await?;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            if resp.status() == reqwest::StatusCode::FORBIDDEN {
+                let _ = resp.bytes().await;
+                link = get_link(m, &fid, token).await?;
+                tel.inc_link_refresh();
+                resp = send(m, &link, Some((0, 0)), None, token).await?;
+            }
+            if matches!(
+                resp.status(),
+                reqwest::StatusCode::TOO_MANY_REQUESTS
+                    | reqwest::StatusCode::REQUEST_TIMEOUT
+                    | reqwest::StatusCode::BAD_GATEWAY
+                    | reqwest::StatusCode::SERVICE_UNAVAILABLE
+                    | reqwest::StatusCode::GATEWAY_TIMEOUT
+            ) && attempt < 2
+            {
+                tel.set_http_status(resp.status().as_u16());
+                tel.inc_retry();
+                last_probe_err = Some(http_error(resp.status()));
+                let _ = resp.bytes().await;
+                cancellable(token, async {
+                    tokio::time::sleep(Duration::from_millis(600 * (1 << attempt))).await;
+                    Ok(())
+                })
+                .await?;
+                continue;
+            }
+            ok_probe = Some(resp);
+            break;
+        }
+        match ok_probe {
+            Some(r) => r,
+            None => return Err(last_probe_err.unwrap_or_else(|| err("NETWORK", "下载探测失败"))),
+        }
+    };
+    validate_encoding(&probe)?;
+    let range = probe.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    if range {
+        if content_range(
+            probe
+                .headers()
+                .get("content-range")
+                .and_then(|s| s.to_str().ok())
+                .unwrap_or(""),
+        ) != Some((0, 0, total))
+        {
+            return Err(err("CONTENT_MISMATCH", "探测响应范围与文件大小不符"));
+        }
+    } else if probe.status() != reqwest::StatusCode::OK
+        && !(total == 0 && probe.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE)
+    {
+        let e = http_error(probe.status());
+        if let Some(st) = e.http_status {
+            tel.set_http_status(st);
+        }
+        return Err(e);
+    }
+    let etag = probe
+        .headers()
+        .get("etag")
+        .and_then(|s| s.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    // Drain the 1-byte 206 probe body so hyper returns the TCP+TLS connection cleanly to the pool.
+    if range {
+        let _ = probe.bytes().await;
+    } else {
+        drop(probe);
+    }
+    // Ranges may only be combined when the server supplies a strong representation validator.
+    // A missing/weak validator falls back to one complete response and never resumes old pieces.
+    let bound_etag = strong_etag(&etag).unwrap_or("").to_string();
+    if bound_etag.is_empty() || cp.etag != bound_etag {
+        cp.parts.clear();
+    }
+    cp.etag = bound_etag;
+
     let exists = fs::try_exists(&temp).await.map_err(io_err)?;
     if exists {
         let meta = fs::symlink_metadata(&temp).await.map_err(io_err)?;
@@ -225,59 +394,44 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
         .map_err(io_err)?;
     file.set_len(total).await.map_err(io_err)?;
     drop(file);
-    verify_parts(&temp, &mut cp, token).await?;
+    if !cp.parts.is_empty() {
+        tel.set_stage("verify_parts");
+        tel.set_resumed(true);
+        let hash_start = Instant::now();
+        verify_parts(&temp, &mut cp, token).await?;
+        tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
+    }
     store(m, id, &cp)?;
-    let mut link = get_link(m, &fid, token).await?;
-    let mut probe = send(m, &link, Some((0, 0)), None, token).await?;
-    if probe.status() == reqwest::StatusCode::FORBIDDEN {
-        link = get_link(m, &fid, token).await?;
-        probe = send(m, &link, Some((0, 0)), None, token).await?;
-    }
-    validate_encoding(&probe)?;
-    let range = probe.status() == reqwest::StatusCode::PARTIAL_CONTENT;
-    if range {
-        if content_range(
-            probe
-                .headers()
-                .get("content-range")
-                .and_then(|s| s.to_str().ok())
-                .unwrap_or(""),
-        ) != Some((0, 0, total))
-        {
-            return Err(err("CONTENT_MISMATCH", "探测响应范围与文件大小不符"));
-        }
-    } else if probe.status() != reqwest::StatusCode::OK
-        && !(total == 0 && probe.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE)
-    {
-        return Err(http_error(probe.status()));
-    }
-    let etag = probe
-        .headers()
-        .get("etag")
-        .and_then(|s| s.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    // Ranges may only be combined when the server supplies a strong representation validator.
-    // A missing/weak validator falls back to one complete response and never resumes old pieces.
-    let bound_etag = strong_etag(&etag).unwrap_or("").to_string();
-    if bound_etag.is_empty() || cp.etag != bound_etag {
-        cp.parts.clear();
-    }
-    cp.etag = bound_etag;
-    drop(probe);
-    store(m, id, &cp)?;
+    let settings = m.inner.core.settings();
     let inline_digest = if range && total > 0 && !cp.etag.is_empty() {
-        match multipart(m, id, &fid, &link, &temp, &mut cp, token).await {
+        let strat = if settings["downloadStrategy"].as_str() == Some("sequential") {
+            "sequential"
+        } else {
+            "multipart"
+        };
+        tel.set_strategy(strat);
+        tel.set_stage("multipart");
+        match multipart_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await {
             Ok(()) => None,
             Err(e) if e.code == "RANGE_UNSUPPORTED" => {
+                tel.set_strategy("single_fallback");
+                tel.set_stage("single");
                 cp.parts.clear();
                 store(m, id, &cp)?;
-                Some(single(m, id, &fid, &link, &temp, &mut cp, token).await?)
+                Some(single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?)
             }
             Err(e) => return Err(e),
         }
     } else {
-        Some(single(m, id, &fid, &link, &temp, &mut cp, token).await?)
+        tel.set_strategy(if !range {
+            "single_no_range"
+        } else if cp.etag.is_empty() {
+            "single_no_etag"
+        } else {
+            "single_zero"
+        });
+        tel.set_stage("single");
+        Some(single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?)
     };
     check(token)?;
     let metadata = fs::metadata(&temp).await.map_err(io_err)?;
@@ -286,6 +440,7 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
     }
     // Multipart uses buffered positional writes; sync once before final full-file hash & publication.
     // Single-stream already synced & computed exact hashes inline while streaming (saves full disk re-read).
+    tel.set_stage("final_hash");
     let (md5, sha1, sha256) = if let Some(digests) = inline_digest {
         digests
     } else {
@@ -297,7 +452,10 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
             .sync_all()
             .await
             .map_err(io_err)?;
-        hash_file(&temp, token).await?
+        let hash_start = Instant::now();
+        let digests = hash_file(&temp, token).await?;
+        tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
+        digests
     };
     for (key, value) in [("md5", &md5), ("sha1", &sha1), ("sha256", &sha256)] {
         if let Some(expected) = info[key].as_str().filter(|s| !s.is_empty()) {
@@ -315,9 +473,9 @@ pub async fn run(m: &TransferManager, id: &str, token: &CancellationToken) -> Re
     cp.sha256 = sha256;
     store(m, id, &cp)?;
     m.check_session()?;
+    tel.set_stage("publish");
     publish(&temp, Path::new(&cp.target), token).await?;
-    task.local_path = Some(cp.target.clone());
-    m.progress(id, total, total)
+    m.progress_with_telemetry(id, total, total, Some(tel))
 }
 async fn verify_parts(temp: &Path, cp: &mut Checkpoint, token: &CancellationToken) -> Result<()> {
     if cp.parts.is_empty() {
@@ -409,7 +567,11 @@ fn fit_name_for_dir(dir: &Path, name: &str) -> String {
     }
     let stem = stem_raw[..end].trim_end_matches(['.', ' ']);
     let stem = if stem.is_empty() { "file" } else { stem };
-    format!("{stem}{ext}")
+    let mut out = format!("{stem}{ext}");
+    if is_windows_reserved_name(&out) {
+        out = format!("_{out}");
+    }
+    out
 }
 
 async fn reserve(m: &TransferManager, id: &str, dir: &Path, name: &str) -> Result<PathBuf> {
@@ -429,13 +591,8 @@ async fn reserve(m: &TransferManager, id: &str, dir: &Path, name: &str) -> Resul
             format!("{stem}({i}){ext}")
         });
         let key = path_key(&candidate.to_string_lossy());
-        // The manager starts tasks serially, but reservations are persisted before any await.
-        let reserved = m.snapshot().as_array().is_some_and(|list| {
-            list.iter().any(|t| {
-                t["id"].as_str() != Some(id)
-                    && t["localPath"].as_str().is_some_and(|s| path_key(s) == key)
-            })
-        });
+        // Check in-memory task reservations in O(N) without serializing all tasks to JSON on every attempt.
+        let reserved = m.is_local_path_reserved(id, &key, path_key);
         if reserved || fs::try_exists(&candidate).await.map_err(io_err)? {
             continue;
         }
@@ -589,17 +746,29 @@ async fn send(
     Err(err("NETWORK", "下载重定向次数过多"))
 }
 fn http_error(status: reqwest::StatusCode) -> quark_core::Error {
-    if status == reqwest::StatusCode::PRECONDITION_FAILED {
+    let mut e = if status == reqwest::StatusCode::PRECONDITION_FAILED {
         err("CONFLICT", "下载过程中云端文件已改变，未拼接不同版本")
     } else if status == reqwest::StatusCode::FORBIDDEN {
         err("LINK_EXPIRED", "下载链接已过期")
+    } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        err("RATE_LIMIT", "下载请求过于频繁，正在限速重试")
+    } else if matches!(
+        status,
+        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE
+    ) {
+        err("NOT_FOUND", format!("下载资源不可用（HTTP {}）", status.as_u16()))
+    } else if status == reqwest::StatusCode::BAD_REQUEST {
+        err("SERVER", "下载服务器拒绝请求（HTTP 400）")
     } else {
         err(
             "NETWORK",
             format!("下载服务器返回 HTTP {}", status.as_u16()),
         )
-    }
+    };
+    e.http_status = Some(status.as_u16());
+    e
 }
+#[cfg(test)]
 async fn multipart(
     m: &TransferManager,
     id: &str,
@@ -609,6 +778,19 @@ async fn multipart(
     cp: &mut Checkpoint,
     token: &CancellationToken,
 ) -> Result<()> {
+    multipart_with_tel(m, id, fid, link, temp, cp, token, None).await
+}
+#[allow(clippy::too_many_arguments)]
+async fn multipart_with_tel(
+    m: &TransferManager,
+    id: &str,
+    fid: &str,
+    link: &str,
+    temp: &Path,
+    cp: &mut Checkpoint,
+    token: &CancellationToken,
+    tel: Option<&RunTelemetry>,
+) -> Result<()> {
     let chunk_size = if valid_chunk_size(cp.chunk_size) {
         cp.chunk_size
     } else {
@@ -617,6 +799,11 @@ async fn multipart(
     let count = cp.total.div_ceil(chunk_size);
     let settings = m.inner.core.settings();
     let parallel = connections(&settings, cp.total);
+    if let Some(tel) = tel {
+        tel.set_parallel(parallel);
+        tel.set_chunk_size(chunk_size);
+    }
+    let shared_link = Arc::new(SharedLink::new(link.to_string()));
     // Open the temporary file ONCE for the entire multipart download instead of per-part open/close.
     let shared_file = Arc::new(
         std::fs::OpenOptions::new()
@@ -631,7 +818,7 @@ async fn multipart(
     let mut complete = cp.parts.values().map(|p| p.len).sum::<u64>();
     let mut unsaved_parts: u32 = 0;
     let mut last_flush = tokio::time::Instant::now();
-    m.progress(id, complete, cp.total)?;
+    m.progress_with_telemetry(id, complete, cp.total, tel)?;
     let live = Arc::new(Mutex::new((complete, BTreeMap::<u64, u64>::new())));
     loop {
         while failure.is_none() && workers.len() < parallel && cursor < count {
@@ -653,7 +840,7 @@ async fn multipart(
             workers.push(fetch_part_file(
                 m,
                 fid,
-                link,
+                shared_link.clone(),
                 shared_file.clone(),
                 index,
                 chunk_size,
@@ -661,6 +848,7 @@ async fn multipart(
                 cp.etag.clone(),
                 workers_token.clone(),
                 Some(progress),
+                tel,
             ));
         }
         let Some(result) = workers.next().await else {
@@ -669,28 +857,29 @@ async fn multipart(
         match result {
             Ok((index, done)) => {
                 complete += done.len;
-                {
+                let received = {
                     let mut live = live.lock().unwrap();
                     live.0 = complete;
                     live.1.remove(&index);
-                }
+                    live.0 + live.1.values().sum::<u64>()
+                };
                 cp.parts.insert(index, done);
                 unsaved_parts += 1;
                 let should_flush = unsaved_parts >= 16
                     || last_flush.elapsed() >= Duration::from_millis(1500)
                     || cp.parts.len() as u64 == count;
-                if let Err(e) = store_batched(m, id, cp, should_flush) {
-                    if failure.is_none() {
-                        failure = Some(e);
-                        workers_token.cancel();
-                    }
-                    continue;
-                }
                 if should_flush {
+                    if let Err(e) = store_batched(m, id, cp, true) {
+                        if failure.is_none() {
+                            failure = Some(e);
+                            workers_token.cancel();
+                        }
+                        continue;
+                    }
                     unsaved_parts = 0;
                     last_flush = tokio::time::Instant::now();
                 }
-                if let Err(e) = m.progress(id, complete, cp.total) {
+                if let Err(e) = m.progress_with_telemetry(id, received, cp.total, tel) {
                     if failure.is_none() {
                         failure = Some(e);
                         workers_token.cancel();
@@ -736,7 +925,7 @@ async fn flush_buf_at(
 async fn fetch_part_file(
     m: &TransferManager,
     fid: &str,
-    link: &str,
+    shared_link: Arc<SharedLink>,
     file: Arc<std::fs::File>,
     index: u64,
     chunk_size: u64,
@@ -744,6 +933,7 @@ async fn fetch_part_file(
     etag: String,
     token: CancellationToken,
     on_progress: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+    tel: Option<&RunTelemetry>,
 ) -> Result<(u64, DonePart)> {
     let _slot = cancellable(&token, async {
         m.inner
@@ -755,11 +945,13 @@ async fn fetch_part_file(
     .await?;
     let start = index * chunk_size;
     let length = chunk_size.min(total - start);
-    let mut link = link.to_string();
-    for attempt in 0..3 {
+    for attempt in 0..5u32 {
         check(&token)?;
+        let (link, link_gen) = shared_link.current();
         if let Some(progress) = &on_progress {
-            progress(0);
+            if attempt > 0 {
+                progress(0);
+            }
         }
         let result = async {
             let response = send(
@@ -818,8 +1010,12 @@ async fn fetch_part_file(
                 if received + chunk.len() as u64 > length {
                     return Err(err("CONTENT_MISMATCH", "分片响应超出请求范围"));
                 }
+                let clen = chunk.len() as u64;
                 hash.update(&chunk);
-                received += chunk.len() as u64;
+                received += clen;
+                if let Some(tel) = tel {
+                    tel.add_wire_bytes(clen);
+                }
                 wbuf.extend_from_slice(&chunk);
                 if wbuf.len() >= WRITE_BUF_CAP {
                     let flush_len = wbuf.len() as u64;
@@ -827,8 +1023,8 @@ async fn fetch_part_file(
                     written += flush_len;
                 }
                 if let Some(progress) = &on_progress {
-                    if received - last_reported >= WRITE_BUF_CAP as u64
-                        || last_report_at.elapsed() >= Duration::from_millis(100)
+                    if received - last_reported >= 256 * 1024
+                        || last_report_at.elapsed() >= Duration::from_millis(120)
                     {
                         progress(received);
                         last_reported = received;
@@ -859,15 +1055,25 @@ async fn fetch_part_file(
         match result {
             Ok(v) => return Ok(v),
             Err(e)
-                if attempt < 2
-                    && ["NETWORK", "LINK_EXPIRED", "CONTENT_MISMATCH"]
+                if attempt < 4
+                    && ["NETWORK", "RATE_LIMIT", "LINK_EXPIRED", "CONTENT_MISMATCH"]
                         .contains(&e.code.as_str()) =>
             {
-                if e.code == "LINK_EXPIRED" {
-                    link = get_link(m, fid, &token).await?;
+                if let Some(tel) = tel {
+                    tel.inc_retry();
+                    if let Some(st) = e.http_status {
+                        tel.set_http_status(st);
+                    }
                 }
+                if e.code == "LINK_EXPIRED" {
+                    let _ = shared_link
+                        .refresh_if_stale(link_gen, m, fid, &token, tel)
+                        .await?;
+                }
+                let base_ms = if e.code == "RATE_LIMIT" { 800 } else { 300 };
+                let backoff_ms = (base_ms * (1u64 << attempt)).min(4800) + (index % 7) * 40;
                 cancellable(&token, async {
-                    tokio::time::sleep(Duration::from_millis(500 * (1 << attempt))).await;
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                     Ok(())
                 })
                 .await?;
@@ -896,8 +1102,23 @@ async fn fetch_part(
             .open(temp)
             .map_err(io_err)?,
     );
-    fetch_part_file(m, fid, link, file, index, PART, total, etag, token, on_progress).await
+    let shared_link = Arc::new(SharedLink::new(link.to_string()));
+    fetch_part_file(
+        m,
+        fid,
+        shared_link,
+        file,
+        index,
+        PART,
+        total,
+        etag,
+        token,
+        on_progress,
+        None,
+    )
+    .await
 }
+#[cfg(test)]
 async fn single(
     m: &TransferManager,
     id: &str,
@@ -907,6 +1128,22 @@ async fn single(
     cp: &mut Checkpoint,
     token: &CancellationToken,
 ) -> Result<(String, String, String)> {
+    single_with_tel(m, id, fid, link, temp, cp, token, None).await
+}
+#[allow(clippy::too_many_arguments)]
+async fn single_with_tel(
+    m: &TransferManager,
+    id: &str,
+    fid: &str,
+    link: &str,
+    temp: &Path,
+    cp: &mut Checkpoint,
+    token: &CancellationToken,
+    tel: Option<&RunTelemetry>,
+) -> Result<(String, String, String)> {
+    if let Some(tel) = tel {
+        tel.set_parallel(1);
+    }
     let _slot = cancellable(token, async {
         m.inner
             .download_slots
@@ -918,7 +1155,10 @@ async fn single(
     let mut link = link.to_string();
     cp.parts.clear();
     store(m, id, cp)?;
-    for attempt in 0..3 {
+    for attempt in 0..5u32 {
+        if attempt > 0 {
+            m.reset_sample(id);
+        }
         let result = async {
             let response = send(m, &link, None, Some(&cp.etag), token).await?;
             if response.status() != reqwest::StatusCode::OK {
@@ -965,20 +1205,24 @@ async fn single(
                 if received + chunk.len() as u64 > cp.total {
                     return Err(err("CONTENT_MISMATCH", "下载响应超过文件大小"));
                 }
+                let clen = chunk.len() as u64;
                 md5.update(&chunk);
                 sha1.update(&chunk);
                 sha256.update(&chunk);
-                received += chunk.len() as u64;
+                received += clen;
+                if let Some(tel) = tel {
+                    tel.add_wire_bytes(clen);
+                }
                 wbuf.extend_from_slice(&chunk);
                 if wbuf.len() >= WRITE_BUF_CAP {
                     let flush_len = wbuf.len() as u64;
                     wbuf = flush_buf_at(file.clone(), written, wbuf).await?;
                     written += flush_len;
                 }
-                if received - last_reported >= WRITE_BUF_CAP as u64
-                    || last_report_at.elapsed() >= Duration::from_millis(100)
+                if received - last_reported >= 256 * 1024
+                    || last_report_at.elapsed() >= Duration::from_millis(120)
                 {
-                    m.progress(id, received, cp.total)?;
+                    m.progress_with_telemetry(id, received, cp.total, tel)?;
                     last_reported = received;
                     last_report_at = tokio::time::Instant::now();
                 }
@@ -990,7 +1234,7 @@ async fn single(
                 let _ = flush_buf_at(file.clone(), written, wbuf).await?;
             }
             if received != last_reported {
-                m.progress(id, received, cp.total)?;
+                m.progress_with_telemetry(id, received, cp.total, tel)?;
             }
             tokio::task::spawn_blocking(move || file.sync_all().map_err(io_err))
                 .await
@@ -1005,15 +1249,25 @@ async fn single(
         match result {
             Ok(digests) => return Ok(digests),
             Err(e)
-                if attempt < 2
-                    && ["NETWORK", "LINK_EXPIRED", "CONTENT_MISMATCH"]
+                if attempt < 4
+                    && ["NETWORK", "RATE_LIMIT", "LINK_EXPIRED", "CONTENT_MISMATCH"]
                         .contains(&e.code.as_str()) =>
             {
+                if let Some(tel) = tel {
+                    tel.inc_retry();
+                    if let Some(st) = e.http_status {
+                        tel.set_http_status(st);
+                    }
+                }
                 if e.code == "LINK_EXPIRED" {
                     link = get_link(m, fid, token).await?;
+                    if let Some(tel) = tel {
+                        tel.inc_link_refresh();
+                    }
                 }
+                let base_ms = if e.code == "RATE_LIMIT" { 800 } else { 400 };
                 cancellable(token, async {
-                    tokio::time::sleep(Duration::from_millis(500 * (1 << attempt))).await;
+                    tokio::time::sleep(Duration::from_millis((base_ms * (1u64 << attempt)).min(4800))).await;
                     Ok(())
                 })
                 .await?;
@@ -1108,7 +1362,13 @@ fn is_hard_link_fallback_err(e: &std::io::Error) -> bool {
     {
         matches!(
             e.raw_os_error(),
-            Some(libc::EPERM) | Some(libc::ENOTSUP) | Some(libc::EXDEV) | Some(libc::EINVAL)
+            Some(libc::EPERM)
+                | Some(libc::ENOTSUP)
+                | Some(libc::EOPNOTSUPP)
+                | Some(libc::EXDEV)
+                | Some(libc::EINVAL)
+                | Some(libc::EACCES)
+                | Some(libc::EMLINK)
         )
     }
     #[cfg(windows)]
@@ -1141,9 +1401,18 @@ async fn publish(temp: &Path, target: &Path, token: &CancellationToken) -> Resul
         }
         Err(e) => return Err(io_err(e)),
     }
-    // Both link and native exclusive rename publish a complete file atomically without replacing user data.
-    if fs::try_exists(temp).await.map_err(io_err)? {
-        fs::remove_file(temp).await.map_err(io_err)?;
+    // Target is already safely published; clean up temporary link best-effort (with short retries for Windows Defender).
+    if fs::try_exists(temp).await.unwrap_or(false) {
+        for attempt in 0..3u64 {
+            match fs::remove_file(temp).await {
+                Ok(()) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                Err(_) if attempt < 2 => {
+                    tokio::time::sleep(Duration::from_millis(40 * (attempt + 1))).await;
+                }
+                Err(_) => break,
+            }
+        }
     }
     let _ = fs::remove_file(format!("{}.qkreserve", target.to_string_lossy())).await;
     Ok(())
@@ -1161,7 +1430,11 @@ pub async fn cleanup(task: &Task) -> Result<()> {
     }
     let lock = format!("{}.qkreserve", cp.target);
     if fs::read_to_string(&lock).await.ok().as_deref() == Some(&task.id) {
-        fs::remove_file(lock).await.map_err(io_err)?;
+        match fs::remove_file(lock).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_err(e)),
+        }
     }
     Ok(())
 }
@@ -1170,20 +1443,25 @@ fn rename_no_replace(source: &Path, destination: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
-        let source = std::ffi::CString::new(source.as_os_str().as_bytes())
+        let source_c = std::ffi::CString::new(source.as_os_str().as_bytes())
             .map_err(|_| err("INVALID_ARG", "文件路径包含无效字符"))?;
-        let destination = std::ffi::CString::new(destination.as_os_str().as_bytes())
+        let destination_c = std::ffi::CString::new(destination.as_os_str().as_bytes())
             .map_err(|_| err("INVALID_ARG", "文件路径包含无效字符"))?;
         #[cfg(target_os = "macos")]
-        let result =
-            unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+        let result = unsafe {
+            libc::renamex_np(
+                source_c.as_ptr(),
+                destination_c.as_ptr(),
+                libc::RENAME_EXCL,
+            )
+        };
         #[cfg(target_os = "linux")]
         let result = unsafe {
             libc::renameat2(
                 libc::AT_FDCWD,
-                source.as_ptr(),
+                source_c.as_ptr(),
                 libc::AT_FDCWD,
-                destination.as_ptr(),
+                destination_c.as_ptr(),
                 libc::RENAME_NOREPLACE,
             )
         };
@@ -1196,6 +1474,20 @@ fn rename_no_replace(source: &Path, destination: &Path) -> Result<()> {
         if e.kind() == std::io::ErrorKind::AlreadyExists {
             return Err(err("CONFLICT", "目标文件已存在，下载没有覆盖它"));
         }
+        // exFAT / FAT32 / FUSE / SMB volumes often return ENOTSUP/EOPNOTSUPP/EINVAL/ENOSYS on exclusive rename.
+        // Because `.qkreserve` already guards the destination, fall back safely after checking non-existence.
+        if matches!(
+            e.raw_os_error(),
+            Some(libc::ENOTSUP)
+                | Some(libc::EOPNOTSUPP)
+                | Some(libc::EINVAL)
+                | Some(libc::ENOSYS)
+        ) {
+            if std::fs::symlink_metadata(destination).is_ok() {
+                return Err(err("CONFLICT", "目标文件已存在，下载没有覆盖它"));
+            }
+            return std::fs::rename(source, destination).map_err(io_err);
+        }
         return Err(io_err(e));
     }
     #[cfg(windows)]
@@ -1205,13 +1497,25 @@ fn rename_no_replace(source: &Path, destination: &Path) -> Result<()> {
         extern "system" {
             fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
         }
-        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-        let destination: Vec<u16> = destination
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-        if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 0) } != 0 {
+        fn win_wide(p: &Path) -> Vec<u16> {
+            let s = p.to_string_lossy();
+            let prefixed = if s.len() >= 240 && !s.starts_with(r"\\?\") {
+                if let Some(unc) = s.strip_prefix(r"\\") {
+                    format!(r"\\?\UNC\{unc}")
+                } else {
+                    format!(r"\\?\{s}")
+                }
+            } else {
+                s.into_owned()
+            };
+            std::ffi::OsStr::new(&prefixed)
+                .encode_wide()
+                .chain(Some(0))
+                .collect()
+        }
+        let source_w = win_wide(source);
+        let destination_w = win_wide(destination);
+        if unsafe { MoveFileExW(source_w.as_ptr(), destination_w.as_ptr(), 0) } != 0 {
             return Ok(());
         }
         let e = std::io::Error::last_os_error();

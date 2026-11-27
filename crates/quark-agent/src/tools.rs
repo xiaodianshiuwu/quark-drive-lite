@@ -361,15 +361,21 @@ impl ToolEnv {
         Ok(res)
     }
 
-    /// 定位刚创建的子目录（只接受 pdirFid 精确匹配；对抗性审查实测过的 P0 约束）。
-    pub async fn locate_child_dir(&self, parent: &str, name: &str, tries: i64) -> Option<Value> {
+    /// 定位刚创建的子目录或文件（只接受 pdirFid 精确匹配且校验 dir == expect_dir）。
+    pub async fn locate_child(
+        &self,
+        parent: &str,
+        name: &str,
+        expect_dir: bool,
+        tries: i64,
+    ) -> Option<Value> {
         let tries = tries.clamp(1, 10);
         for i in 0..tries {
-            // 写入后必须新鲜读取：缓存可能仍是不含新目录的旧页
+            // 写入后必须新鲜读取：缓存可能仍是不含新条目的旧页
             if let Ok(page) = self.list_dir_page(parent, 1, MAX_PAGE_SIZE, false).await {
                 if let Some(list) = page.get("list").and_then(|v| v.as_array()) {
                     for x in list {
-                        if x.get("dir").and_then(|v| v.as_bool()).unwrap_or(false)
+                        if x.get("dir").and_then(|v| v.as_bool()).unwrap_or(false) == expect_dir
                             && x.get("name").and_then(|v| v.as_str()) == Some(name)
                         {
                             return Some(x.clone());
@@ -384,8 +390,9 @@ impl ToolEnv {
             ).await {
                 if let Some(list) = page.get("list").and_then(|v| v.as_array()) {
                     for x in list {
-                        // 只接受 pdirFid === parent 精确匹配（猜出的归属不得记入 recent）
-                        if x.get("name").and_then(|v| v.as_str()) == Some(name)
+                        // 只接受 pdirFid === parent 且 dir === expect_dir 精确匹配
+                        if x.get("dir").and_then(|v| v.as_bool()).unwrap_or(false) == expect_dir
+                            && x.get("name").and_then(|v| v.as_str()) == Some(name)
                             && x.get("pdirFid").and_then(|v| v.as_str()) == Some(parent)
                         {
                             return Some(x.clone());
@@ -396,6 +403,11 @@ impl ToolEnv {
             tokio::time::sleep(Duration::from_millis(700 * (i as u64 + 1))).await;
         }
         None
+    }
+
+    /// 定位刚创建的子目录（只接受 pdirFid 精确匹配；对抗性审查实测过的 P0 约束）。
+    pub async fn locate_child_dir(&self, parent: &str, name: &str, tries: i64) -> Option<Value> {
+        self.locate_child(parent, name, true, tries).await
     }
 
     /// 目标目录首页同名冲突检测（best-effort，只核对首页）。
@@ -543,7 +555,7 @@ impl ToolEnv {
 
     /// 上传完成后的兜底定位（失败静默返回 None）。
     pub async fn remember_uploaded(&self, parent_fid: &str, name: &str) -> Option<Value> {
-        if let Some(found) = self.locate_child_dir(parent_fid, name, 4).await {
+        if let Some(found) = self.locate_child(parent_fid, name, false, 4).await {
             let fid = found.get("fid").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if !fid.is_empty() {
                 self.remember_object(&fid, parent_fid, name, false);
@@ -764,6 +776,12 @@ impl QuarkTools {
     }
 
     async fn dispatch(&self, env: &ToolEnv, name: &str, args: &Value) -> Result<Value, AgentToolError> {
+        if !args.is_object() && !args.is_null() {
+            return Err(AgentToolError::new(
+                AgentError::InvalidArg,
+                "工具参数必须是 JSON 对象",
+            ));
+        }
         let a = |k: &str| -> Value { args.get(k).cloned().unwrap_or(Value::Null) };
         match name {
             "drive_status" => self.tool_drive_status(env).await,
@@ -895,39 +913,30 @@ impl QuarkTools {
         }
         let res = env.deps.core_call(env.generation, "fs.search", &params).await?;
         let mut list = res.get("list").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        // 默认按授权范围过滤，避免搜索结果越界暴露未授权目录的隐私文件名。
-        let only_in_scope = a("only_in_scope").as_bool().unwrap_or(true);
-        let mut scope_filtered = false;
-        if only_in_scope {
-            scope_filtered = true;
-            let mut kept = Vec::new();
-            for item in list.drain(..) {
-                let owner = item
-                    .get("pdirFid")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| item.get("fid").and_then(|v| v.as_str()))
-                    .unwrap_or("");
-                if env.assert_remote_in_scope(owner).await.is_ok() {
-                    kept.push(item);
-                }
+        // 强制按授权范围过滤（不允许调用方通过 only_in_scope=false 绕过作用域读取未授权目录文件名）。
+        let mut kept = Vec::new();
+        for item in list.drain(..) {
+            let owner = item
+                .get("pdirFid")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .or_else(|| item.get("fid").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            if env.assert_remote_in_scope(owner).await.is_ok() {
+                kept.push(item);
             }
-            list = kept;
         }
+        let filtered_count = kept.len();
         Ok(json!({
             "keyword": keyword,
-            "list": list,
-            "total": res.get("total").cloned().unwrap_or(json!(-1)),
+            "list": kept,
+            "total": filtered_count,
             "page": res.get("page").cloned().unwrap_or(json!(page)),
             "size": size,
             "hasMore": res.get("hasMore").cloned().unwrap_or(json!(false)),
             "truncated": requested_size > MAX_PAGE_SIZE,
-            "scope_filtered": scope_filtered,
-            "note": if scope_filtered {
-                "已按授权范围过滤；每项的归属由服务端父目录链判定。"
-            } else {
-                "搜索是全网盘范围的，结果可能包含未授权目录中的文件；对这些条目的写操作仍会被拒绝。"
-            },
+            "scope_filtered": true,
+            "note": "已强制按授权范围过滤；仅返回授权目录内的匹配项。",
         }))
     }
 
@@ -1061,6 +1070,18 @@ impl QuarkTools {
             }
             if let Some(s) = &status {
                 if t.get("status").and_then(|v| v.as_str()) != Some(s.as_str()) {
+                    continue;
+                }
+            }
+            // 仅展示当前授权范围内的传输任务（携带远端 fid/pdirFid 时强制核对作用域）
+            let remote_ref = t
+                .get("pdirFid")
+                .or_else(|| t.get("pdir_fid"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .or_else(|| t.get("fid").and_then(|v| v.as_str()).filter(|s| !s.is_empty()));
+            if let Some(rfid) = remote_ref {
+                if env.assert_remote_in_scope(rfid).await.is_err() {
                     continue;
                 }
             }
@@ -1662,6 +1683,9 @@ impl QuarkTools {
             return Ok(out);
         }
         env.remember_uploaded(&target, &name).await;
+        // 上传全部完成后清理暂存目录，避免 agent-out 无限堆积敏感文本
+        let _ = std::fs::remove_dir_all(&dir);
+        out["staged_cleaned"] = json!(true);
         out["wait"] = waited;
         if a("verify").as_bool().unwrap_or(false) {
             out["verification"] = Self::verify_remote_visibility(env, &target, &name, &out["local_sha256"]).await;
@@ -1716,6 +1740,15 @@ impl QuarkTools {
             .ok_or_else(|| AgentToolError::new(AgentError::NotFound, "未找到该传输任务"))?;
         // 四种动作全部要求写权限：cancel 会删临时文件、中断用户自己的上传。
         env.assert_writable("控制传输任务")?;
+        let remote_ref = before
+            .get("pdirFid")
+            .or_else(|| before.get("pdir_fid"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| before.get("fid").and_then(|v| v.as_str()).filter(|s| !s.is_empty()));
+        if let Some(rfid) = remote_ref {
+            env.assert_remote_in_scope(rfid).await?;
+        }
         env.transfer_call(&format!("transfer.{action}"), &json!({ "id": task_id })).await?;
         let after = env
             .transfer_call("transfer.list", &Value::Null).await
@@ -2058,8 +2091,24 @@ impl QuarkTools {
         let content_hash = optional_string(&a("content_hash"), "content_hash")?;
         let plan = self
             .plans
-            .assert_executable(&plan_id, revision, content_hash.as_deref())?;
-        self.plans.mark_executing(&plan_id)?;
+            .claim_executable(&plan_id, revision, content_hash.as_deref())?;
+        struct PlanGuard {
+            plans: StdArc<PlanStore>,
+            plan_id: String,
+            completed: bool,
+        }
+        impl Drop for PlanGuard {
+            fn drop(&mut self) {
+                if !self.completed {
+                    self.plans.abort_executing(&self.plan_id);
+                }
+            }
+        }
+        let mut plan_guard = PlanGuard {
+            plans: self.plans.clone(),
+            plan_id: plan_id.clone(),
+            completed: false,
+        };
         let stop_on_error = a("stop_on_error").as_bool().unwrap_or(false);
         let new_dir_parent = plan
             .rules
@@ -2068,6 +2117,7 @@ impl QuarkTools {
             .filter(|s| !s.is_empty())
             .unwrap_or(&plan.root_fid)
             .to_string();
+        let mut new_dir_parent_verified = false;
         let mut created_dirs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         let mut results: Vec<Value> = Vec::new();
         let mut counters = json!({"success":0,"accepted":0,"failed":0,"skipped":0,"unknown":0,"total": plan.entries.len()});
@@ -2121,6 +2171,14 @@ impl QuarkTools {
                         created_dirs.insert(entry.to_dir_name.clone(), to_fid.clone());
                     }
                 } else {
+                    if !new_dir_parent_verified {
+                        if let Err(e) = env.assert_remote_in_scope(&new_dir_parent).await {
+                            results.push(json!({"index": entry.index, "fid": entry.fid, "status": "skipped", "reason": format!("目标父目录不在授权范围内：{}", e.message)}));
+                            counters["skipped"] = json!(counters["skipped"].as_i64().unwrap_or(0) + 1);
+                            continue;
+                        }
+                        new_dir_parent_verified = true;
+                    }
                     let accepted = env.deps.core_call(env.generation,
                         "fs.mkdir",
                         &json!({ "pdirFid": new_dir_parent, "name": entry.to_dir_name }),
@@ -2208,6 +2266,7 @@ impl QuarkTools {
         }
         let partial = counters["failed"].as_i64().unwrap_or(0) > 0 || counters["unknown"].as_i64().unwrap_or(0) > 0;
         let snapshot = self.plans.mark_executed(&plan_id, &json!(results), &counters)?;
+        plan_guard.completed = true;
         Ok(json!({
             "plan_id": plan_id,
             "revision": plan.revision,
