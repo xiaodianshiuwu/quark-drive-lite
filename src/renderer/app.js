@@ -146,6 +146,8 @@
   var toastSeq = 0;
   var listSeq = 0;
   var recycleSeq = 0;
+  var bulkDockTimer = null;
+  var deferBulkDockOnce = false;
   var listVersion = 0;
   var lastRenderKey = '';
   var cachedRowHeight = 46;
@@ -2443,12 +2445,30 @@
     box.disabled = loaded === 0;
 
     var hiddenSel = Math.max(0, totalSelCount - visibleSelCount);
+    if (el.fileCard) el.fileCard.classList.toggle('has-selection', totalSelCount > 0);
     if (totalSelCount > 0) {
-      el.bulkbar.hidden = false;
       el.bulkCount.textContent = '已选 ' + totalSelCount + ' 项'
         + (selBytes > 0 ? ' · ' + fmtSize(selBytes) : '')
         + (hiddenSel > 0 ? ('（含 ' + hiddenSel + ' 个已筛选隐藏项）') : '');
+      var shouldDefer = deferBulkDockOnce && el.bulkbar.hidden;
+      deferBulkDockOnce = false;
+      if (shouldDefer) {
+        if (bulkDockTimer) { clearTimeout(bulkDockTimer); bulkDockTimer = null; }
+        el.bulkbar.classList.add('bulk-dock-delay');
+        el.bulkbar.hidden = false;
+        bulkDockTimer = setTimeout(function () {
+          bulkDockTimer = null;
+          if (!el.bulkbar.hidden) el.bulkbar.classList.remove('bulk-dock-delay');
+        }, 180);
+      } else {
+        if (bulkDockTimer) { clearTimeout(bulkDockTimer); bulkDockTimer = null; }
+        el.bulkbar.classList.remove('bulk-dock-delay');
+        el.bulkbar.hidden = false;
+      }
     } else {
+      deferBulkDockOnce = false;
+      if (bulkDockTimer) { clearTimeout(bulkDockTimer); bulkDockTimer = null; }
+      el.bulkbar.classList.remove('bulk-dock-delay');
       el.bulkbar.hidden = true;
     }
     renderStatusBar();
@@ -6287,7 +6307,7 @@
       var plat = info.platform ? (' · ' + info.platform + (info.arch ? '/' + info.arch : '')) : '';
       el.appVersionText.textContent = '夸克网盘极简版 v' + info.version + ' · ' + (info.runtime || 'Tauri 2 + Rust') + plat;
     } else {
-      el.appVersionText.textContent = '夸克网盘极简版 v1.0.2 · Tauri 2 + Rust';
+      el.appVersionText.textContent = '夸克网盘极简版 v1.2.0 · Tauri 2 + Rust';
     }
   }
 
@@ -7168,7 +7188,7 @@
           counter.textContent = (step + 1) + ' / ' + TUTORIAL_STEPS.length;
           heroIc.textContent = '';
           heroIc.appendChild(icon(s.icon));
-          var ver = (state.appInfo && state.appInfo.version) ? state.appInfo.version : '1.0.2';
+          var ver = (state.appInfo && state.appInfo.version) ? state.appInfo.version : '1.2.0';
           titleEl.textContent = s.showVersion ? (s.title + ' v' + ver) : s.title;
           subEl.textContent = s.sub;
           pointsBox.textContent = '';
@@ -7665,13 +7685,23 @@
           state.lastIndex = idx;
           state.inspectorFid = String(fid);
           if (!alreadySole) {
+            var wasEmpty = state.selected.size === 0;
             clearSelection();
+            if (wasEmpty) deferBulkDockOnce = true;
             setSelected(fid, true);
           } else if (state.inspectorOpen) {
             renderInspector();
           }
         }
       }
+    });
+
+    // 点击文件列表空白区域取消选中（与 Finder / 资源管理器一致）
+    el.listwrap.addEventListener('click', function (e) {
+      if (!state.selected.size) return;
+      var t = e.target;
+      if (t.closest && (t.closest('.row') || t.closest('button') || t.closest('.listfoot') || t.closest('.empty'))) return;
+      clearSelection();
     });
 
     el.list.addEventListener('dblclick', function (e) {
@@ -8227,6 +8257,7 @@
     el.statusbarHint = $('statusbar-hint');
     el.bulkbar = $('bulkbar');
     el.bulkCount = $('bulk-count');
+    el.fileCard = $('file-card');
     el.listhead = $('listhead');
     el.checkAll = $('check-all');
     el.listwrap = $('listwrap');
@@ -8529,6 +8560,6 @@
     openStorageDetailModal: openStorageDetailModal,
     loadRecycle: loadRecycle,
     getRowCount: function () { return rowMap.size; },
-    version: '1.0.2'
+    version: '1.2.0'
   };
 })();

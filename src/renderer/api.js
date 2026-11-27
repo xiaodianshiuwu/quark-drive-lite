@@ -1090,7 +1090,7 @@
             prompted: true,
             baseUrl: 'https://qdl.xiaodianshiuwu.space',
             region: '海外节点 · Tokyo (JP)',
-            currentVersion: '1.0.2',
+            currentVersion: '1.2.0',
             platform: 'preview',
             arch: 'mock',
             recommendedAssetKey: 'macos-arm64',

@@ -191,27 +191,8 @@
         </div>
       </div>
 
-      <div class="bulkbar" id="bulkbar" hidden>
-        <span class="bulk-count" id="bulk-count">已选 0 项</span>
-        <div class="bulk-actions">
-          <button type="button" class="btn btn-sm" data-bulk="download">
-            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-download"></use></svg><span class="btn-label">下载</span>
-          </button>
-          <button type="button" class="btn btn-sm" data-bulk="move">
-            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-move"></use></svg><span class="btn-label">移动到</span>
-          </button>
-          <button type="button" class="btn btn-sm" data-bulk="copy">
-            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-copy"></use></svg><span class="btn-label">复制到</span>
-          </button>
-          <button type="button" class="btn btn-sm btn-danger" data-bulk="remove">
-            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-trash"></use></svg><span class="btn-label">删除</span>
-          </button>
-          <button type="button" class="btn btn-sm btn-ghost" data-bulk="clear">取消选择</button>
-        </div>
-      </div>
-
       <div class="file-workspace">
-        <div class="file-card">
+        <div class="file-card" id="file-card">
           <div class="listhead" id="listhead">
             <span class="cb-cell">
               <label class="cb" title="全选已加载的项目">
@@ -234,6 +215,25 @@
           <div class="listwrap" id="listwrap" tabindex="-1">
             <div class="list" id="list" role="list"></div>
             <div class="listfoot" id="listfoot"></div>
+          </div>
+
+          <div class="bulkbar" id="bulkbar" hidden role="region" aria-label="已选项目批量操作">
+            <span class="bulk-count" id="bulk-count">已选 0 项</span>
+            <div class="bulk-actions">
+              <button type="button" class="btn btn-sm" data-bulk="download">
+                <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-download"></use></svg><span class="btn-label">下载</span>
+              </button>
+              <button type="button" class="btn btn-sm" data-bulk="move">
+                <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-move"></use></svg><span class="btn-label">移动到</span>
+              </button>
+              <button type="button" class="btn btn-sm" data-bulk="copy">
+                <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-copy"></use></svg><span class="btn-label">复制到</span>
+              </button>
+              <button type="button" class="btn btn-sm btn-danger" data-bulk="remove">
+                <svg viewBox="0 0 24 24" class="ic" aria-hidden="true"><use href="#i-trash"></use></svg><span class="btn-label">删除</span>
+              </button>
+              <button type="button" class="btn btn-sm btn-ghost" data-bulk="clear" title="取消选择 (Esc)">取消选择</button>
+            </div>
           </div>
 
           <div class="file-statusbar" id="file-statusbar">

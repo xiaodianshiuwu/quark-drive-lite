@@ -515,17 +515,34 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .segmented-compact .seg { height: 24px; padding: 0 8px; border-radius: 6px; display: inline-flex; align-items: center; }
 .segmented-compact .seg .ic { width: 14px; height: 14px; }
 
-/* ------------------------------- 批量操作条 ------------------------------- */
-.bulkbar {
-  flex: 0 0 auto; display: flex; align-items: center; gap: 12px;
-  padding: 8px 12px; margin-bottom: 10px;
-  background: var(--primary-soft); border: 1px solid rgba(51, 109, 244, .34);
-  border-radius: var(--radius); color: var(--primary);
-  animation: banner-in .18s var(--ease-out);
+/* ------------------------------- 批量操作悬浮条（底部居中，0px 列表位移） ------------------------------- */
+@keyframes bulk-dock-in {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
-.bulk-count { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.bulk-actions { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
-.bulk-actions .btn { background: var(--panel); border-color: var(--border); color: var(--text); }
+.bulkbar {
+  position: absolute; left: 50%; bottom: 40px; z-index: 18;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px;
+  max-width: calc(100% - 24px);
+  padding: 7px 10px 7px 14px;
+  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 94%, var(--primary-soft));
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(51, 109, 244, .34);
+  border-radius: 14px; color: var(--primary);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, .16), 0 2px 8px rgba(15, 23, 42, .08);
+  animation: bulk-dock-in .16s var(--ease-out);
+}
+[data-theme="dark"] .bulkbar {
+  box-shadow: 0 14px 36px rgba(0, 0, 0, .48), 0 2px 8px rgba(0, 0, 0, .28);
+}
+.bulkbar.bulk-dock-delay {
+  opacity: 0; pointer-events: none; animation: none;
+}
+.bulk-count { font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bulk-actions { display: flex; gap: 6px; margin-left: 2px; flex-wrap: nowrap; align-items: center; }
+.bulk-actions .btn { background: var(--panel); border-color: var(--border); color: var(--text); white-space: nowrap; }
 .bulk-actions .btn:hover { border-color: var(--text-3); }
 .bulk-actions .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .bulk-actions .btn-danger:hover { background: var(--danger-hover); }
@@ -533,12 +550,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 /* ------------------------------- 文件工作区（主卡 + 详情抽屉） ------------------------------- */
 .file-workspace { flex: 1; min-height: 0; display: flex; gap: 12px; }
 .file-card {
+  position: relative;
   flex: 1; min-width: 0; min-height: 0;
   display: flex; flex-direction: column;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--radius-lg); box-shadow: var(--shadow-card);
   overflow: hidden;
 }
+.file-card.has-selection .listfoot { padding-bottom: 62px; }
 
 .listhead, .row {
   display: grid; grid-template-columns: var(--row-cols);
@@ -1557,6 +1576,8 @@ select.input { padding-right: 6px; }
 @media (max-width: 820px) {
   .file-subbar { flex-wrap: wrap; gap: 6px; }
   .subbar-transfer-live { order: 3; flex: 1 1 100%; max-width: none; }
+  .bulkbar { bottom: 36px; gap: 6px; padding: 6px 8px 6px 10px; max-width: calc(100% - 16px); }
+  .bulk-actions { gap: 4px; }
   .search-kbd { display: none; }
   .recycle-head, .recycle-row { grid-template-columns: 40px minmax(0, 1fr) 76px; }
   .recycle-remain { display: none; }
