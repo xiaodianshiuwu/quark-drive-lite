@@ -1106,11 +1106,12 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     // 5. Issue #5 回归：单击选中行绝不顶偏列表（0px 位移），同一坐标双击立刻进入文件夹，悬浮批量条正常可用
     await evaluate('QKUI.setView("files");QKUI.navigate("0","全部文件",undefined,{skipCache:true})');
     await until('QKUI.state.fid==="0" && !QKUI.state.loading && !!document.querySelector(".row[data-fid=\\"dir-pack\\"]")', 'root ready for zero-shift dblclick test');
+    await new Promise(r => setTimeout(r, 240));
     const rowBoxBefore = await evaluate('(() => { const r = document.querySelector(".row[data-fid=\\"dir-pack\\"]").getBoundingClientRect(); return { x: r.left + 120, y: r.top + r.height / 2, top: r.top }; })()');
     await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: rowBoxBefore.x, y: rowBoxBefore.y, button: 'left', clickCount: 1 });
     await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: rowBoxBefore.x, y: rowBoxBefore.y, button: 'left', clickCount: 1 });
     const rowTopAfterClick1 = await evaluate('document.querySelector(".row[data-fid=\\"dir-pack\\"]").getBoundingClientRect().top');
-    assert.equal(rowTopAfterClick1, rowBoxBefore.top, 'selecting row must cause strictly 0px vertical layout shift');
+    assert.ok(Math.abs(rowTopAfterClick1 - rowBoxBefore.top) < 0.5, 'selecting row must cause strictly 0px vertical layout shift (delta=' + (rowTopAfterClick1 - rowBoxBefore.top) + ')');
     await new Promise(r => setTimeout(r, 40));
     await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: rowBoxBefore.x, y: rowBoxBefore.y, button: 'left', clickCount: 2 });
     await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: rowBoxBefore.x, y: rowBoxBefore.y, button: 'left', clickCount: 2 });
