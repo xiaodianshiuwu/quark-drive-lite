@@ -93,7 +93,7 @@
 |---|---|---|
 | **Windows 10 / 11 (x64)** | `QuarkDriveLite-1.2.0-Windows-x64-Setup.exe` | **安装版**（支持简中/英文、当前用户免管理员安装、支持干净卸载） |
 | **Windows 10 / 11 (x64)** | `QuarkDriveLite-1.2.0-Windows-x64-Portable.zip` | **便携版**（UTF-8 编码兼容，解压即运行） |
-| **macOS Apple Silicon (arm64)** | `QuarkDriveLite-1.2.0-macOS-arm64.dmg` / `.zip` | M1 / M2 / M3 / M4 系列 Mac，拖入「应用程序」即可使用 |
+| **macOS Apple Silicon (arm64)** | `QuarkDriveLite-1.2.0-macOS-arm64.dmg` / `.zip` | M系列 Mac，拖入「应用程序」即可使用 |
 | **macOS Intel (x64)** | `QuarkDriveLite-1.2.0-macOS-x64.zip` | Intel 芯片 Mac，解压后拖入「应用程序」即可使用 |
 | **Linux x64（Debian / Ubuntu）** | `QuarkDriveLite-1.2.0-Linux-x64.deb` | 运行 `sudo apt install ./QuarkDriveLite-1.2.0-Linux-x64.deb` 安装 |
 | **Linux x64（通用便携版）** | `QuarkDriveLite-1.2.0-Linux-x64.AppImage` | 运行 `chmod +x QuarkDriveLite-1.2.0-Linux-x64.AppImage` 后直接运行 |
