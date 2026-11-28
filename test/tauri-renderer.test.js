@@ -1131,6 +1131,20 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await click('#btn-hub-github');
     await until('__fixtureCalls.some(c=>c.method==="hub.openReleasePage")', 'clicking GitHub fallback calls hub.openReleasePage');
 
+    // 4c. 强升级提醒（forceUpgrade=true）：弹出 warn 级横幅且不提供「稍后再说」忽略按钮
+    await evaluate(`
+      __fixture.hubLatest = Object.assign({}, __fixture.hubLatest, {
+        forceUpgrade: true,
+        minVersion: '1.3.0',
+        installType: 'app_bundle',
+        recommendedAssetKey: 'macos-arm64',
+        recommendedAsset: { filename: 'QuarkDriveLite-1.3.2.zip', size: 5000000 }
+      });
+    `);
+    await click('#btn-hub-check');
+    await until('!!document.querySelector("[data-banner=\\"hub-update\\"]") && document.querySelector("[data-banner=\\"hub-update\\"]").textContent.includes("重要更新")', 'forceUpgrade renders mandatory upgrade warning banner');
+    assert.equal(await evaluate('document.querySelector("[data-banner=\\"hub-update\\"]").textContent.includes("稍后再说")'), false, 'forceUpgrade banner cannot be permanently dismissed');
+
     // 5. Issue #5 回归：单击选中行绝不顶偏列表（0px 位移），同一坐标双击立刻进入文件夹，悬浮批量条正常可用
     await evaluate('QKUI.setView("files");QKUI.navigate("0","全部文件",undefined,{skipCache:true})');
     await until('QKUI.state.fid==="0" && !QKUI.state.loading && !!document.querySelector(".row[data-fid=\\"dir-pack\\"]")', 'root ready for zero-shift dblclick test');

@@ -223,7 +223,7 @@ jobs:
             '> - 完整校验和见附件 `SHA256SUMS.txt`；已开启应用内可选更新服务的用户可直接校验 **Ed25519 签名 + SHA-256** 后一键下载升级。',
             '> - **macOS 首次启动提示**：开源未签名构建若提示「无法验证开发者」，在终端执行一次：',
             '>   ```sh',
-            '>   xattr -dr com.apple.quarantine "/Applications/QuarkDriveLite.app"',
+            '>   xattr -dr com.apple.quarantine "/Applications/夸克网盘极简版.app"',
             '>   ```',
             '> - **隐私承诺**：更新、热更新与诊断通道默认关闭（未开启严格零外传）；开启后严格零 PII 脱敏，绝不采集文件名、本地路径、FID、直链、Cookie、Token 或 IP。',
           ].join('\n');

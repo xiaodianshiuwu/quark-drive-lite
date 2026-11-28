@@ -7035,15 +7035,18 @@
         });
       }
       if (res.hasUpdate) {
-        if (!o.silent || state.hub.dismissedUpdateVersion !== String(res.latestVersion || '')) {
-          var bannerMsg = hasRec
-            ? ('发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），可前往设置页直链下载。')
-            : (isAppImagePkg
-              ? ('发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），AppImage 版请前往 GitHub Releases 下载更新。')
-              : ('发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），请前往设置页或 GitHub Releases 下载更新。'));
+        var mustUpgrade = !!res.forceUpgrade;
+        if (mustUpgrade || !o.silent || state.hub.dismissedUpdateVersion !== String(res.latestVersion || '')) {
+          var bannerMsg = mustUpgrade
+            ? ('【重要更新】当前版本 v' + res.currentVersion + ' 已停止旧版在线支持，请尽快升级至 v' + res.latestVersion + (hasRec ? '（支持应用内一键升级）。' : '（请前往 GitHub Releases 下载最新安装包）。'))
+            : (hasRec
+              ? ('发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），可前往设置页直链下载。')
+              : (isAppImagePkg
+                ? ('发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），AppImage 版请前往 GitHub Releases 下载更新。')
+                : ('发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），请前往设置页或 GitHub Releases 下载更新。')));
           var bannerBtns = [
-            { label: hasRec ? '查看更新' : '查看更新说明', primary: hasRec, onClick: function () {
-              clearBanner('hub-update');
+            { label: mustUpgrade ? '立即前往升级' : (hasRec ? '查看更新' : '查看更新说明'), primary: hasRec || mustUpgrade, onClick: function () {
+              if (!mustUpgrade) clearBanner('hub-update');
               setView('settings');
               if (el.hubCard && typeof el.hubCard.scrollIntoView === 'function') {
                 el.hubCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -7055,16 +7058,18 @@
               label: isAppImagePkg ? '前往 GitHub 下载 AppImage' : '前往 GitHub 下载',
               primary: true,
               onClick: function () {
-                clearBanner('hub-update');
+                if (!mustUpgrade) clearBanner('hub-update');
                 API.hub.openReleasePage().catch(function (err) { reportError(err, '打开 GitHub 发布页失败'); });
               }
             });
           }
-          bannerBtns.push({ label: '稍后再说', onClick: function () {
-            state.hub.dismissedUpdateVersion = String(res.latestVersion || '');
-            clearBanner('hub-update');
-          } });
-          banner('hub-update', 'info', bannerMsg, bannerBtns);
+          if (!mustUpgrade) {
+            bannerBtns.push({ label: '稍后再说', onClick: function () {
+              state.hub.dismissedUpdateVersion = String(res.latestVersion || '');
+              clearBanner('hub-update');
+            } });
+          }
+          banner('hub-update', mustUpgrade ? 'warn' : 'info', bannerMsg, bannerBtns);
         }
       } else if (res.notice && o.silent) {
         if (state.hub.dismissedNotice !== String(res.notice)) {

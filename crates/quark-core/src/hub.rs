@@ -512,6 +512,11 @@ impl HubClient {
         let (manifest, server_region) = self.fetch_verified_manifest().await?;
         let latest_version = manifest["version"].as_str().unwrap_or(app_version);
         let has_update = version_is_newer(latest_version, app_version);
+        let min_version = manifest["minVersion"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let force_upgrade = min_version.is_some_and(|m| version_is_newer(m, app_version));
         let rec_key = recommended_asset_key();
         let recommended_asset = manifest["assets"].get(rec_key).cloned().unwrap_or(Value::Null);
 
@@ -556,6 +561,8 @@ impl HubClient {
         Ok(json!({
             "ok": true,
             "hasUpdate": has_update,
+            "minVersion": min_version,
+            "forceUpgrade": force_upgrade,
             "currentVersion": app_version,
             "latestVersion": latest_version,
             "channel": manifest["channel"].as_str().unwrap_or("beta"),

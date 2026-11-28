@@ -564,8 +564,10 @@ async fn install_verified_update(
             ));
         }
     }
-    if !verified_path.is_file() {
-        return Err(Error::new("NOT_FOUND", "已下载的更新包不存在，请重新下载"));
+    let pkg_meta = std::fs::symlink_metadata(&verified_path)
+        .map_err(|_| Error::new("NOT_FOUND", "已下载的更新包不存在，请重新下载"))?;
+    if !pkg_meta.file_type().is_file() || pkg_meta.file_type().is_symlink() {
+        return Err(Error::new("FORBIDDEN", "安全拦截：更新包路径必须为普通文件"));
     }
 
     let filename = verified_path
@@ -683,7 +685,9 @@ fi
         if filename.ends_with(".appimage") {
             if let Ok(appimage_env) = std::env::var("APPIMAGE") {
                 let target = PathBuf::from(&appimage_env);
-                if target.is_file() {
+                if std::fs::symlink_metadata(&target)
+                    .is_ok_and(|m| m.file_type().is_file() && !m.file_type().is_symlink())
+                {
                     use std::os::unix::fs::PermissionsExt;
                     let staging = target.with_extension("AppImage.qdl-new");
                     if std::fs::copy(&verified_path, &staging).is_ok()
@@ -910,6 +914,7 @@ fn main() {
                         .status(200)
                         .header("Content-Type", mime)
                         .header("Cache-Control", "no-store")
+                        .header("X-Content-Type-Options", "nosniff")
                         .header("Content-Security-Policy", HOT_UI_CSP)
                         .body(bytes)
                     {
