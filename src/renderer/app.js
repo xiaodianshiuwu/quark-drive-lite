@@ -505,24 +505,56 @@
       return '云盘剩余空间不足，请清理文件或清空回收站后再试';
     }
     if (code === 'ARCHIVE_DAMAGED') {
-      return '该压缩包可能已损坏，或暂不支持此压缩格式';
+      return '这个压缩包可能已损坏，暂时无法在线解压';
     }
-    if (code === 'ARCHIVE_PASSWORD') {
-      return '该压缩包已加密，请输入正确的解压密码后重试';
+    if (code === 'ARCHIVE_NEED_PWD' || code === 'ARCHIVE_PASSWORD') {
+      return '这个压缩包已加密，请输入解压密码后再试';
     }
-    if (code === 'ARCHIVE_LIMIT') {
-      return '云解压次数或单包体积已达到当前账号上限';
+    if (code === 'ARCHIVE_PWD_ERROR') {
+      return '解压密码不对，请核对后重新输入';
+    }
+    if (code === 'ARCHIVE_TOO_LARGE' || code === 'ARCHIVE_LIMIT') {
+      return '压缩包体积或解压次数已超出当前账号云解压上限';
+    }
+    if (code === 'ARCHIVE_UNSUPPORTED') {
+      return '暂不支持在线云解压该压缩格式，建议下载到本地解压';
+    }
+    if (code === 'ARCHIVE_TOO_MANY_FILES') {
+      return '压缩包内文件数量过多，超出了云端在线解压限制';
+    }
+    if (code === 'STALL_TIMEOUT') {
+      return '下载连接长时间无响应，系统正在自动重连，请稍候';
+    }
+    if (code === 'LINK_EXPIRED') {
+      return '下载链接已过期，点击重试即可重新获取继续下载';
+    }
+    if (code === 'ACCOUNT_MISMATCH') {
+      return '当前登录账号与创建任务时不一致，请切回原账号或重新创建任务';
+    }
+    if (code === 'CHECKPOINT_VERSION') {
+      return '旧版断点记录不兼容，请取消该任务后重新下载（原文件已保留）';
+    }
+    if (code === 'COMMIT_UNCERTAIN') {
+      return '上次上传结果未确认，请先检查云盘目录是否已有该文件，再决定是否重新上传';
+    }
+    if (code === 'SIGNATURE_INVALID' || code === 'CHECKSUM_MISMATCH') {
+      return '安装包完整性校验未通过，为保障安全已拦截，请稍后重试下载';
+    }
+    if (code === 'OPT_IN_REQUIRED') {
+      return '当前未开启「连接作者服务器」，如需使用请在设置中手动开启';
     }
     if (hasReadableZh) return rawMsg;
-    if (code === 'TIMEOUT') return '请求等待超时，可能是网络波动或服务器繁忙，请稍后再试';
-    if (code === 'NETWORK') return '网络连接不太稳定，请检查网络或代理设置后重试';
+    if (err && Number(err.httpStatus) === 426) return '当前版本已停止在线接口支持，请升级到最新版本后重试';
+    if (code === 'TIMEOUT') return '网络请求超时，请检查网络连接或代理设置后再试';
+    if (code === 'NETWORK') return '网络连接不稳定，请检查网络或代理后重试';
     if (code === 'LOCAL_IO') return '本地文件读写失败，请检查保存目录权限和磁盘剩余空间';
     if (code === 'PARSE') return '服务器返回的数据格式异常，请稍后重试';
     if (code === 'CONFLICT') return '目标位置已存在同名文件或状态已变化，请刷新后重试';
     if (code === 'NOT_FOUND') return '目标文件或文件夹已不存在，请刷新目录后重试';
-    if (code === 'FORBIDDEN') return '当前操作没有权限，请检查账号状态或目录权限';
-    if (code === 'SERVER') return '夸克云端服务暂时开小差，请稍后再试';
+    if (code === 'FORBIDDEN') return '当前操作没有权限，请检查账号权益或目录权限';
+    if (code === 'SERVER') return '夸克云端服务暂时繁忙，请稍后再试';
     if (code === 'CONTENT_MISMATCH') return '文件内容校验不一致，原文件已保留，请重试';
+    if (code === 'INVALID_ARG') return '输入的参数格式有误，请检查后重试';
     return rawMsg || fallback || '操作暂时未能完成，请稍后重试';
   }
 
@@ -3495,6 +3527,12 @@
         }
       }
 
+      function pushFloatUnarchive(payload) {
+        if (state.settings.floatingUnarchiveWindow && API.has('app', 'unarchiveProgress')) {
+          API.app.unarchiveProgress(Object.assign({ name: item.name }, payload || {})).catch(function () {});
+        }
+      }
+
       async function startExtract(onlySelected, conflictMode) {
         if (extracting) return;
         extracting = true;
@@ -3505,6 +3543,7 @@
         progLabel.textContent = '正在提交云解压任务…';
         progPct.textContent = '0%';
         progFill.style.width = '4%';
+        pushFloatUnarchive({ state: 'running', stage: '正在提交云解压任务…', pct: 4, hint: '目标：' + target.name });
 
         var pathNos = onlySelected ? Array.from(checkedPaths) : [];
         try {
@@ -3523,6 +3562,7 @@
           }
           var taskId = String(res.taskId);
           progLabel.textContent = '云端正在解压中…';
+          pushFloatUnarchive({ state: 'running', stage: '云端正在解压中…', pct: 8, hint: '目标：' + target.name });
           for (var i = 0; i < 180; i++) {
             await sleep(600);
             if (!alive) return;
@@ -3531,6 +3571,7 @@
             var pct = Math.max(0, Math.min(100, Number(st && st.progress) || 0));
             progPct.textContent = Math.round(pct) + '%';
             progFill.style.width = Math.max(6, pct) + '%';
+            pushFloatUnarchive({ state: 'running', stage: '云端正在解压中…', pct: Math.round(pct), hint: '目标：' + target.name });
             if (st && st.done) {
               onExtractFinished();
               return;
@@ -3540,6 +3581,7 @@
             }
           }
           progLabel.textContent = '解压任务仍在云端后台运行，稍后可前往目标目录查看。';
+          pushFloatUnarchive({ state: 'running', stage: '云端后台继续解压中…', pct: 95, hint: '稍后可前往目标目录查看' });
           extracting = false;
           updateSelectionButtons();
         } catch (err) {
@@ -3571,8 +3613,10 @@
             return;
           }
           progBox.classList.add('error');
-          progLabel.textContent = e.message || '云解压失败';
+          var niceErr = friendlyErrorMessage(e, '云解压失败');
+          progLabel.textContent = niceErr;
           progPct.textContent = '失败';
+          pushFloatUnarchive({ state: 'error', stage: niceErr, pct: 100, hint: '请返回主窗口查看详情' });
           extracting = false;
           updateSelectionButtons();
         }
@@ -3587,6 +3631,7 @@
         progFill.style.width = '100%';
         gotoBtn.hidden = false;
         updateSelectionButtons();
+        pushFloatUnarchive({ state: 'done', stage: '云解压完成', pct: 100, hint: '已保存至「' + target.name + '」', targetFid: target.fid });
         invalidateDirCache(target.fid);
         if (state.view === 'files' && String(state.fid) === String(target.fid)) {
           reloadCurrent();
@@ -6405,6 +6450,25 @@
     }
   }
 
+  function applyFloatingSettings() {
+    var ballOn = !!state.settings.floatingTransferBall;
+    var unarchOn = !!state.settings.floatingUnarchiveWindow;
+    if (el.setFloatBall) {
+      Array.prototype.forEach.call(el.setFloatBall.querySelectorAll('.seg'), function (b) {
+        var active = (b.dataset.floatBall === 'on') === ballOn;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-checked', active ? 'true' : 'false');
+      });
+    }
+    if (el.setFloatUnarchive) {
+      Array.prototype.forEach.call(el.setFloatUnarchive.querySelectorAll('.seg'), function (b) {
+        var active = (b.dataset.floatUnarchive === 'on') === unarchOn;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-checked', active ? 'true' : 'false');
+      });
+    }
+  }
+
   function renderAppVersion() {
     if (!el.appVersionText) return;
     var info = state.appInfo;
@@ -6507,6 +6571,7 @@
     updatePerfWarning();
     applyTheme(state.settings.theme);
     applyAiBeta(state.settings.aiBetaEnabled);
+    applyFloatingSettings();
     renderHubSettings();
     renderFeedbackView();
     renderAppVersion();
@@ -6574,7 +6639,19 @@
     return !!API.injected && API.has('hub', 'setOptIn');
   }
 
+  function hubAvailable() {
+    return hubBridgeReady() && !(state.hub.config && state.hub.config.available === false);
+  }
+
   function renderHubSettings() {
+    var avail = hubAvailable();
+    if (el.hubCard) el.hubCard.hidden = !avail;
+    var navFb = $('nav-feedback');
+    if (navFb) navFb.hidden = !avail;
+    if (!avail) {
+      if (state.view === 'feedback') setView('files');
+      return;
+    }
     var on = !!state.settings.serverOptIn;
     if (el.hubStatusBadge) {
       el.hubStatusBadge.textContent = on ? '已开启 · 加密连接' : '已关闭 · 零外传';
@@ -7038,7 +7115,7 @@
         var mustUpgrade = !!res.forceUpgrade;
         if (mustUpgrade || !o.silent || state.hub.dismissedUpdateVersion !== String(res.latestVersion || '')) {
           var bannerMsg = mustUpgrade
-            ? ('【重要更新】当前版本 v' + res.currentVersion + ' 已停止旧版在线支持，请尽快升级至 v' + res.latestVersion + (hasRec ? '（支持应用内一键升级）。' : '（请前往 GitHub Releases 下载最新安装包）。'))
+            ? ('【重要更新】当前版本 v' + res.currentVersion + ' 已停止旧版在线支持，强烈建议升级至 v' + res.latestVersion + (hasRec ? '（支持应用内一键升级）。' : '（请前往 GitHub Releases 下载最新安装包）。'))
             : (hasRec
               ? ('发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），可前往设置页直链下载。')
               : (isAppImagePkg
@@ -7071,17 +7148,47 @@
           }
           banner('hub-update', mustUpgrade ? 'warn' : 'info', bannerMsg, bannerBtns);
         }
-      } else if (res.notice && o.silent) {
-        if (state.hub.dismissedNotice !== String(res.notice)) {
-          banner('hub-notice', 'info', '作者公告：' + res.notice, [
-            { label: '我知道了', onClick: function () {
-              state.hub.dismissedNotice = String(res.notice);
-              clearBanner('hub-notice');
-            } }
-          ]);
-        }
       } else if (!o.silent) {
         toast('ok', '当前已是最新版本 v' + res.currentVersion);
+      }
+      // 独立实时顶部公告（支持网页管理台单独随时下发，不依赖发版）
+      var liveBanner = (res && res.liveBanner && res.liveBanner.enabled && res.liveBanner.text)
+        ? res.liveBanner
+        : (res && res.notice ? { id: 'notice:' + String(res.notice).slice(0, 64), level: 'info', text: String(res.notice), dismissible: true } : null);
+      if (liveBanner && liveBanner.text) {
+        var bId = String(liveBanner.id || liveBanner.text).slice(0, 80);
+        var dismissedB = '';
+        try { dismissedB = localStorage.getItem('qk-dismissed-banner-id') || ''; } catch (_) {}
+        if (liveBanner.dismissible === false || dismissedB !== bId) {
+          var bActs = [];
+          if (liveBanner.ctaLabel && typeof liveBanner.ctaUrl === 'string' && /^https:\/\//i.test(liveBanner.ctaUrl)) {
+            bActs.push({
+              label: String(liveBanner.ctaLabel).slice(0, 24),
+              primary: true,
+              onClick: function () {
+                if (API.has('hub', 'openExternalUrl')) {
+                  API.hub.openExternalUrl({ url: liveBanner.ctaUrl }).catch(function (e) { reportError(e, '打开链接失败'); });
+                }
+              }
+            });
+          }
+          if (liveBanner.dismissible !== false) {
+            bActs.push({
+              label: '我知道了',
+              onClick: function () {
+                try { localStorage.setItem('qk-dismissed-banner-id', bId); } catch (_) {}
+                clearBanner('hub-live-banner');
+              }
+            });
+          }
+          banner('hub-live-banner', liveBanner.level === 'error' ? 'error' : (liveBanner.level === 'warn' ? 'warn' : 'info'), '公告：' + String(liveBanner.text), bActs);
+        }
+      } else {
+        clearBanner('hub-live-banner');
+      }
+      // 独立弹窗提示（网页管理台可单独发送或关闭；按 popup.id 去重避免反复打扰）
+      if (res && res.popup && res.popup.enabled && (res.popup.title || res.popup.body)) {
+        showServerAnnouncementPopup(res.popup);
       }
       return res;
     } catch (err) {
@@ -7163,6 +7270,13 @@
       if (typeof performance !== 'undefined' && performance.memory && performance.memory.usedJSHeapSize) {
         memMb = Math.round(performance.memory.usedJSHeapSize / (1024 * 1024));
       }
+      var screenBucket = '1080p';
+      try {
+        var sw = (window.screen && window.screen.width) || window.innerWidth || 0;
+        if (sw >= 3200) screenBucket = '4k';
+        else if (sw >= 2200) screenBucket = '2k';
+        else if (sw > 0 && sw < 1400) screenBucket = '<=720p';
+      } catch (_) {}
       await API.hub.sendTelemetry({
         eventType: eventType || 'heartbeat',
         avgDlBps: avg(dlSpeeds),
@@ -7171,7 +7285,19 @@
         peakUlBps: peak(ulSpeeds),
         dlTasks: dlTasks || undefined,
         ulTasks: ulTasks || undefined,
-        memMb: memMb
+        memMb: memMb,
+        appMetrics: {
+          theme: state.settings.theme === 'dark' ? 'dark' : 'light',
+          viewMode: state.settings.viewMode === 'grid' ? 'grid' : 'list',
+          downloadStrategy: state.settings.downloadStrategy || 'auto',
+          downloadParallel: Number(state.settings.downloadParallel) || 16,
+          downloadConcurrency: Number(state.settings.downloadConcurrency) || 2,
+          uploadPartConcurrency: Number(state.settings.uploadPartConcurrency) || 3,
+          floatingBall: !!state.settings.floatingTransferBall,
+          floatingUnarchive: !!state.settings.floatingUnarchiveWindow,
+          aiBeta: !!state.settings.aiBetaEnabled,
+          screenBucket: screenBucket
+        }
       });
       state.hub.telemetrySent = true;
     } catch (_) {
@@ -7407,6 +7533,56 @@
     });
   }
 
+  function showServerAnnouncementPopup(popup) {
+    if (!popup || !popup.enabled) return;
+    var pid = String(popup.id || popup.updatedAt || popup.title || 'popup').slice(0, 80);
+    var dismissed = '';
+    try { dismissed = localStorage.getItem('qk-dismissed-popup-id') || ''; } catch (_) {}
+    if (popup.dismissible !== false && dismissed === pid) return;
+    if (state.hub.shownPopupId === pid) return;
+    state.hub.shownPopupId = pid;
+    if (hasActiveOverlay()) return;
+    openOverlay(function (ui) {
+      var level = popup.level === 'error' ? 'error' : (popup.level === 'warn' ? 'warn' : 'info');
+      var head = h('div', 'dlg-head');
+      head.appendChild(icon(level === 'error' ? 'error' : (level === 'warn' ? 'warn' : 'info'), 'dlg-ic'));
+      head.appendChild(h('h3', 'dlg-title', String(popup.title || '重要通知')));
+      ui.panel.appendChild(head);
+
+      var body = h('div', 'dlg-body');
+      var badge = h('div', 'announce-popup-badge ' + level, level === 'error' ? '重要提醒' : (level === 'warn' ? '升级 / 维护提醒' : '官方通知'));
+      body.appendChild(badge);
+      body.appendChild(h('div', 'announce-popup-body', String(popup.body || '')));
+      ui.panel.appendChild(body);
+
+      var foot = h('div', 'dlg-foot');
+      if (popup.ctaLabel && typeof popup.ctaUrl === 'string' && /^https:\/\//i.test(popup.ctaUrl)) {
+        var ctaBtn = h('button', 'btn btn-primary', String(popup.ctaLabel).slice(0, 28));
+        ctaBtn.type = 'button';
+        ctaBtn.addEventListener('click', function () {
+          if (popup.dismissible !== false) {
+            try { localStorage.setItem('qk-dismissed-popup-id', pid); } catch (_) {}
+          }
+          if (API.has('hub', 'openExternalUrl')) {
+            API.hub.openExternalUrl({ url: popup.ctaUrl }).catch(function (e) { reportError(e, '打开链接失败'); });
+          }
+          ui.close(true);
+        });
+        foot.appendChild(ctaBtn);
+      }
+      var okBtn = h('button', popup.ctaLabel ? 'btn' : 'btn btn-primary', '我知道了');
+      okBtn.type = 'button';
+      okBtn.addEventListener('click', function () {
+        if (popup.dismissible !== false) {
+          try { localStorage.setItem('qk-dismissed-popup-id', pid); } catch (_) {}
+        }
+        ui.close(false);
+      });
+      foot.appendChild(okBtn);
+      ui.panel.appendChild(foot);
+    });
+  }
+
   function showServerOptInModal() {
     return new Promise(function (resolve) {
       var settled = false;
@@ -7472,6 +7648,11 @@
     renderHubSettings();
     renderFeedbackView();
 
+    if (!hubAvailable()) {
+      renderHubSettings();
+      renderFeedbackView();
+      return;
+    }
     if (!API.isMock && !state.settings.serverPrompted) {
       await showServerOptInModal();
       return;
@@ -8002,20 +8183,50 @@
       openCtx(e.clientX, e.clientY, entries);
     });
 
-    el.checkAll.addEventListener('change', function () {
-      var items = displayItems();
-      if (el.checkAll.checked) {
-        items.forEach(function (i) { state.selected.add(String(i.fid)); });
+    el.checkAll.addEventListener('change', async function () {
+      if (!el.checkAll.checked) {
+        clearSelection();
+        listVersion += 1;
+        updateSelectAll();
+        return;
+      }
+      var seq = listSeq;
+      function markVisibleSelected() {
+        var curItems = displayItems();
+        curItems.forEach(function (i) { state.selected.add(String(i.fid)); });
         rowMap.forEach(function (row) {
           row.classList.add('selected');
           var cb = row._refs ? row._refs.cb : row.querySelector('input[type=checkbox]');
           if (cb) cb.checked = true;
         });
-      } else {
-        clearSelection();
+        listVersion += 1;
+        updateSelectAll();
       }
-      listVersion += 1;
-      updateSelectAll();
+      markVisibleSelected();
+      // 若当前目录还有未加载分页（例如包含大量小文件），自动分批加载并全量选中
+      if (state.hasMore && !state.selectingAll) {
+        state.selectingAll = true;
+        var maxPages = 100;
+        var loadedExtra = 0;
+        if (state.total > state.items.length || state.hasMore) {
+          toast('info', '正在加载目录内全部项目以便完整全选…', 2400);
+        }
+        try {
+          while (state.hasMore && seq === listSeq && el.checkAll.checked && loadedExtra < maxPages && state.items.length < 10000) {
+            var beforeLen = state.items.length;
+            await loadPage({ preserveSelection: true });
+            if (seq !== listSeq || !el.checkAll.checked) break;
+            loadedExtra += 1;
+            markVisibleSelected();
+            if (state.items.length <= beforeLen) break;
+          }
+          if (seq === listSeq && el.checkAll.checked && loadedExtra > 0) {
+            toast('ok', '已全选当前目录全部 ' + state.selected.size + ' 项');
+          }
+        } finally {
+          state.selectingAll = false;
+        }
+      }
     });
 
     // 批量操作条
@@ -8148,6 +8359,25 @@
       if (!b) return;
       saveSettings({ theme: b.dataset.theme });
     });
+    if (el.setFloatBall) {
+      el.setFloatBall.addEventListener('click', function (e) {
+        var b = e.target.closest ? e.target.closest('.seg') : null;
+        if (!b || !b.dataset.floatBall) return;
+        saveSettings({ floatingTransferBall: b.dataset.floatBall === 'on' });
+      });
+    }
+    if (el.setFloatUnarchive) {
+      el.setFloatUnarchive.addEventListener('click', function (e) {
+        var b = e.target.closest ? e.target.closest('.seg') : null;
+        if (!b || !b.dataset.floatUnarchive) return;
+        saveSettings({ floatingUnarchiveWindow: b.dataset.floatUnarchive === 'on' });
+      });
+    }
+    if (el.btnCopyQq) {
+      el.btnCopyQq.addEventListener('click', function () {
+        copyText('1054152586', 'QQ 群号（1054152586）');
+      });
+    }
     if (el.setAiBeta) {
       el.setAiBeta.addEventListener('click', function (e) {
         var b = e.target.closest ? e.target.closest('.seg') : null;
@@ -8550,6 +8780,9 @@
     el.setPerfWarn = $('set-perf-warn');
     el.setPerfWarnText = $('set-perf-warn-text');
     el.themeSeg = $('set-theme');
+    el.setFloatBall = $('set-float-ball');
+    el.setFloatUnarchive = $('set-float-unarchive');
+    el.btnCopyQq = $('btn-copy-qq');
     el.aiBetaCard = $('ai-beta-card');
     el.aiBetaHint = $('ai-beta-hint');
     el.setAiBeta = $('set-ai-beta');
@@ -8655,6 +8888,21 @@
 
   function subscribeChannels() {
     unsubs.push(API.auth.onChange(function (s) { applyAccount(s); }));
+    if (API.app && typeof API.app.onOpenView === 'function') {
+      unsubs.push(API.app.onOpenView(function (payload) {
+        var view = payload && payload.view ? String(payload.view) : 'files';
+        if (view === 'transfers' || view === 'files' || view === 'settings') setView(view);
+        if (payload && payload.fid) navigate(String(payload.fid), '');
+      }));
+    }
+    if (API.app && typeof API.app.onSettingsSync === 'function') {
+      unsubs.push(API.app.onSettingsSync(function (saved) {
+        if (saved && typeof saved === 'object') {
+          Object.assign(state.settings, saved);
+          applyFloatingSettings();
+        }
+      }));
+    }
 
     var onTasks = function (tasks) {
       if (!Array.isArray(tasks)) return;

@@ -6,7 +6,6 @@ use crate::{
     sha1_state::Sha1State,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
-use futures_util::{stream::FuturesUnordered, StreamExt};
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -17,7 +16,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::fs;
+use tokio::{fs, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 const INSPECT_BUF_CAP: usize = 2 * 1024 * 1024;
 const STREAM_CHUNK_BYTES: usize = 256 * 1024;
@@ -107,6 +106,17 @@ struct Inspection {
     contexts: BTreeMap<u64, String>,
     part_md5: BTreeMap<u64, String>,
 }
+
+fn validate_part_size(size: u64) -> Result<u64> {
+    if size == 0 || size % 65536 != 0 || size > 16 * 1024 * 1024 {
+        return Err(err(
+            "SERVER",
+            "服务端分片大小不合法，必须为 65536 倍数且不超过 16 MiB",
+        ));
+    }
+    Ok(size)
+}
+
 async fn inspect(
     path: &Path,
     expected: &FileStamp,
@@ -225,7 +235,7 @@ pub(crate) async fn run(
     m: &TransferManager,
     id: &str,
     token: &CancellationToken,
-    tel: &RunTelemetry,
+    tel: &Arc<RunTelemetry>,
 ) -> Result<()> {
     tel.set_stage("init");
     let generation = m.bound_generation()?;
@@ -363,17 +373,20 @@ pub(crate) async fn run(
         cp.baseline = Some(matching(m, parent, name, token, generation).await?);
         store(m, id, &cp)?;
     }
-    // Rehash on resume, including when a process changed bytes and restored the
-    // mtime. Never mix saved multipart ETags with a different local source.
+    // On multipart resume the server's layout is already known. One inspection
+    // can bind the whole source and reconstruct the exact saved part digests.
+    let resumed_part_size = (cp.phase == "parts" && size > 0)
+        .then(|| validate_part_size(cp.part_size))
+        .transpose()?;
     tel.set_stage("inspect_initial");
     let hash_start = Instant::now();
-    let inspected = inspect(&local, &stamp, None, token).await?;
+    let initial = inspect(&local, &stamp, resumed_part_size, token).await?;
     tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
     if cp.md5.is_empty() {
-        cp.md5 = inspected.md5;
-        cp.sha1 = inspected.sha1;
+        cp.md5.clone_from(&initial.md5);
+        cp.sha1.clone_from(&initial.sha1);
         store(m, id, &cp)?;
-    } else if cp.md5 != inspected.md5 || cp.sha1 != inspected.sha1 {
+    } else if cp.md5 != initial.md5 || cp.sha1 != initial.sha1 {
         return Err(err(
             "CONFLICT",
             "本地文件内容已变化，已保留旧上传进度且不会重复建档",
@@ -510,13 +523,7 @@ pub(crate) async fn run(
         tel.set_stage("confirm");
         return confirm(m, id, parent, name, &cp, false, token, generation).await;
     }
-    let part_size = cp.part_size;
-    if part_size == 0 || part_size % 65536 != 0 || part_size > 16 * 1024 * 1024 {
-        return Err(err(
-            "SERVER",
-            "服务端分片大小不合法，必须为 65536 倍数且不超过 16 MiB",
-        ));
-    }
+    let part_size = validate_part_size(cp.part_size)?;
     let bucket = required(&pre, "bucket")?;
     let upload_id = required(&pre, "upload_id")?;
     let base = oss_url(required(&pre, "upload_url")?, bucket, key)?;
@@ -525,10 +532,15 @@ pub(crate) async fn run(
         if count > 10_000 {
             return Err(err("INVALID_ARG", "服务端分片参数会超过 10000 片上限"));
         }
-        tel.set_stage("inspect_parts");
-        let hash_start = Instant::now();
-        let inspected = inspect(&local, &stamp, Some(part_size), token).await?;
-        tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
+        let inspected = if resumed_part_size.is_some() {
+            initial
+        } else {
+            tel.set_stage("inspect_parts");
+            let hash_start = Instant::now();
+            let next = inspect(&local, &stamp, Some(part_size), token).await?;
+            tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
+            next
+        };
         if inspected.md5 != cp.md5 || inspected.sha1 != cp.sha1 {
             return Err(err("CONFLICT", "上传源文件内容已变化，已停止分片提交"));
         }
@@ -569,15 +581,19 @@ pub(crate) async fn run(
                 "seq_oss"
             });
             tel.set_stage("put_parts");
-            let contexts = &inspected.contexts;
-            let part_hashes = &inspected.part_md5;
+            let contexts = Arc::new(inspected.contexts.clone());
+            let part_hashes = Arc::new(inspected.part_md5.clone());
             let with_context = cp.parallel_requested && !cp.parallel_disabled;
-            let local_ref = &local;
-            let stamp_ref = &stamp;
-            let pre_ref = &pre;
-            let base_ref = &base;
-            let mime_ref = mime.as_str();
-            let rate = &rate;
+            let shared_file = Arc::new(std::fs::File::open(&local).map_err(io_err)?);
+            let local_arc = Arc::new(local.clone());
+            let stamp_owned = stamp.clone();
+            let pre_arc = Arc::new(pre.clone());
+            let base_arc = Arc::new(base.clone());
+            let mime_arc = Arc::new(mime.clone());
+            let bucket_arc = Arc::new(bucket.to_string());
+            let key_arc = Arc::new(key.to_string());
+            let upload_id_arc = Arc::new(upload_id.to_string());
+            let rate = rate.clone();
             let workers_token = token.child_token();
             let pending = (1..=count)
                 .filter(|n| !cp.parts.contains_key(n))
@@ -594,9 +610,23 @@ pub(crate) async fn run(
                 let live = live.clone();
                 let manager = m.clone();
                 let task_id_owned = id.to_string();
+                let shared_file = shared_file.clone();
+                let local_arc = local_arc.clone();
+                let stamp_owned = stamp_owned.clone();
+                let pre_arc = pre_arc.clone();
+                let base_arc = base_arc.clone();
+                let mime_arc = mime_arc.clone();
+                let bucket_arc = bucket_arc.clone();
+                let key_arc = key_arc.clone();
+                let upload_id_arc = upload_id_arc.clone();
+                let contexts = contexts.clone();
+                let part_hashes = part_hashes.clone();
+                let rate = rate.clone();
+                let tel = tel.clone();
                 async move {
                     let _buffer = cancellable(&wtok, async {
-                        m.inner
+                        manager
+                            .inner
                             .upload_buffers
                             .acquire_many(part_size.div_ceil(1024) as u32)
                             .await
@@ -605,45 +635,78 @@ pub(crate) async fn run(
                     .await?;
                     let expected_md5 = part_hashes
                         .get(&number)
+                        .cloned()
                         .ok_or_else(|| err("CONTENT_MISMATCH", "缺少上传分片摘要"))?;
-                    let bytes = read_part(
-                        local_ref,
-                        stamp_ref,
-                        part_size,
-                        number,
-                        expected_md5,
-                        &wtok,
-                    )
-                    .await?;
-                    let length = bytes.len() as u64;
                     let context = if with_context {
-                        contexts.get(&number).map(String::as_str)
+                        contexts.get(&number).cloned()
                     } else {
                         None
                     };
+                    // Overlap local disk read + MD5 check with the /upload/auth network RTT.
+                    let init_date = httpdate::fmt_http_date(SystemTime::now());
+                    let read_fut = async {
+                        let read_started = Instant::now();
+                        let res = read_part_file(
+                            shared_file,
+                            &local_arc,
+                            &stamp_owned,
+                            part_size,
+                            number,
+                            &expected_md5,
+                            &wtok,
+                        )
+                        .await;
+                        tel.add_upload_part_read_time(read_started.elapsed());
+                        res
+                    };
+                    let auth_fut = async {
+                        let auth_started = Instant::now();
+                        let res = signature(
+                            &manager,
+                            &pre_arc,
+                            put_meta_with_ctx(
+                                &mime_arc,
+                                &init_date,
+                                &bucket_arc,
+                                &key_arc,
+                                number,
+                                &upload_id_arc,
+                                context.as_deref(),
+                            ),
+                            &wtok,
+                            generation,
+                        )
+                        .await;
+                        tel.add_upload_part_auth_time(auth_started.elapsed());
+                        res
+                    };
+                    let (bytes, init_auth) = tokio::try_join!(read_fut, auth_fut)?;
+                    let length = bytes.len() as u64;
+                    let progress_mgr = manager.clone();
                     let progress: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |sent| {
                         let mut guard = live.lock().unwrap();
                         guard.1.insert(number, sent);
                         let cur = guard.0 + guard.1.values().sum::<u64>();
-                        let _ = manager.progress(&task_id_owned, cur, size);
+                        let _ = progress_mgr.progress(&task_id_owned, cur, size);
                     });
                     let etag = put_part(
-                        m,
-                        pre_ref,
-                        base_ref,
-                        mime_ref,
-                        bucket,
-                        key,
-                        upload_id,
+                        &manager,
+                        &pre_arc,
+                        &base_arc,
+                        &mime_arc,
+                        &bucket_arc,
+                        &key_arc,
+                        &upload_id_arc,
                         number,
                         bytes,
-                        expected_md5,
-                        context,
+                        &expected_md5,
+                        context.as_deref(),
+                        Some((init_date, init_auth)),
                         &wtok,
                         generation,
-                        rate.clone(),
+                        rate,
                         Some(progress),
-                        Some(tel),
+                        Some(&tel),
                     )
                     .await?;
                     Ok::<_, quark_core::Error>((number, length, etag))
@@ -816,19 +879,20 @@ async fn part_window<F, Fut, S>(
 ) -> Result<()>
 where
     F: Fn(u64) -> Fut,
-    Fut: std::future::Future<Output = Result<(u64, u64, String)>>,
+    Fut: std::future::Future<Output = Result<(u64, u64, String)>> + Send + 'static,
     S: FnMut(u64, u64, String) -> Result<()>,
 {
     if concurrency == 0 {
         return Err(err("INVALID_ARG", "上传并发数必须大于零"));
     }
     let mut pending = pending.into_iter();
-    let mut work = FuturesUnordered::new();
+    let mut work = JoinSet::new();
     for number in pending.by_ref().take(concurrency) {
-        work.push(launch(number));
+        work.spawn(launch(number));
     }
     let mut failure = None;
-    while let Some(result) = work.next().await {
+    while let Some(joined) = work.join_next().await {
+        let result = joined.unwrap_or_else(|_| Err(err("SYSTEM", "上传分片任务异常退出")));
         match result {
             Ok((number, length, etag)) => {
                 if let Err(error) = save(number, length, etag) {
@@ -848,14 +912,41 @@ where
         // Stop issuing new PUTs on first failure and cancel siblings immediately (H6).
         if failure.is_none() {
             if let Some(number) = pending.next() {
-                work.push(launch(number));
+                work.spawn(launch(number));
             }
         }
     }
     failure.map_or(Ok(()), Err)
 }
 
-async fn read_part(
+fn read_exact_at(file: &std::fs::File, mut offset: u64, mut buf: &mut [u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_exact_at(buf, offset)?;
+        let _ = (&mut offset, &mut buf);
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        while !buf.is_empty() {
+            let n = file.seek_read(buf, offset)?;
+            if n == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "read_exact_at reached EOF",
+                ));
+            }
+            offset += n as u64;
+            buf = &mut buf[n..];
+        }
+        Ok(())
+    }
+}
+
+async fn read_part_file(
+    file: Arc<std::fs::File>,
     path: &Path,
     stamp: &FileStamp,
     part_size: u64,
@@ -874,18 +965,15 @@ async fn read_part(
     let expected_md5 = expected_md5.to_owned();
     let tok = token.clone();
     tokio::task::spawn_blocking(move || -> Result<bytes::Bytes> {
-        use std::io::{Read, Seek, SeekFrom};
         check(&tok)?;
         if FileStamp::from(&std::fs::metadata(&path_buf).map_err(io_err)?)? != stamp {
             return Err(err("CONFLICT", "本地文件在上传期间发生变化，已停止提交"));
         }
-        let mut file = std::fs::File::open(&path_buf).map_err(io_err)?;
         if FileStamp::from(&file.metadata().map_err(io_err)?)? != stamp {
             return Err(err("CONFLICT", "本地上传文件已被替换"));
         }
-        file.seek(SeekFrom::Start(start)).map_err(io_err)?;
         let mut bytes = vec![0u8; part_size.min(stamp.size - start) as usize];
-        file.read_exact(&mut bytes).map_err(io_err)?;
+        read_exact_at(&file, start, &mut bytes).map_err(io_err)?;
         check(&tok)?;
         if !format!("{:x}", Md5::digest(&bytes)).eq_ignore_ascii_case(&expected_md5) {
             return Err(err("CONFLICT", "本地上传分片内容已变化，已停止传输"));
@@ -897,6 +985,19 @@ async fn read_part(
     })
     .await
     .map_err(|_| err("LOCAL_IO", "读取上传分片失败"))?
+}
+
+#[cfg(test)]
+async fn read_part(
+    path: &Path,
+    stamp: &FileStamp,
+    part_size: u64,
+    number: u64,
+    expected_md5: &str,
+    token: &CancellationToken,
+) -> Result<bytes::Bytes> {
+    let file = Arc::new(std::fs::File::open(path).map_err(io_err)?);
+    read_part_file(file, path, stamp, part_size, number, expected_md5, token).await
 }
 
 async fn small_response(mut response: reqwest::Response) -> Result<String> {
@@ -954,6 +1055,7 @@ async fn put_part(
     bytes: bytes::Bytes,
     expected_md5: &str,
     hash_context: Option<&str>,
+    mut initial_auth: Option<(String, String)>,
     token: &CancellationToken,
     generation: u64,
     rate: Option<Arc<UploadRate>>,
@@ -967,21 +1069,32 @@ async fn put_part(
                 progress(0);
             }
         }
+        let prefetched = initial_auth.take();
         let result = async {
-            let date = httpdate::fmt_http_date(SystemTime::now());
-            let auth = signature(
-                m,
-                pre,
-                put_meta_with_ctx(mime, &date, bucket, key, number, upload_id, hash_context),
-                token,
-                generation,
-            )
-            .await?;
+            let (date, auth) = if let Some(pair) = prefetched {
+                pair
+            } else {
+                let date = httpdate::fmt_http_date(SystemTime::now());
+                let auth_started = Instant::now();
+                let auth = signature(
+                    m,
+                    pre,
+                    put_meta_with_ctx(mime, &date, bucket, key, number, upload_id, hash_context),
+                    token,
+                    generation,
+                )
+                .await;
+                if let Some(tel) = tel {
+                    tel.add_upload_part_auth_time(auth_started.elapsed());
+                }
+                (date, auth?)
+            };
             let mut url = base.clone();
             url.query_pairs_mut()
                 .append_pair("partNumber", &number.to_string())
                 .append_pair("uploadId", upload_id);
-            cancellable(
+            let put_started = Instant::now();
+            let result = cancellable(
                 token,
                 put_request_streaming(
                     &m.inner.core.http_client(),
@@ -997,7 +1110,11 @@ async fn put_part(
                     tel,
                 ),
             )
-            .await
+            .await;
+            if let Some(tel) = tel {
+                tel.add_upload_put_time(put_started.elapsed());
+            }
+            result
         }
         .await;
         match result {

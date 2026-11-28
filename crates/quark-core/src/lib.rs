@@ -76,6 +76,7 @@ pub struct Core {
 struct Inner {
     profile: PathBuf,
     client: Client,
+    download_client: Client,
     state: Mutex<State>,
 }
 struct State {
@@ -112,10 +113,29 @@ impl Core {
         let client = builder
             .build()
             .map_err(|_| Error::new("NETWORK", "网络客户端初始化失败"))?;
+        // Dedicated HTTP/1.1 client for CDN range downloads so concurrent workers never collapse
+        // onto one HTTP/2 TCP congestion window (matching official Quark unetRequest behavior).
+        let mut dl_builder = Client::builder()
+            .user_agent(USER_AGENT)
+            .http1_only()
+            .redirect(Policy::none())
+            .connect_timeout(Duration::from_secs(15))
+            .retry(reqwest::retry::never())
+            .tcp_nodelay(true)
+            .tcp_keepalive(Duration::from_secs(30))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(128);
+        if no_proxy {
+            dl_builder = dl_builder.no_proxy();
+        }
+        let download_client = dl_builder
+            .build()
+            .map_err(|_| Error::new("NETWORK", "下载网络客户端初始化失败"))?;
         Ok(Self {
             inner: Arc::new(Inner {
                 profile,
                 client,
+                download_client,
                 state: Mutex::new(State {
                     store,
                     document,
@@ -149,6 +169,19 @@ impl Core {
     }
     pub fn http_client(&self) -> Client {
         self.inner.client.clone()
+    }
+    pub fn download_http_client(&self) -> Client {
+        self.inner.download_client.clone()
+    }
+    /// Strictly zero-PII normalized membership speed tier cached from `/1/clouddrive/member`.
+    pub fn member_tier(&self) -> String {
+        let state = self.inner.state.lock().unwrap();
+        session::normalized_member_tier_token(
+            state.document["account"]["memberTier"]
+                .as_str()
+                .unwrap_or(""),
+        )
+        .to_string()
     }
     pub fn profile_dir(&self) -> PathBuf {
         self.inner.profile.clone()
@@ -492,12 +525,25 @@ impl Core {
                         json!({"total":files::number(&flow["total"], -1),"used":files::number(&flow["used"], -1),"free":files::number(&flow["remain"], -1)}),
                     );
                 }
-                let env = self.get("/1/clouddrive/member", &[]).await?;
+                let generation = self.session_generation();
+                let env = self.get_in_session(generation, "/1/clouddrive/member", &[]).await?;
+                if let Some(tier) = session::classify_member_tier(&env) {
+                    let _ = self.update_in_session_if_changed(generation, |doc| {
+                        if !doc["account"].is_object() {
+                            doc["account"] = json!({});
+                        }
+                        if doc["account"]["memberTier"].as_str() == Some(tier) {
+                            return false;
+                        }
+                        doc["account"]["memberTier"] = json!(tier);
+                        true
+                    });
+                }
                 Ok(parse_member_quota(&env))
             }
             "auth.getUserInfo" => {
                 let generation = self.session_generation();
-                let mut info = json!({"nickname":"","avatar":"","memberLabel":"","userId":""});
+                let mut info = json!({"nickname":"","avatar":"","memberLabel":"","memberTier":"UNKNOWN","userId":""});
                 let mut received = false;
                 let mut last_error = None;
                 let (member_res, config_res) = tokio::join!(

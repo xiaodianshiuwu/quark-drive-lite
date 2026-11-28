@@ -112,7 +112,91 @@ fn cookie_header_matching(doc: &Value, request_host: &str, request_path: &str) -
         .join("; ")
 }
 pub(crate) fn account_state(doc: &Value) -> Value {
-    json!({"loggedIn":!cookie_header(doc).is_empty() && doc["expired"] != true,"expired":doc["expired"] == true && doc["cookies"].as_array().is_some_and(|a| !a.is_empty()),"nickname":doc["account"]["nickname"].as_str().unwrap_or(""),"avatar":doc["account"]["avatar"].as_str().unwrap_or(""),"memberLabel":doc["account"]["memberLabel"].as_str().unwrap_or(""),"userId":doc["account"]["userId"].as_str().unwrap_or("")})
+    json!({"loggedIn":!cookie_header(doc).is_empty() && doc["expired"] != true,"expired":doc["expired"] == true && doc["cookies"].as_array().is_some_and(|a| !a.is_empty()),"nickname":doc["account"]["nickname"].as_str().unwrap_or(""),"avatar":doc["account"]["avatar"].as_str().unwrap_or(""),"memberLabel":doc["account"]["memberLabel"].as_str().unwrap_or(""),"memberTier":normalized_member_tier_token(doc["account"]["memberTier"].as_str().unwrap_or("")),"userId":doc["account"]["userId"].as_str().unwrap_or("")})
+}
+pub(crate) fn normalized_member_tier_token(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_uppercase().as_str() {
+        "Z_VIP" | "ZVIP" => "Z_VIP",
+        "SUPER_VIP" | "SVIP" => "SUPER_VIP",
+        "88VIP" | "88_VIP" => "88VIP",
+        "EXP_SVIP" => "EXP_SVIP",
+        "EXP_VIP" => "EXP_VIP",
+        "VIP" => "VIP",
+        "MINI_VIP" => "MINI_VIP",
+        "NORMAL" => "NORMAL",
+        _ => "UNKNOWN",
+    }
+}
+pub(crate) fn classify_member_tier(env: &Value) -> Option<&'static str> {
+    let candidates = [
+        &env["data"],
+        &env["data"]["member_info"],
+        &env["data"]["member"],
+        env,
+    ];
+    let mut base_tier: Option<&'static str> = None;
+    let mut has_88vip_marker = false;
+    for container in candidates {
+        if let Some(mt) = container["member_type"].as_str() {
+            let up = mt.trim().to_ascii_uppercase();
+            if up.contains("88") && up.contains("VIP") {
+                has_88vip_marker = true;
+            }
+            let tok = normalized_member_tier_token(&up);
+            if tok != "UNKNOWN" && base_tier.is_none() {
+                base_tier = Some(tok);
+            }
+        }
+        if let Some(obj) = container["subscribe_pay_channel_map"].as_object() {
+            for (k, v) in obj {
+                let ku = k.to_ascii_uppercase();
+                let vu = v.as_str().unwrap_or("").to_ascii_uppercase();
+                if (ku.contains("88") && ku.contains("VIP"))
+                    || (vu.contains("88") && vu.contains("VIP"))
+                {
+                    has_88vip_marker = true;
+                }
+            }
+        }
+        if let Some(ch) = container["subscribe_pay_channel"].as_str() {
+            let cu = ch.to_ascii_uppercase();
+            if cu.contains("88") && cu.contains("VIP") {
+                has_88vip_marker = true;
+            }
+        }
+        if let Some(obj) = container["member_status"].as_object() {
+            for (k, v) in obj {
+                if k.to_ascii_uppercase().contains("88")
+                    && (v.as_i64() == Some(4)
+                        || v.as_str()
+                            .is_some_and(|s| matches!(s.to_ascii_uppercase().as_str(), "VALID" | "EFFECTIVE" | "ACTIVE")))
+                {
+                    has_88vip_marker = true;
+                }
+            }
+        }
+        for label_key in ["member_label", "member_type_name", "vip_label", "vip_name"] {
+            if let Some(s) = container[label_key].as_str() {
+                let su = s.to_ascii_uppercase();
+                if su.contains("88VIP") {
+                    has_88vip_marker = true;
+                }
+            }
+        }
+    }
+    match base_tier {
+        Some("Z_VIP") => Some("Z_VIP"),
+        Some("SUPER_VIP") => Some("SUPER_VIP"),
+        Some(other) => {
+            if has_88vip_marker && matches!(other, "VIP" | "MINI_VIP" | "EXP_SVIP" | "EXP_VIP") {
+                Some("88VIP")
+            } else {
+                Some(other)
+            }
+        }
+        None if has_88vip_marker => Some("88VIP"),
+        None => None,
+    }
 }
 pub(crate) fn normalize_external(value: Value) -> Result<Value> {
     let list = value
@@ -237,6 +321,8 @@ pub(crate) fn settings(doc: &Value) -> Value {
             "uploadPartConcurrency":3,
             "theme":"light",
             "aiBetaEnabled":false,
+            "floatingTransferBall":false,
+            "floatingUnarchiveWindow":false,
             "serverOptIn":false,
             "serverPrompted":false,
             "tutorialSeen":false,
@@ -290,6 +376,12 @@ pub(crate) fn merge_settings(mut base: Value, patch: Value) -> Value {
     if let Some(ai_beta) = p.get("aiBetaEnabled").and_then(Value::as_bool) {
         base["aiBetaEnabled"] = json!(ai_beta);
     }
+    if let Some(ball) = p.get("floatingTransferBall").and_then(Value::as_bool) {
+        base["floatingTransferBall"] = json!(ball);
+    }
+    if let Some(unarchive_win) = p.get("floatingUnarchiveWindow").and_then(Value::as_bool) {
+        base["floatingUnarchiveWindow"] = json!(unarchive_win);
+    }
     if let Some(opt_in) = p.get("serverOptIn").and_then(Value::as_bool) {
         base["serverOptIn"] = json!(opt_in);
     }
@@ -323,15 +415,28 @@ pub(crate) fn merge_settings(mut base: Value, patch: Value) -> Value {
 }
 pub(crate) fn merge_cached_user_info(info: &mut Value, cached: &Value) {
     // Reuse only normalized fields of this same generation, never raw API data.
-    for key in ["nickname", "avatar", "memberLabel", "userId"] {
-        if info[key].as_str().is_none_or(str::is_empty) {
+    for key in ["nickname", "avatar", "memberLabel", "memberTier", "userId"] {
+        if info[key].as_str().is_none_or(|s| s.is_empty() || (key == "memberTier" && s == "UNKNOWN"))
+        {
             if let Some(value) = cached[key].as_str().filter(|s| !s.is_empty()) {
-                info[key] = json!(value);
+                info[key] = json!(if key == "memberTier" {
+                    normalized_member_tier_token(value)
+                } else {
+                    value
+                });
             }
         }
     }
 }
 pub(crate) fn merge_user_info(out: &mut Value, env: &Value) {
+    if out["memberTier"]
+        .as_str()
+        .is_none_or(|s| s.is_empty() || s == "UNKNOWN")
+    {
+        if let Some(tier) = classify_member_tier(env) {
+            out["memberTier"] = json!(tier);
+        }
+    }
     let mut candidates = vec![&env["data"], &env["metadata"], env];
     for key in ["user_info", "userInfo", "member_info", "memberInfo"] {
         candidates.push(&env[key]);
@@ -627,6 +732,29 @@ mod tests {
             }),
         );
         assert_eq!(rejected, patched);
+    }
+    #[test]
+    fn member_tier_classification_is_strictly_allowlisted_and_zero_pii() {
+        assert_eq!(
+            classify_member_tier(&json!({"data":{"member_type":"EXP_SVIP","member_status":{"SUPER_VIP":"MONTH_SUBSCRIBE_CANCEL"}}})),
+            Some("EXP_SVIP")
+        );
+        assert_eq!(
+            classify_member_tier(&json!({"data":{"member_type":"SUPER_VIP"}})),
+            Some("SUPER_VIP")
+        );
+        assert_eq!(
+            classify_member_tier(&json!({"data":{"member_type":"VIP","subscribe_pay_channel_map":{"VIP":"88VIP_TAOBAO"}}})),
+            Some("88VIP")
+        );
+        assert_eq!(
+            classify_member_tier(&json!({"data":{"member_type":"NORMAL"}})),
+            Some("NORMAL")
+        );
+        assert_eq!(
+            classify_member_tier(&json!({"data":{"member_type":"secret_user_123"}})),
+            None
+        );
     }
     #[test]
     fn merge_set_cookie_reports_unchanged_without_rewriting() {

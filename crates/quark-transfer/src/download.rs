@@ -4,7 +4,7 @@ use crate::{
     },
     protocol::{content_range, is_windows_reserved_name, safe_name},
 };
-use futures_util::{stream::FuturesUnordered, StreamExt};
+use futures_util::StreamExt;
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -12,6 +12,7 @@ use sha1::Sha1;
 use sha2::Sha256;
 use std::{
     collections::BTreeMap,
+    ops::Range,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
@@ -19,14 +20,68 @@ use std::{
 use tokio::{
     fs::{self, OpenOptions},
     io::AsyncWriteExt,
+    task::JoinSet,
 };
 #[cfg(test)]
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::sync::CancellationToken;
 const PART: u64 = 1024 * 1024;
-const WRITE_BUF_CAP: usize = 1024 * 1024;
+// Two buffers sustain one pending write without increasing the 1 MiB per stream budget.
+const WRITE_BUF_CAP: usize = 512 * 1024;
 const HASH_BUF_CAP: usize = 4 * 1024 * 1024;
 const CHECKPOINT_VERSION: u32 = 2;
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+const SLOW_NODE_SWITCH_COOLDOWN: Duration = Duration::from_secs(20);
+const AUTO_RAMP_INITIAL_PARALLEL: usize = 4;
+const AUTO_RAMP_MIN_EXPAND_BPS: u64 = 10 * 1024 * 1024;
+const GLOBAL_AUTO_SOCKET_BUDGET: usize = 24;
+
+fn cdn_host_class(url: &reqwest::Url) -> String {
+    let host = url.host_str().unwrap_or("");
+    if host.is_empty() {
+        return "other".into();
+    }
+    if host == "quark.cn" || host.ends_with(".quark.cn") {
+        if let Some(prefix) = host.split('.').next() {
+            let clean: String = prefix
+                .chars()
+                .take(20)
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            if clean.starts_with("dl-") && clean.len() >= 4 {
+                return clean;
+            }
+        }
+        return "quark-cdn".into();
+    }
+    if host.ends_with(".aliyuncs.com") {
+        return "aliyun-oss".into();
+    }
+    if host.ends_with(".uc.cn") {
+        return "uc-cdn".into();
+    }
+    if host == "127.0.0.1" || host == "localhost" {
+        return "loopback".into();
+    }
+    "other".into()
+}
+
+fn cdn_cache_status(headers: &reqwest::header::HeaderMap) -> Option<&'static str> {
+    for key in ["x-cache", "x-cache-status", "cf-cache-status"] {
+        if let Some(val) = headers.get(key).and_then(|v| v.to_str().ok()) {
+            let up = val.to_ascii_uppercase();
+            for tok in ["HIT", "MISS", "BYPASS"] {
+                if up
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|w| w == tok)
+                {
+                    return Some(tok);
+                }
+            }
+        }
+    }
+    None
+}
 
 #[cfg(test)]
 fn choose_chunk_size(total: u64) -> u64 {
@@ -37,16 +92,19 @@ fn choose_chunk_size_with_tuning(total: u64, tuning: &quark_core::tuning::Tuning
     tuning.choose_chunk_size(total)
 }
 
-/// Singleflight shared CDN URL so a 403 expiration triggers ONE refresh reused by all active and future workers.
+/// Singleflight shared CDN URL so a 403 expiration or slow-node stall triggers ONE refresh
+/// reused by all active and future workers.
 struct SharedLink {
     state: RwLock<(String, u64)>,
     refresh_lock: tokio::sync::Mutex<()>,
+    last_switch_at: Mutex<Option<Instant>>,
 }
 impl SharedLink {
     fn new(url: String) -> Self {
         Self {
             state: RwLock::new((url, 0)),
             refresh_lock: tokio::sync::Mutex::new(()),
+            last_switch_at: Mutex::new(None),
         }
     }
     fn current(&self) -> (String, u64) {
@@ -75,6 +133,48 @@ impl SharedLink {
         cur.0 = fresh.clone();
         cur.1 = cur.1.wrapping_add(1);
         Ok(fresh)
+    }
+    /// Best-effort slow/stalled CDN node switch using official `old_dl_url` + `dns_sw` hint.
+    async fn refresh_for_slow_node(
+        &self,
+        seen_gen: u64,
+        m: &TransferManager,
+        fid: &str,
+        token: &CancellationToken,
+        tel: Option<&RunTelemetry>,
+    ) {
+        let _guard = self.refresh_lock.lock().await;
+        let prev_url = {
+            let cur = self.state.read().unwrap();
+            if cur.1 != seen_gen {
+                return;
+            }
+            cur.0.clone()
+        };
+        {
+            let last = self.last_switch_at.lock().unwrap();
+            if last.is_some_and(|at| at.elapsed() < SLOW_NODE_SWITCH_COOLDOWN) {
+                return;
+            }
+        }
+        if let Ok(fresh) = get_link_with_switch(m, fid, Some(&prev_url), token).await {
+            *self.last_switch_at.lock().unwrap() = Some(Instant::now());
+            if let Some(tel) = tel {
+                tel.inc_link_refresh();
+                let old_host = reqwest::Url::parse(&prev_url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(str::to_owned));
+                let new_host = reqwest::Url::parse(&fresh)
+                    .ok()
+                    .and_then(|u| u.host_str().map(str::to_owned));
+                if old_host.is_some() && new_host.is_some() && old_host != new_host {
+                    tel.inc_cdn_node_switch();
+                }
+            }
+            let mut cur = self.state.write().unwrap();
+            cur.0 = fresh;
+            cur.1 = cur.1.wrapping_add(1);
+        }
     }
 }
 
@@ -149,13 +249,6 @@ fn store(m: &TransferManager, id: &str, cp: &Checkpoint) -> Result<()> {
         serde_json::to_value(cp).map_err(|_| err("LOCAL_IO", "下载进度无法序列化"))?,
     )
 }
-fn store_batched(m: &TransferManager, id: &str, cp: &Checkpoint, persist: bool) -> Result<()> {
-    m.checkpoint_batched(
-        id,
-        serde_json::to_value(cp).map_err(|_| err("LOCAL_IO", "下载进度无法序列化"))?,
-        persist,
-    )
-}
 fn path_key(path: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     if cfg!(any(target_os = "macos", target_os = "windows")) {
@@ -169,7 +262,7 @@ pub(crate) async fn run(
     m: &TransferManager,
     id: &str,
     token: &CancellationToken,
-    tel: &RunTelemetry,
+    tel: &Arc<RunTelemetry>,
 ) -> Result<()> {
     tel.set_stage("fs_info");
     let generation = m.bound_generation()?;
@@ -713,12 +806,27 @@ async fn reserve(m: &TransferManager, id: &str, dir: &Path, name: &str) -> Resul
     Err(err("CONFLICT", "目标目录同名文件过多"))
 }
 async fn get_link(m: &TransferManager, fid: &str, token: &CancellationToken) -> Result<String> {
+    get_link_with_switch(m, fid, None, token).await
+}
+async fn get_link_with_switch(
+    m: &TransferManager,
+    fid: &str,
+    old_dl_url: Option<&str>,
+    token: &CancellationToken,
+) -> Result<String> {
+    let mut payload = json!({"fids": [fid], "support_error_code": ["41060"]});
+    if let Some(old) = old_dl_url.filter(|s| !s.is_empty()) {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("dns_sw".into(), json!("open"));
+            obj.insert("old_dl_url".into(), json!(old));
+        }
+    }
     let env = cancellable(
         token,
         m.inner.core.post_in_session(
             m.bound_generation()?,
             "/1/clouddrive/file/download",
-            json!({"fids":[fid]}),
+            payload,
         ),
     )
     .await?;
@@ -799,9 +907,10 @@ async fn send(
         let mut req = m
             .inner
             .core
-            .http_client()
+            .download_http_client()
             .get(url.clone())
             .header("accept-encoding", "identity")
+            .header("cache-control", "no-store")
             .header("referer", "https://pan.quark.cn/");
         if permitted_cookie_host(&url) {
             let mut cookie =
@@ -843,6 +952,23 @@ async fn send(
     }
     Err(err("NETWORK", "下载重定向次数过多"))
 }
+
+async fn send_body_request(
+    m: &TransferManager,
+    url: &str,
+    range: Option<(u64, u64)>,
+    etag: Option<&str>,
+    token: &CancellationToken,
+    tel: Option<&RunTelemetry>,
+) -> Result<reqwest::Response> {
+    let start = Instant::now();
+    let result = send(m, url, range, etag, token).await;
+    if let Some(tel) = tel {
+        tel.add_download_request_time(start.elapsed());
+    }
+    result
+}
+
 fn http_error(status: reqwest::StatusCode) -> quark_core::Error {
     let mut e = if status == reqwest::StatusCode::PRECONDITION_FAILED {
         err("CONFLICT", "下载过程中云端文件已改变，未拼接不同版本")
@@ -887,7 +1013,7 @@ async fn multipart_with_tel(
     temp: &Path,
     cp: &mut Checkpoint,
     token: &CancellationToken,
-    tel: Option<&RunTelemetry>,
+    tel: Option<&Arc<RunTelemetry>>,
 ) -> Result<()> {
     let chunk_size = if valid_chunk_size(cp.chunk_size) {
         cp.chunk_size
@@ -897,13 +1023,31 @@ async fn multipart_with_tel(
     let count = cp.total.div_ceil(chunk_size);
     let settings = m.inner.core.settings();
     let tuning = m.inner.core.tuning();
-    let max_parallel = connections(&settings, cp.total);
+    let strategy_pref = settings["downloadStrategy"].as_str().unwrap_or("auto");
+    let raw_max_parallel = connections(&settings, cp.total);
+    let max_parallel = if strategy_pref == "auto" {
+        let active_dls = m.active_download_count().max(1);
+        let budget = (GLOBAL_AUTO_SOCKET_BUDGET / active_dls).max(2);
+        raw_max_parallel.min(budget)
+    } else {
+        raw_max_parallel
+    };
+    let auto_ramp = strategy_pref == "auto" && max_parallel > AUTO_RAMP_INITIAL_PARALLEL && count > 4;
     let min_parallel = tuning.aimd_min_parallel.min(max_parallel).max(1);
-    let mut effective_parallel = max_parallel;
+    let mut effective_parallel = if auto_ramp {
+        AUTO_RAMP_INITIAL_PARALLEL.min(max_parallel)
+    } else {
+        max_parallel
+    };
+    let mut ramp_locked = !auto_ramp;
+    let mut ramp_window_parts: u32 = 0;
+    let mut ramp_window_bytes: u64 = 0;
+    let mut ramp_window_start = Instant::now();
+    let mut ramp_prev_bps: u64 = 0;
     let mut recent_retries: u32 = 0;
     let mut clean_streak: u32 = 0;
     if let Some(tel) = tel {
-        tel.set_parallel(max_parallel);
+        tel.set_parallel(effective_parallel);
         tel.set_chunk_size(chunk_size);
     }
     let shared_link = Arc::new(SharedLink::new(link.to_string()));
@@ -915,13 +1059,14 @@ async fn multipart_with_tel(
             .map_err(io_err)?,
     );
     let mut cursor = 0u64;
-    let mut workers = FuturesUnordered::new();
+    let mut workers = JoinSet::new();
     let workers_token = token.child_token();
     let mut failure = None;
     let mut complete = cp.parts.values().map(|p| p.len).sum::<u64>();
     let mut unsaved_parts: u32 = 0;
     let mut last_flush = tokio::time::Instant::now();
-    m.progress_with_telemetry(id, complete, cp.total, tel)?;
+    let mut checkpoint_write = None;
+    m.progress_with_telemetry(id, complete, cp.total, tel.map(Arc::as_ref))?;
     let live = Arc::new(Mutex::new((complete, BTreeMap::<u64, u64>::new())));
     loop {
         while failure.is_none() && workers.len() < effective_parallel && cursor < count {
@@ -934,35 +1079,77 @@ async fn multipart_with_tel(
             let manager = m.clone();
             let task_id = id.to_string();
             let total = cp.total;
+            let progress_tel = tel.cloned();
             let progress: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |bytes| {
                 let mut live = live.lock().unwrap();
                 live.1.insert(index, bytes);
                 let received = live.0 + live.1.values().sum::<u64>();
-                let _ = manager.progress(&task_id, received, total);
+                let _ = manager.progress_with_telemetry(&task_id, received, total, progress_tel.as_deref());
             });
-            workers.push(fetch_part_file(
-                m,
-                fid,
-                shared_link.clone(),
-                shared_file.clone(),
-                index,
-                chunk_size,
-                cp.total,
-                cp.etag.clone(),
-                workers_token.clone(),
-                Some(progress),
-                tel,
-            ));
+            let manager = m.clone();
+            let fid = fid.to_owned();
+            let shared_link = shared_link.clone();
+            let shared_file = shared_file.clone();
+            let etag = cp.etag.clone();
+            let part_token = workers_token.clone();
+            let part_tel = tel.cloned();
+            workers.spawn(async move {
+                fetch_part_file(
+                    &manager, &fid, shared_link, shared_file, index, chunk_size, total,
+                    etag, part_token, Some(progress), part_tel.as_deref(),
+                )
+                .await
+            });
         }
-        let Some(result) = workers.next().await else {
+        if checkpoint_write.is_none()
+            && unsaved_parts > 0
+            && (workers.is_empty()
+                || unsaved_parts >= 16
+                || last_flush.elapsed() >= Duration::from_millis(1500))
+        {
+            let manager = m.clone();
+            let task_id = id.to_owned();
+            let snapshot = cp.clone();
+            let checkpoint_tel = tel.cloned();
+            // Serialize disk writes per download, so an older snapshot can never replace a newer one.
+            checkpoint_write = Some(tokio::task::spawn_blocking(move || {
+                let start = Instant::now();
+                let saved = store(&manager, &task_id, &snapshot);
+                if let Some(tel) = checkpoint_tel {
+                    tel.add_download_checkpoint_time(start.elapsed());
+                }
+                saved
+            }));
+            unsaved_parts = 0;
+            last_flush = tokio::time::Instant::now();
+        }
+        let next = tokio::select! {
+            biased;
+            saved = async { checkpoint_write.as_mut().unwrap().await }, if checkpoint_write.is_some() => {
+                checkpoint_write = None;
+                let result = saved.unwrap_or_else(|_| Err(err("LOCAL_IO", "保存下载进度失败")));
+                if let Err(e) = result {
+                    if failure.is_none() {
+                        failure = Some(e);
+                        workers_token.cancel();
+                    }
+                }
+                continue;
+            }
+            next = workers.join_next(), if !workers.is_empty() => next,
+            else => break,
+        };
+        let Some(result) = next else {
             break;
         };
+        let result = result.unwrap_or_else(|_| Err(err("SYSTEM", "下载分片任务异常退出")));
         match result {
             Ok((index, done, part_retries_used)) => {
                 if tuning.aimd_enabled && max_parallel > min_parallel {
                     if part_retries_used > 0 {
                         recent_retries = recent_retries.saturating_add(part_retries_used);
                         clean_streak = 0;
+                        ramp_locked = true;
                         if recent_retries >= tuning.aimd_retry_threshold
                             && effective_parallel > min_parallel
                         {
@@ -974,39 +1161,67 @@ async fn multipart_with_tel(
                         }
                     } else {
                         clean_streak = clean_streak.saturating_add(1);
-                        if clean_streak >= tuning.aimd_recover_clean_parts {
-                            if effective_parallel < max_parallel {
+                        if !ramp_locked && effective_parallel < max_parallel {
+                            ramp_window_parts = ramp_window_parts.saturating_add(1);
+                            ramp_window_bytes = ramp_window_bytes.saturating_add(done.len);
+                            if ramp_window_parts >= 4 {
+                                let elapsed_ms = ramp_window_start.elapsed().as_millis().max(1) as u64;
+                                let window_bps = ramp_window_bytes.saturating_mul(1000) / elapsed_ms;
+                                if ramp_prev_bps == 0 {
+                                    if window_bps >= AUTO_RAMP_MIN_EXPAND_BPS {
+                                        effective_parallel = (effective_parallel + 2).min(max_parallel);
+                                        ramp_prev_bps = window_bps;
+                                        if let Some(tel) = tel {
+                                            tel.set_parallel(effective_parallel);
+                                        }
+                                    } else {
+                                        ramp_locked = true;
+                                    }
+                                } else if window_bps >= ramp_prev_bps.saturating_mul(112) / 100 {
+                                    effective_parallel = (effective_parallel + 2).min(max_parallel);
+                                    ramp_prev_bps = window_bps;
+                                    if let Some(tel) = tel {
+                                        tel.set_parallel(effective_parallel);
+                                    }
+                                } else {
+                                    if window_bps < ramp_prev_bps.saturating_mul(88) / 100
+                                        && effective_parallel > AUTO_RAMP_INITIAL_PARALLEL
+                                    {
+                                        effective_parallel = effective_parallel
+                                            .saturating_sub(2)
+                                            .max(AUTO_RAMP_INITIAL_PARALLEL);
+                                        if let Some(tel) = tel {
+                                            tel.set_parallel(effective_parallel);
+                                        }
+                                    }
+                                    ramp_locked = true;
+                                }
+                                ramp_window_parts = 0;
+                                ramp_window_bytes = 0;
+                                ramp_window_start = Instant::now();
+                            }
+                        } else if ramp_locked
+                            && clean_streak >= tuning.aimd_recover_clean_parts
+                        {
+                            if !auto_ramp && effective_parallel < max_parallel {
                                 effective_parallel += 1;
                             }
                             clean_streak = 0;
-                            recent_retries = 0;
+                            recent_retries = recent_retries.saturating_sub(1);
                         }
                     }
                 }
                 complete += done.len;
-                let received = {
+                let progress = {
                     let mut live = live.lock().unwrap();
                     live.0 = complete;
                     live.1.remove(&index);
-                    live.0 + live.1.values().sum::<u64>()
+                    let received = live.0 + live.1.values().sum::<u64>();
+                    m.progress_with_telemetry(id, received, cp.total, tel.map(Arc::as_ref))
                 };
                 cp.parts.insert(index, done);
                 unsaved_parts += 1;
-                let should_flush = unsaved_parts >= 16
-                    || last_flush.elapsed() >= Duration::from_millis(1500)
-                    || cp.parts.len() as u64 == count;
-                if should_flush {
-                    if let Err(e) = store_batched(m, id, cp, true) {
-                        if failure.is_none() {
-                            failure = Some(e);
-                            workers_token.cancel();
-                        }
-                        continue;
-                    }
-                    unsaved_parts = 0;
-                    last_flush = tokio::time::Instant::now();
-                }
-                if let Err(e) = m.progress_with_telemetry(id, received, cp.total, tel) {
+                if let Err(e) = progress {
                     if failure.is_none() {
                         failure = Some(e);
                         workers_token.cancel();
@@ -1021,11 +1236,6 @@ async fn multipart_with_tel(
             }
         }
     }
-    drop(workers);
-    drop(shared_file);
-    if unsaved_parts > 0 {
-        let _ = store(m, id, cp);
-    }
     if let Some(e) = failure {
         return Err(e);
     }
@@ -1034,19 +1244,140 @@ async fn multipart_with_tel(
     }
     Ok(())
 }
-async fn flush_buf_at(
+fn write_buffer(
     file: Arc<std::fs::File>,
     offset: u64,
-    buf: Vec<u8>,
-) -> Result<Vec<u8>> {
+    mut buf: Vec<u8>,
+) -> tokio::task::JoinHandle<Result<Vec<u8>>> {
     tokio::task::spawn_blocking(move || {
         write_exact_at(&file, offset, &buf).map_err(io_err)?;
-        let mut reused = buf;
-        reused.clear();
-        Ok(reused)
+        buf.clear();
+        Ok(buf)
     })
-    .await
-    .map_err(|_| err("LOCAL_IO", "写入下载临时文件失败"))?
+}
+
+async fn finish_write(job: tokio::task::JoinHandle<Result<Vec<u8>>>) -> Result<Vec<u8>> {
+    job.await.map_err(|_| err("LOCAL_IO", "写入下载临时文件失败"))?
+}
+
+async fn download_body(
+    response: reqwest::Response,
+    file: Arc<std::fs::File>,
+    range: Range<u64>,
+    token: &CancellationToken,
+    tel: Option<&RunTelemetry>,
+    mut hash: impl FnMut(&[u8]),
+    mut progress: impl FnMut(u64) -> Result<()>,
+) -> Result<()> {
+    let active_response = tel.map(RunTelemetry::download_response_started);
+    let protocol = response.version();
+    if let Some(tel) = tel {
+        tel.set_cdn_host_class(&cdn_host_class(response.url()));
+        if let Some(cache) = cdn_cache_status(response.headers()) {
+            tel.record_cdn_cache(cache);
+        }
+    }
+    let mut stream = response.bytes_stream();
+    let length = range.end - range.start;
+    let mut offset = range.start;
+    let mut received = 0u64;
+    let mut last_reported = 0u64;
+    let mut last_report_at = Instant::now();
+    let mut buffer = Vec::with_capacity(length.min(WRITE_BUF_CAP as u64) as usize);
+    let mut pending = None;
+    let mut read_wait = Duration::ZERO;
+    let mut write_wait = Duration::ZERO;
+    let mut hash_work = Duration::ZERO;
+    let body: Result<()> = async {
+        loop {
+            let read_start = Instant::now();
+            let chunk = cancellable(token, async {
+                tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next())
+                    .await
+                    .map_err(|_| err("STALL_TIMEOUT", "下载连接长时间无响应，正在重连"))?
+                    .transpose()
+                    .map_err(net_err)
+            })
+            .await;
+            read_wait += read_start.elapsed();
+            let Some(chunk) = chunk? else {
+                break;
+            };
+            let bytes = chunk.len() as u64;
+            if bytes > length - received {
+                return Err(err("CONTENT_MISMATCH", "下载响应超出请求范围"));
+            }
+            let hash_start = Instant::now();
+            hash(&chunk);
+            hash_work += hash_start.elapsed();
+            received += bytes;
+            if let Some(tel) = tel {
+                tel.add_wire_bytes(bytes);
+            }
+            let mut remaining = chunk.as_ref();
+            while !remaining.is_empty() {
+                let take = remaining.len().min(WRITE_BUF_CAP - buffer.len());
+                let (next, rest) = remaining.split_at(take);
+                buffer.extend_from_slice(next);
+                remaining = rest;
+                if buffer.len() < WRITE_BUF_CAP {
+                    continue;
+                }
+                // Let network polling and hashing keep going while one positional write completes.
+                let next_offset = offset + buffer.len() as u64;
+                let spare = if let Some(job) = pending.take() {
+                    let wait_start = Instant::now();
+                    let spare = finish_write(job).await;
+                    write_wait += wait_start.elapsed();
+                    spare?
+                } else {
+                    Vec::with_capacity((range.end - next_offset).min(WRITE_BUF_CAP as u64) as usize)
+                };
+                pending = Some(write_buffer(
+                    file.clone(),
+                    offset,
+                    std::mem::replace(&mut buffer, spare),
+                ));
+                offset = next_offset;
+            }
+            if received - last_reported >= 256 * 1024
+                || last_report_at.elapsed() >= Duration::from_millis(120)
+            {
+                progress(received)?;
+                last_reported = received;
+                last_report_at = Instant::now();
+            }
+        }
+        if received != length {
+            return Err(err("CONTENT_MISMATCH", "下载响应不完整"));
+        }
+        Ok(())
+    }
+    .await;
+    drop(active_response);
+    // Even a canceled or truncated response must drain its issued write before a
+    // retry or cleanup can reuse the same range or path.
+    let write_start = Instant::now();
+    let disk: Result<()> = async {
+        if let Some(job) = pending {
+            finish_write(job).await?;
+        }
+        if body.is_ok() && !buffer.is_empty() {
+            finish_write(write_buffer(file, offset, buffer)).await?;
+        }
+        Ok(())
+    }
+    .await;
+    write_wait += write_start.elapsed();
+    if let Some(tel) = tel {
+        tel.add_download_body_metrics(protocol, read_wait, write_wait, hash_work);
+    }
+    body?;
+    disk?;
+    if received != last_reported {
+        progress(received)?;
+    }
+    Ok(())
 }
 #[allow(clippy::too_many_arguments)]
 async fn fetch_part_file(
@@ -1081,12 +1412,13 @@ async fn fetch_part_file(
             }
         }
         let result = async {
-            let response = send(
+            let response = send_body_request(
                 m,
                 &link,
                 Some((start, start + length - 1)),
                 Some(&etag),
                 &token,
+                tel,
             )
             .await?;
             if response.status().is_success() {
@@ -1115,65 +1447,26 @@ async fn fetch_part_file(
                     return Err(err("CONTENT_MISMATCH", "分片 Content-Length 不符"));
                 }
             }
-            let mut stream = response.bytes_stream();
-            let mut received = 0u64;
-            let mut written = 0u64;
-            let mut last_reported = 0u64;
-            let mut last_report_at = tokio::time::Instant::now();
-            let mut wbuf = Vec::with_capacity(WRITE_BUF_CAP.min(length as usize));
             let mut hash = Sha256::new();
-            loop {
-                let chunk = cancellable(&token, async {
-                    tokio::time::timeout(Duration::from_secs(60), stream.next())
-                        .await
-                        .map_err(|_| err("NETWORK", "下载读取超时"))?
-                        .transpose()
-                        .map_err(net_err)
-                })
-                .await?;
-                let Some(chunk) = chunk else {
-                    break;
-                };
-                if received + chunk.len() as u64 > length {
-                    return Err(err("CONTENT_MISMATCH", "分片响应超出请求范围"));
-                }
-                let clen = chunk.len() as u64;
-                hash.update(&chunk);
-                received += clen;
-                if let Some(tel) = tel {
-                    tel.add_wire_bytes(clen);
-                }
-                wbuf.extend_from_slice(&chunk);
-                if wbuf.len() >= WRITE_BUF_CAP {
-                    let flush_len = wbuf.len() as u64;
-                    wbuf = flush_buf_at(file.clone(), start + written, wbuf).await?;
-                    written += flush_len;
-                }
-                if let Some(progress) = &on_progress {
-                    if received - last_reported >= 256 * 1024
-                        || last_report_at.elapsed() >= Duration::from_millis(120)
-                    {
+            download_body(
+                response,
+                file.clone(),
+                start..start + length,
+                &token,
+                tel,
+                |chunk| hash.update(chunk),
+                |received| {
+                    if let Some(progress) = &on_progress {
                         progress(received);
-                        last_reported = received;
-                        last_report_at = tokio::time::Instant::now();
                     }
-                }
-            }
-            if received != length {
-                return Err(err("CONTENT_MISMATCH", "分片响应长度不足"));
-            }
-            if !wbuf.is_empty() {
-                let _ = flush_buf_at(file.clone(), start + written, wbuf).await?;
-            }
-            if let Some(progress) = &on_progress {
-                if received != last_reported {
-                    progress(received);
-                }
-            }
+                    Ok(())
+                },
+            )
+            .await?;
             Ok((
                 index,
                 DonePart {
-                    len: received,
+                    len: length,
                     sha256: format!("{:x}", hash.finalize()),
                 },
                 attempt,
@@ -1184,11 +1477,20 @@ async fn fetch_part_file(
             Ok(v) => return Ok(v),
             Err(e)
                 if attempt < 4
-                    && ["NETWORK", "RATE_LIMIT", "LINK_EXPIRED", "CONTENT_MISMATCH"]
-                        .contains(&e.code.as_str()) =>
+                    && [
+                        "NETWORK",
+                        "STALL_TIMEOUT",
+                        "RATE_LIMIT",
+                        "LINK_EXPIRED",
+                        "CONTENT_MISMATCH",
+                    ]
+                    .contains(&e.code.as_str()) =>
             {
                 if let Some(tel) = tel {
                     tel.inc_retry();
+                    if e.code == "STALL_TIMEOUT" {
+                        tel.inc_stall_restart();
+                    }
                     if let Some(st) = e.http_status {
                         tel.set_http_status(st);
                     }
@@ -1197,8 +1499,18 @@ async fn fetch_part_file(
                     let _ = shared_link
                         .refresh_if_stale(link_gen, m, fid, &token, tel)
                         .await?;
+                } else if e.code == "STALL_TIMEOUT" && attempt >= 1 {
+                    shared_link
+                        .refresh_for_slow_node(link_gen, m, fid, &token, tel)
+                        .await;
                 }
-                let base_ms = if e.code == "RATE_LIMIT" { 800 } else { 300 };
+                let base_ms = if e.code == "RATE_LIMIT" {
+                    800
+                } else if e.code == "STALL_TIMEOUT" {
+                    150
+                } else {
+                    300
+                };
                 let backoff_ms = (base_ms * (1u64 << attempt)).min(4800) + (index % 7) * 40;
                 cancellable(&token, async {
                     tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
@@ -1289,7 +1601,7 @@ async fn single_with_tel(
             m.reset_sample(id);
         }
         let result = async {
-            let response = send(m, &link, None, Some(&cp.etag), token).await?;
+            let response = send_body_request(m, &link, None, Some(&cp.etag), token, tel).await?;
             if response.status() != reqwest::StatusCode::OK {
                 return Err(http_error(response.status()));
             }
@@ -1310,61 +1622,23 @@ async fn single_with_tel(
                     .open(temp)
                     .map_err(io_err)?,
             );
-            let mut stream = response.bytes_stream();
-            let mut received = 0u64;
-            let mut written = 0u64;
-            let mut last_reported = 0u64;
-            let mut last_report_at = tokio::time::Instant::now();
-            let mut wbuf = Vec::with_capacity(WRITE_BUF_CAP.min(cp.total.max(4096) as usize));
             let mut md5 = Md5::new();
             let mut sha1 = Sha1::new();
             let mut sha256 = Sha256::new();
-            loop {
-                let chunk = cancellable(token, async {
-                    tokio::time::timeout(Duration::from_secs(60), stream.next())
-                        .await
-                        .map_err(|_| err("NETWORK", "下载读取超时"))?
-                        .transpose()
-                        .map_err(net_err)
-                })
-                .await?;
-                let Some(chunk) = chunk else {
-                    break;
-                };
-                if received + chunk.len() as u64 > cp.total {
-                    return Err(err("CONTENT_MISMATCH", "下载响应超过文件大小"));
-                }
-                let clen = chunk.len() as u64;
-                md5.update(&chunk);
-                sha1.update(&chunk);
-                sha256.update(&chunk);
-                received += clen;
-                if let Some(tel) = tel {
-                    tel.add_wire_bytes(clen);
-                }
-                wbuf.extend_from_slice(&chunk);
-                if wbuf.len() >= WRITE_BUF_CAP {
-                    let flush_len = wbuf.len() as u64;
-                    wbuf = flush_buf_at(file.clone(), written, wbuf).await?;
-                    written += flush_len;
-                }
-                if received - last_reported >= 256 * 1024
-                    || last_report_at.elapsed() >= Duration::from_millis(120)
-                {
-                    m.progress_with_telemetry(id, received, cp.total, tel)?;
-                    last_reported = received;
-                    last_report_at = tokio::time::Instant::now();
-                }
-            }
-            if received != cp.total {
-                return Err(err("CONTENT_MISMATCH", "下载响应不完整"));
-            }
-            if !wbuf.is_empty() {
-                let _ = flush_buf_at(file.clone(), written, wbuf).await?;
-            }
-            if received != last_reported {
-                m.progress_with_telemetry(id, received, cp.total, tel)?;
-            }
+            download_body(
+                response,
+                file.clone(),
+                0..cp.total,
+                token,
+                tel,
+                |chunk| {
+                    md5.update(chunk);
+                    sha1.update(chunk);
+                    sha256.update(chunk);
+                },
+                |received| m.progress_with_telemetry(id, received, cp.total, tel),
+            )
+            .await?;
             tokio::task::spawn_blocking(move || file.sync_all().map_err(io_err))
                 .await
                 .map_err(|_| err("LOCAL_IO", "同步下载文件失败"))??;
@@ -1379,11 +1653,20 @@ async fn single_with_tel(
             Ok(digests) => return Ok(digests),
             Err(e)
                 if attempt < 4
-                    && ["NETWORK", "RATE_LIMIT", "LINK_EXPIRED", "CONTENT_MISMATCH"]
-                        .contains(&e.code.as_str()) =>
+                    && [
+                        "NETWORK",
+                        "STALL_TIMEOUT",
+                        "RATE_LIMIT",
+                        "LINK_EXPIRED",
+                        "CONTENT_MISMATCH",
+                    ]
+                    .contains(&e.code.as_str()) =>
             {
                 if let Some(tel) = tel {
                     tel.inc_retry();
+                    if e.code == "STALL_TIMEOUT" {
+                        tel.inc_stall_restart();
+                    }
                     if let Some(st) = e.http_status {
                         tel.set_http_status(st);
                     }
@@ -1393,8 +1676,30 @@ async fn single_with_tel(
                     if let Some(tel) = tel {
                         tel.inc_link_refresh();
                     }
+                } else if e.code == "STALL_TIMEOUT" && attempt >= 1 {
+                    if let Ok(fresh) = get_link_with_switch(m, fid, Some(&link), token).await {
+                        if let Some(tel) = tel {
+                            tel.inc_link_refresh();
+                            let old_h = reqwest::Url::parse(&link)
+                                .ok()
+                                .and_then(|u| u.host_str().map(str::to_owned));
+                            let new_h = reqwest::Url::parse(&fresh)
+                                .ok()
+                                .and_then(|u| u.host_str().map(str::to_owned));
+                            if old_h.is_some() && new_h.is_some() && old_h != new_h {
+                                tel.inc_cdn_node_switch();
+                            }
+                        }
+                        link = fresh;
+                    }
                 }
-                let base_ms = if e.code == "RATE_LIMIT" { 800 } else { 400 };
+                let base_ms = if e.code == "RATE_LIMIT" {
+                    800
+                } else if e.code == "STALL_TIMEOUT" {
+                    150
+                } else {
+                    400
+                };
                 cancellable(token, async {
                     tokio::time::sleep(Duration::from_millis((base_ms * (1u64 << attempt)).min(4800))).await;
                     Ok(())
@@ -1840,8 +2145,19 @@ mod tests {
         assert_eq!(connections(&json!({"downloadParallel":48,"downloadStrategy":"auto"}), 100 * PART), 48);
         assert_eq!(connections(&json!({"downloadParallel":2}), 100 * PART), 2);
         assert_eq!(choose_chunk_size(10 * PART), PART);
-        assert_eq!(choose_chunk_size(64 * PART), 2 * PART);
+        assert_eq!(choose_chunk_size(64 * PART), 4 * PART);
         assert_eq!(choose_chunk_size(512 * PART), 4 * PART);
+        assert_eq!(
+            cdn_host_class(&reqwest::Url::parse("https://dl-pc-sz.drive.quark.cn/file?auth_key=secret").unwrap()),
+            "dl-pc-sz"
+        );
+        assert_eq!(
+            cdn_host_class(&reqwest::Url::parse("https://bucket.oss-cn-hangzhou.aliyuncs.com/k").unwrap()),
+            "aliyun-oss"
+        );
+        let mut hdrs = reqwest::header::HeaderMap::new();
+        hdrs.insert("x-cache", "HIT TCP_MEM_HIT dirn:-2:-2".parse().unwrap());
+        assert_eq!(cdn_cache_status(&hdrs), Some("HIT"));
         assert_eq!(
             connections(
                 &json!({"downloadParallel":16,"downloadStrategy":"sequential"}),
@@ -1894,6 +2210,62 @@ mod tests {
         assert_eq!(
             &fs::read(temp).await.unwrap()[PART as usize..],
             &bytes[PART as usize..]
+        );
+    }
+    #[tokio::test]
+    async fn canceled_body_drains_queued_write_before_range_is_reused() {
+        let length = 3 * WRITE_BUF_CAP + 17;
+        let start = 13u64;
+        let server = Server::new(move |_| response("200 OK", "", &vec![7; length]));
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, _, temp, _) = prepare(dir.path(), start + length as u64).await;
+        let file = Arc::new(std::fs::OpenOptions::new().write(true).open(&temp).unwrap());
+        let token = CancellationToken::new();
+        let tel = RunTelemetry::new(1, 1, false);
+        let first = send(&manager, &server.url, None, None, &token).await.unwrap();
+        let error = download_body(
+            first,
+            file.clone(),
+            start..start + length as u64,
+            &token,
+            Some(&tel),
+            |_| {},
+            |n| {
+                if n >= WRITE_BUF_CAP as u64 {
+                    token.cancel();
+                }
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "ABORTED");
+        let partial = fs::read(&temp).await.unwrap();
+        assert!(partial[..start as usize].iter().all(|&b| b == 0));
+        assert!(partial[start as usize..start as usize + WRITE_BUF_CAP]
+            .iter()
+            .all(|&b| b == 7));
+        let sample = tel.to_sample("download", "canceled", None);
+        assert_eq!(sample["downloadHttpVersion"], "http/1.1");
+        assert!(sample["downloadReadWaitMs"].is_number());
+        assert!(sample["downloadWriteWaitMs"].is_number());
+        let replacement = Server::new(move |_| response("200 OK", "", &vec![9; length]));
+        let token = CancellationToken::new();
+        let response = send(&manager, &replacement.url, None, None, &token).await.unwrap();
+        download_body(
+            response,
+            file,
+            start..start + length as u64,
+            &token,
+            None,
+            |_| {},
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            &fs::read(&temp).await.unwrap()[start as usize..],
+            &vec![9; length],
         );
     }
     #[tokio::test]
@@ -2014,6 +2386,10 @@ mod tests {
             1
         );
         assert_eq!(fs::read(&temp).await.unwrap(), *bytes);
+        let from_disk = TransferManager::open(reopened.inner.core.clone()).unwrap();
+        let saved = parse_checkpoint(&from_disk.task(&id).unwrap()).unwrap();
+        assert_eq!(saved.parts.len(), restored.parts.len());
+        assert_eq!(saved.parts[&2].sha256, restored.parts[&2].sha256);
         let mut file = OpenOptions::new().write(true).open(&temp).await.unwrap();
         file.write_all(&[255; 32]).await.unwrap();
         file.sync_all().await.unwrap();

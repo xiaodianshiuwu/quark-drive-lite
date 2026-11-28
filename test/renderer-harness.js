@@ -559,7 +559,7 @@ async function bootApp(opts = {}) {
           return Promise.resolve({
             optIn: !!settingsState.serverOptIn,
             prompted: !!settingsState.serverPrompted,
-            baseUrl: 'https://qdl.xiaodianshiuwu.space',
+            baseUrl: 'https://example.invalid',
             region: '海外节点 · Tokyo (JP)',
             currentVersion: '1.0.0',
             recommendedAssetKey: 'macos-arm64',

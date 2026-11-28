@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>云解压悬浮窗</title>
+<style>
+  :root {
+    --bg: #ffffff; --bg2: #f4f6fb; --text: #151922; --text2: #5b6475;
+    --border: rgba(21,25,34,.12); --primary: #336df4; --ok: #199e63; --danger: #df3f45;
+  }
+  [data-theme="dark"] {
+    --bg: #181c24; --bg2: #222836; --text: #eef1f6; --text2: #9aa4b5;
+    --border: rgba(255,255,255,.12); --primary: #5b8cff; --ok: #34d399; --danger: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  .wrap {
+    width: 100%; height: 100%; display: flex; flex-direction: column;
+    border: 1px solid var(--border); background: var(--bg);
+  }
+  .head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 10px; background: var(--bg2); border-bottom: 1px solid var(--border);
+    cursor: grab;
+  }
+  .title { font-size: 12.5px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); flex: none; }
+  .dot.done { background: var(--ok); }
+  .dot.error { background: var(--danger); }
+  .acts { display: flex; gap: 4px; }
+  .ib {
+    width: 22px; height: 22px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text2); cursor: pointer; font-size: 12px;
+    display: grid; place-items: center;
+  }
+  .ib:hover { color: var(--primary); border-color: var(--primary); }
+  .body {
+    flex: 1; padding: 12px; display: flex; flex-direction: column; justify-content: center; gap: 8px;
+  }
+  .name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status { font-size: 12px; color: var(--text2); display: flex; justify-content: space-between; gap: 8px; }
+  .bar { height: 7px; border-radius: 99px; background: var(--bg2); overflow: hidden; border: 1px solid var(--border); }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--primary); border-radius: 99px; transition: width .22s ease; }
+  .bar.done > i { background: var(--ok); }
+  .bar.error > i { background: var(--danger); }
+  .foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+  .hint { font-size: 11px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .btn {
+    height: 26px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--bg2); color: var(--text); font-size: 11.5px; font-weight: 600; cursor: pointer; flex: none;
+  }
+  .btn:hover { border-color: var(--primary); color: var(--primary); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head" data-tauri-drag-region>
+      <div class="title" data-tauri-drag-region>
+        <span class="dot" id="dot"></span>
+        <span data-tauri-drag-region>云解压悬浮窗</span>
+      </div>
+      <div class="acts">
+        <button type="button" class="ib" id="btn-main" title="返回主窗口">↗</button>
+        <button type="button" class="ib" id="btn-close" title="关闭悬浮窗">×</button>
+      </div>
+    </div>
+    <div class="body">
+      <div class="name" id="name">暂无进行中的云解压任务</div>
+      <div class="status">
+        <span id="stage">在主窗口点击压缩包「云解压」即可同步显示</span>
+        <span id="pct">—</span>
+      </div>
+      <div class="bar" id="bar"><i id="fill"></i></div>
+      <div class="foot">
+        <span class="hint" id="hint">可拖动标题栏停靠桌面任意位置</span>
+        <button type="button" class="btn" id="btn-open-dir" hidden>打开目标目录</button>
+      </div>
+    </div>
+  </div>
+  <script src="float-unarchive.js"></script>
+</body>
+</html>

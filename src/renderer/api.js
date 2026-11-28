@@ -230,7 +230,15 @@
 
     app: {
       quit: expose('app', 'quit'),
-      info: expose('app', 'info', { silent: true, fallback: null })
+      info: expose('app', 'info', { silent: true, fallback: null }),
+      openView: expose('app', 'openView', { silent: true, fallback: null }),
+      unarchiveProgress: expose('app', 'unarchiveProgress', { silent: true, fallback: null }),
+      onOpenView: function (cb) {
+        return subscribe([['app', 'onOpenView'], ['on', 'qk:open-view']], cb);
+      },
+      onSettingsSync: function (cb) {
+        return subscribe([['app', 'onSettingsSync'], ['on', 'qk:settings-sync']], cb);
+      }
     },
 
     auth: {
@@ -375,6 +383,7 @@
       downloadUpdate: expose('hub', 'downloadUpdate'),
       installUpdate: expose('hub', 'installUpdate'),
       openReleasePage: expose('hub', 'openReleasePage'),
+      openExternalUrl: expose('hub', 'openExternalUrl'),
       runtimeStatus: expose('hub', 'runtimeStatus', { silent: true, fallback: null }),
       applyUiHotfix: expose('hub', 'applyUiHotfix'),
       reloadUi: expose('hub', 'reloadUi'),
@@ -528,6 +537,7 @@
       downloadUpdate: expose('hub', 'downloadUpdate'),
       installUpdate: expose('hub', 'installUpdate'),
       openReleasePage: expose('hub', 'openReleasePage'),
+      openExternalUrl: expose('hub', 'openExternalUrl'),
       runtimeStatus: expose('hub', 'runtimeStatus', { silent: true, fallback: null }),
       applyUiHotfix: expose('hub', 'applyUiHotfix'),
       reloadUi: expose('hub', 'reloadUi'),
@@ -1100,15 +1110,16 @@
       hub: {
         config: function () {
           return Promise.resolve({
+            available: true,
             optIn: !!settings.serverOptIn,
             prompted: true,
-            baseUrl: 'https://qdl.xiaodianshiuwu.space',
-            region: '海外节点 · Tokyo (JP)',
-            currentVersion: '1.2.0',
+            baseUrl: 'https://example.invalid',
+            region: '预览模拟节点',
+            currentVersion: '1.3.6',
             platform: 'preview',
             arch: 'mock',
             recommendedAssetKey: 'macos-arm64',
-            cryptoSummary: 'HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端加密 + Ed25519 签名校验'
+            cryptoSummary: 'HTTPS TLS 1.3 + 端到端加密 + 签名校验'
           });
         },
         setOptIn: function (p) {

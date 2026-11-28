@@ -43,7 +43,11 @@
     platform: platform, runtime: 'tauri',
     app: {
       quit: function () { return call('app.quit'); },
-      info: function () { return call('app.info'); }
+      info: function () { return call('app.info'); },
+      openView: method('app.openView'),
+      unarchiveProgress: method('float.unarchiveProgress'),
+      onOpenView: function (cb) { return listen('qk:open-view', cb); },
+      onSettingsSync: function (cb) { return listen('qk:settings-sync', cb); }
     },
     onToast: function (cb) { return listen('qk:toast', cb); },
     onTransferUpdate: function (cb) { return listen('qk:transfer-update', cb); }
@@ -121,7 +125,7 @@
   api.chat.onEvent = function (cb) { return listen('qk:chat-event', cb); };
   // 可选作者服务器（默认关闭，关闭时后端严格零外传）
   [
-    'config', 'setOptIn', 'checkUpdate', 'downloadUpdate', 'installUpdate', 'openReleasePage',
+    'config', 'setOptIn', 'checkUpdate', 'downloadUpdate', 'installUpdate', 'openReleasePage', 'openExternalUrl',
     'runtimeStatus', 'applyUiHotfix', 'reloadUi', 'uiReady', 'rollbackUi',
     'sendTelemetry', 'submitFeedback', 'listFeedback', 'replyFeedback', 'logPreview', 'recordEvent'
   ].forEach(function (name) {

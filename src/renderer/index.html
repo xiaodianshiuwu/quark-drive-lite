@@ -195,8 +195,8 @@
         <div class="file-card" id="file-card">
           <div class="listhead" id="listhead">
             <span class="cb-cell">
-              <label class="cb" title="全选已加载的项目">
-                <input type="checkbox" id="check-all" aria-label="全选已加载的项目">
+              <label class="cb" title="全选当前目录全部项目">
+                <input type="checkbox" id="check-all" aria-label="全选当前目录全部项目">
                 <i aria-hidden="true"></i>
               </label>
             </span>
@@ -432,6 +432,32 @@
             </div>
           </div>
         </div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">极简下载/上传桌面悬浮球</div>
+            <div class="sethint">默认关闭（零额外内存占用）。开启后在桌面顶层显示极简传输速率悬浮球，主窗口最小化后也可随时查看进度并一键返回。</div>
+          </div>
+          <div class="setcontrol">
+            <div class="segmented" id="set-float-ball" role="radiogroup" aria-label="桌面传输悬浮球">
+              <button type="button" class="seg active" data-float-ball="off" role="radio" aria-checked="true">关闭</button>
+              <button type="button" class="seg" data-float-ball="on" role="radio" aria-checked="false">开启</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname">云解压桌面悬浮窗</div>
+            <div class="sethint">默认关闭。开启后，执行云端解压时会同步在桌面顶层显示独立进度小窗，解压完成可一键直达目标目录。</div>
+          </div>
+          <div class="setcontrol">
+            <div class="segmented" id="set-float-unarchive" role="radiogroup" aria-label="云解压桌面悬浮窗">
+              <button type="button" class="seg active" data-float-unarchive="off" role="radio" aria-checked="true">关闭</button>
+              <button type="button" class="seg" data-float-unarchive="on" role="radio" aria-checked="false">开启</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="setcard">
@@ -630,6 +656,18 @@
           <div class="setcontrol">
             <button type="button" class="btn btn-sm" id="btn-open-tutorial">查看使用教程</button>
             <button type="button" class="btn btn-sm btn-ghost" id="btn-env-check">重新检测桥接层</button>
+          </div>
+        </div>
+        <div class="setrow">
+          <div class="setlabel">
+            <div class="setname setname-badge">
+              <span>项目交流 QQ 群</span>
+              <span class="qq-group-pill">1054152586</span>
+            </div>
+            <div class="sethint">「夸克网盘项目交流群」——欢迎自愿加入，一起交流使用体验、反馈问题与新功能想法，共同让项目变得更好。</div>
+          </div>
+          <div class="setcontrol">
+            <button type="button" class="btn btn-sm" id="btn-copy-qq">复制群号</button>
           </div>
         </div>
         <div class="setrow">
@@ -836,8 +874,8 @@
   </symbol>
   <!-- 双色层叠文件夹 / 文件类型图标 -->
   <symbol id="i-folder" viewBox="0 0 24 24" fill="none">
-    <path d="M3 6.8A2.3 2.3 0 0 1 5.3 4.5h3.55c.62 0 1.21.26 1.62.72l1.16 1.28H18.7A2.3 2.3 0 0 1 21 8.8v8.9a2.3 2.3 0 0 1-2.3 2.3H5.3A2.3 2.3 0 0 1 3 17.7z" fill="currentColor" fill-opacity="0.20" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-    <path d="M3.2 10.2h17.6" stroke="currentColor" stroke-width="1.4" stroke-opacity="0.45"/>
+    <path d="M3 6.8A2.3 2.3 0 0 1 5.3 4.5h3.55c.62 0 1.21.26 1.62.72l1.16 1.28H18.7A2.3 2.3 0 0 1 21 8.8v8.9a2.3 2.3 0 0 1-2.3 2.3H5.3A2.3 2.3 0 0 1 3 17.7z" fill="currentColor" fill-opacity="0.28" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+    <path d="M3.2 10.2h17.6" stroke="currentColor" stroke-width="1.4" stroke-opacity="0.5"/>
   </symbol>
   <symbol id="i-folder-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
     <path d="M3 7.2A2.2 2.2 0 0 1 5.2 5h3.3l1.8 2h8.5A2.2 2.2 0 0 1 21 9.2v8.6A2.2 2.2 0 0 1 18.8 20H5.2A2.2 2.2 0 0 1 3 17.8z" fill="currentColor" fill-opacity="0.12"/>

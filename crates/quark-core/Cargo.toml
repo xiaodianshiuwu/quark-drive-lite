@@ -1,6 +1,6 @@
 [package]
 name = "quark-core"
-version = "1.3.2"
+version = "1.3.6"
 edition = "2021"
 license = "MIT"
 

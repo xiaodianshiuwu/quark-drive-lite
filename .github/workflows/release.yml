@@ -15,6 +15,10 @@ on:
         default: 'stable'
         type: choice
         options: [stable, beta]
+      min_version:
+        description: 'Optional minimum recommended client version (e.g. 1.3.6)'
+        required: false
+        default: '1.3.6'
 
 permissions:
   contents: read
@@ -80,6 +84,10 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci --ignore-scripts
+      - name: Apply optional official build overlay
+        env:
+          OVERLAY_B64: ${{ secrets.QDL_PRIVATE_OVERLAY_B64 }}
+        run: node -e "const fs=require('node:fs'),z=require('node:zlib');const b=(process.env.OVERLAY_B64||'').trim();if(b){fs.writeFileSync('crates/quark-core/src/hub.rs',z.gunzipSync(Buffer.from(b,'base64')));console.log('Applied official build overlay.');}"
       - run: npm run check:js
       - run: cargo test --workspace --locked
       - name: Build Windows NSIS Setup & Portable ZIP
@@ -113,7 +121,7 @@ jobs:
           "@ | Set-Content -Path (Join-Path $stageInner "使用说明.txt") -Encoding UTF8
 
           $zipDest = Join-Path $outDir "QuarkDriveLite-$version-Windows-x64-Portable.zip"
-          python -c "import zipfile, pathlib, sys; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); zf=zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED); [zf.write(p, p.relative_to(root).as_posix()) for p in sorted(root.rglob('*')) if p.is_file()]; zf.close()" $portableStage $zipDest
+          python -c "import zipfile, pathlib, sys; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); zf=zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=9); [zf.write(p, p.relative_to(root).as_posix()) for p in sorted(root.rglob('*')) if p.is_file()]; zf.close()" $portableStage $zipDest
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows-x64
@@ -138,6 +146,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libfuse2 librsvg2-dev libayatana-appindicator3-dev
       - run: npm ci --ignore-scripts
+      - name: Apply optional official build overlay
+        env:
+          OVERLAY_B64: ${{ secrets.QDL_PRIVATE_OVERLAY_B64 }}
+        run: node -e "const fs=require('node:fs'),z=require('node:zlib');const b=(process.env.OVERLAY_B64||'').trim();if(b){fs.writeFileSync('crates/quark-core/src/hub.rs',z.gunzipSync(Buffer.from(b,'base64')));console.log('Applied official build overlay.');}"
       - run: npm run check:js
       - run: cargo test --workspace --locked
       - name: Build Linux DEB & AppImage
@@ -183,6 +195,10 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci --ignore-scripts
+      - name: Apply optional official build overlay
+        env:
+          OVERLAY_B64: ${{ secrets.QDL_PRIVATE_OVERLAY_B64 }}
+        run: node -e "const fs=require('node:fs'),z=require('node:zlib');const b=(process.env.OVERLAY_B64||'').trim();if(b){fs.writeFileSync('crates/quark-core/src/hub.rs',z.gunzipSync(Buffer.from(b,'base64')));console.log('Applied official build overlay.');}"
       - run: npm run check:js
       - run: cargo test --workspace --locked
       - name: Build macOS packages (${{ matrix.arch }})
@@ -294,11 +310,13 @@ jobs:
             '',
             table,
             '',
-            '> 💡 **安全校验与使用提示**：',
+            '> 💡 **校验、交流与使用提示**：',
+            '> - **强烈建议所有旧版本用户升级至最新正式版**；旧版本 Releases 仅用于历史存档（已去除与云服务器的一切关联）。',
+            '> - **交流群（自愿加入）**：QQ 群 **`1054152586`**（夸克网盘项目交流群），欢迎一起沟通体验与建议，让项目越来越好用。',
             '> - 完整校验和见附件 `SHA256SUMS.txt`；已开启应用内可选更新服务的用户可直接校验 **Ed25519 签名 + SHA-256** 后一键下载升级。',
             '> - **macOS 首次启动提示**：开源未签名构建若提示「无法验证开发者」，在终端执行一次：',
             '>   ```sh',
-            '>   xattr -dr com.apple.quarantine "/Applications/夸克网盘极简版.app"',
+            '>   xattr -dr com.apple.quarantine "/Applications/QuarkDriveLite.app"',
             '>   ```',
             '> - **隐私承诺**：更新、热更新与诊断通道默认关闭（未开启严格零外传）；开启后严格零 PII 脱敏，绝不采集文件名、本地路径、FID、直链、Cookie、Token 或 IP。',
           ].join('\n');
@@ -306,11 +324,12 @@ jobs:
           fs.writeFileSync('release-notes.md', releaseBody, 'utf8');
           fs.writeFileSync('hub-changelog.txt', section.slice(0, 8000), 'utf8');
           EOF
-      - name: Stage and verify Tokyo Hub packages
+      - name: Stage and verify Hub packages
         env:
-          HUB_URL: ${{ vars.QDL_HUB_URL || 'https://qdl.xiaodianshiuwu.space' }}
+          HUB_URL: ${{ secrets.QDL_HUB_URL || vars.QDL_HUB_URL }}
           HUB_DEPLOY_TOKEN: ${{ secrets.HUB_DEPLOY_TOKEN }}
           CHANNEL: ${{ inputs.channel || 'stable' }}
+          MIN_VERSION: ${{ inputs.min_version || '1.3.6' }}
         run: node scripts/publish-hub-release.mjs stage
       - name: Publish GitHub Release
         env:
@@ -332,9 +351,10 @@ jobs:
               --title "夸克网盘极简版 $TAG_NAME" \
               --notes-file release-notes.md
           fi
-      - name: Activate the complete Tokyo Hub release
+      - name: Activate the complete Hub release
         env:
-          HUB_URL: ${{ vars.QDL_HUB_URL || 'https://qdl.xiaodianshiuwu.space' }}
+          HUB_URL: ${{ secrets.QDL_HUB_URL || vars.QDL_HUB_URL }}
           HUB_DEPLOY_TOKEN: ${{ secrets.HUB_DEPLOY_TOKEN }}
           CHANNEL: ${{ inputs.channel || 'stable' }}
+          MIN_VERSION: ${{ inputs.min_version || '1.3.6' }}
         run: node scripts/publish-hub-release.mjs activate

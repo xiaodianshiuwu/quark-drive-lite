@@ -86,14 +86,56 @@ fn shell_error(e: impl std::fmt::Display) -> Error {
     Error::new("SYSTEM", e.to_string())
 }
 
+fn is_local_origin(window: &tauri::WebviewWindow) -> bool {
+    window.url().is_ok_and(|u| {
+        u.scheme() == "tauri"
+            || u.scheme() == "qdl-ui"
+            || ((u.scheme() == "http" || u.scheme() == "https")
+                && matches!(u.host_str(), Some("tauri.localhost" | "qdl-ui.localhost")))
+    })
+}
+
 fn trusted(window: &tauri::WebviewWindow) -> bool {
-    window.label() == "main"
-        && window.url().is_ok_and(|u| {
-            u.scheme() == "tauri"
-                || u.scheme() == "qdl-ui"
-                || ((u.scheme() == "http" || u.scheme() == "https")
-                    && matches!(u.host_str(), Some("tauri.localhost" | "qdl-ui.localhost")))
-        })
+    window.label() == "main" && is_local_origin(window)
+}
+
+fn trusted_floating(window: &tauri::WebviewWindow, method: &str) -> bool {
+    matches!(window.label(), "float-ball" | "float-unarchive")
+        && is_local_origin(window)
+        && matches!(
+            method,
+            "app.openView" | "float.close" | "settings.get" | "transfer.list"
+        )
+}
+
+fn sync_floating_window(app: &tauri::AppHandle, label: &str, enabled: bool) {
+    if !enabled {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.close();
+        }
+        return;
+    }
+    if let Some(w) = app.get_webview_window(label) {
+        let _ = w.show();
+        return;
+    }
+    let (page, title, width, height) = match label {
+        "float-ball" => ("float-ball.html", "传输悬浮球", 242.0, 62.0),
+        "float-unarchive" => ("float-unarchive.html", "云解压悬浮窗", 328.0, 172.0),
+        _ => return,
+    };
+    let _ = tauri::WebviewWindowBuilder::new(
+        app,
+        label,
+        tauri::WebviewUrl::App(page.into()),
+    )
+    .title(title)
+    .inner_size(width, height)
+    .resizable(false)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .build();
 }
 
 #[tauri::command]
@@ -104,7 +146,7 @@ async fn qk_call(
     method: String,
     params: Value,
 ) -> Result<Value> {
-    if !trusted(&window) {
+    if !trusted(&window) && !trusted_floating(&window, &method) {
         return Err(Error::new("FORBIDDEN", "只允许应用主界面调用"));
     }
     let started = std::time::Instant::now();
@@ -176,6 +218,40 @@ async fn qk_call_inner(
         app.exit(0);
         return Ok(Value::Null);
     }
+    if method == "app.openView" {
+        if let Some(main_win) = app.get_webview_window("main") {
+            let _ = main_win.unminimize();
+            let _ = main_win.show();
+            let _ = main_win.set_focus();
+        }
+        let _ = app.emit_to("main", "qk:open-view", params);
+        return Ok(json!({ "ok": true }));
+    }
+    if method == "float.close" {
+        let target = params["target"].as_str().unwrap_or("");
+        let (label, setting_key) = match target {
+            "ball" => ("float-ball", "floatingTransferBall"),
+            "unarchive" => ("float-unarchive", "floatingUnarchiveWindow"),
+            _ => return Err(Error::new("INVALID_ARG", "未知悬浮窗标识")),
+        };
+        let _ = state.core.set_settings(json!({ setting_key: false }));
+        sync_floating_window(app, label, false);
+        let _ = app.emit_to("main", "qk:settings-sync", state.core.settings());
+        return Ok(json!({ "ok": true }));
+    }
+    if method == "float.unarchiveProgress" {
+        let enabled = state
+            .core
+            .settings()
+            .get("floatingUnarchiveWindow")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if enabled {
+            sync_floating_window(app, "float-unarchive", true);
+            let _ = app.emit_to("float-unarchive", "qk:unarchive-progress", &params);
+        }
+        return Ok(json!({ "ok": true }));
+    }
     if method == "app.info" {
         return Ok(json!({
             "version": env!("CARGO_PKG_VERSION"),
@@ -232,6 +308,16 @@ async fn qk_call_inner(
                 open::that(quark_core::hub::GITHUB_RELEASES_URL).map_err(shell_error)?;
                 Ok(json!({ "ok": true, "url": quark_core::hub::GITHUB_RELEASES_URL }))
             }
+            "hub.openExternalUrl" => {
+                let raw = params["url"].as_str().unwrap_or("").trim();
+                let parsed = tauri::Url::parse(raw)
+                    .map_err(|_| Error::new("INVALID_ARG", "链接地址格式无效"))?;
+                if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
+                    return Err(Error::new("FORBIDDEN", "安全策略仅允许打开 HTTPS 外部链接"));
+                }
+                open::that(parsed.as_str()).map_err(shell_error)?;
+                Ok(json!({ "ok": true }))
+            }
             "hub.runtimeStatus" => Ok(state.hub.runtime_status(ver)),
             "hub.applyUiHotfix" => state.hub.apply_ui_hotfix(ver).await,
             "hub.reloadUi" => {
@@ -274,7 +360,34 @@ async fn qk_call_inner(
             }
             "hub.sendTelemetry" => state.hub.send_telemetry(ver, params).await,
             "hub.flushTelemetry" => state.hub.flush_transfer_telemetry(ver).await,
-            "hub.submitFeedback" => state.hub.submit_feedback(ver, params).await,
+            "hub.submitFeedback" => {
+                let mut payload = params;
+                if payload["includeLogs"].as_bool() == Some(true) {
+                    if let Some(obj) = payload.as_object_mut() {
+                        let active: Vec<Value> = state
+                            .transfers
+                            .snapshot()
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter(|t| matches!(t["status"].as_str(), Some("running" | "pending")))
+                            .take(6)
+                            .map(|t| {
+                                json!({
+                                    "kind": t["kind"],
+                                    "sizeBytes": t["size"],
+                                    "transferredBytes": t["transferred"],
+                                    "speedBps": t["speed"],
+                                })
+                            })
+                            .collect();
+                        if !active.is_empty() {
+                            obj.insert("activeTransfers".into(), Value::Array(active));
+                        }
+                    }
+                }
+                state.hub.submit_feedback(ver, payload).await
+            }
             "hub.listFeedback" => state.hub.list_feedback().await,
             "hub.replyFeedback" => state.hub.reply_feedback(params).await,
             "hub.logPreview" => Ok(json!({ "logs": state.hub.log_preview() })),
@@ -383,6 +496,16 @@ async fn qk_call_inner(
                 } else {
                     state.agent.suspend_gateway().await;
                 }
+            }
+            if let Some(ball) = saved.get("floatingTransferBall").and_then(|v| v.as_bool()) {
+                sync_floating_window(app, "float-ball", ball);
+            }
+            if let Some(unarch) = saved.get("floatingUnarchiveWindow").and_then(|v| v.as_bool()) {
+                sync_floating_window(app, "float-unarchive", unarch);
+            }
+            if let Some(theme) = saved.get("theme").and_then(|v| v.as_str()) {
+                let _ = app.emit_to("float-ball", "qk:theme-changed", theme);
+                let _ = app.emit_to("float-unarchive", "qk:theme-changed", theme);
             }
         }
     }
@@ -1097,6 +1220,12 @@ fn main() {
                 }
             }
             {
+                let init_settings = state.core.settings();
+                if init_settings.get("floatingTransferBall").and_then(|v| v.as_bool()) == Some(true) {
+                    sync_floating_window(app.handle(), "float-ball", true);
+                }
+            }
+            {
                 let agent_boot = state.agent.clone();
                 let ai_beta_on = state
                     .core
@@ -1139,6 +1268,9 @@ fn main() {
                     last_rev = transfers.revision().max(next_rev);
                     let tasks = transfers.snapshot();
                     let _ = handle.emit_to("main", "qk:transfer-update", &tasks);
+                    if handle.get_webview_window("float-ball").is_some() {
+                        let _ = handle.emit_to("float-ball", "qk:transfer-update", &tasks);
+                    }
                     last_emit = tokio::time::Instant::now();
                 }
             });
@@ -1169,6 +1301,8 @@ fn main() {
                     if !shutdown_done.load(Ordering::SeqCst) {
                         api.prevent_exit();
                         if !shutting_down.swap(true, Ordering::SeqCst) {
+                            sync_floating_window(app, "float-ball", false);
+                            sync_floating_window(app, "float-unarchive", false);
                             let handle = app.clone();
                             let manager = app.state::<State>().transfers.clone();
                             let agent = app.state::<State>().agent.clone();

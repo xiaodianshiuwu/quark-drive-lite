@@ -5,7 +5,8 @@
       "nsis": {
         "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": true,
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "compression": "lzma"
       }
     }
   }

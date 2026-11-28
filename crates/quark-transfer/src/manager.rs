@@ -103,6 +103,23 @@ pub(crate) struct RunTelemetry {
     pub link_ms: AtomicU64,
     pub probe_ms: AtomicU64,
     pub transfer_ms: AtomicU64,
+    download_protocols: AtomicU64,
+    download_read_wait_us: AtomicU64,
+    download_write_wait_us: AtomicU64,
+    download_hash_work_us: AtomicU64,
+    download_active_responses: AtomicU64,
+    download_peak_responses: AtomicU64,
+    download_response_us: AtomicU64,
+    download_requests: AtomicU64,
+    download_header_wait_us: AtomicU64,
+    download_checkpoint_us: AtomicU64,
+    cdn_cache_flags: AtomicU64,
+    stall_restarts: AtomicU64,
+    cdn_node_switches: AtomicU64,
+    upload_part_read_us: AtomicU64,
+    upload_part_auth_us: AtomicU64,
+    upload_put_us: AtomicU64,
+    upload_put_requests: AtomicU64,
     pub hash_ms: AtomicU64,
     pub publish_ms: AtomicU64,
     pub chunk_size: AtomicU64,
@@ -119,8 +136,24 @@ pub(crate) struct RunTelemetry {
     pub concurrency: u16,
     pub attempts: u32,
     pub meta: Mutex<(&'static str, &'static str)>,
+    pub member_tier: Mutex<String>,
+    pub cdn_host_class: Mutex<Option<String>>,
     pub io_kind: Mutex<Option<String>>,
     pub os_errno: Mutex<Option<i32>>,
+}
+
+pub(crate) struct ActiveDownloadResponse<'a> {
+    active: &'a AtomicU64,
+    response_us: &'a AtomicU64,
+    started: std::time::Instant,
+}
+
+impl Drop for ActiveDownloadResponse<'_> {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::Relaxed);
+        self.response_us
+            .fetch_add(self.started.elapsed().as_micros() as u64, Ordering::Relaxed);
+    }
 }
 
 impl RunTelemetry {
@@ -132,6 +165,23 @@ impl RunTelemetry {
             link_ms: AtomicU64::new(0),
             probe_ms: AtomicU64::new(0),
             transfer_ms: AtomicU64::new(0),
+            download_protocols: AtomicU64::new(0),
+            download_read_wait_us: AtomicU64::new(0),
+            download_write_wait_us: AtomicU64::new(0),
+            download_hash_work_us: AtomicU64::new(0),
+            download_active_responses: AtomicU64::new(0),
+            download_peak_responses: AtomicU64::new(0),
+            download_response_us: AtomicU64::new(0),
+            download_requests: AtomicU64::new(0),
+            download_header_wait_us: AtomicU64::new(0),
+            download_checkpoint_us: AtomicU64::new(0),
+            cdn_cache_flags: AtomicU64::new(0),
+            stall_restarts: AtomicU64::new(0),
+            cdn_node_switches: AtomicU64::new(0),
+            upload_part_read_us: AtomicU64::new(0),
+            upload_part_auth_us: AtomicU64::new(0),
+            upload_put_us: AtomicU64::new(0),
+            upload_put_requests: AtomicU64::new(0),
             hash_ms: AtomicU64::new(0),
             publish_ms: AtomicU64::new(0),
             chunk_size: AtomicU64::new(0),
@@ -148,9 +198,41 @@ impl RunTelemetry {
             concurrency,
             attempts,
             meta: Mutex::new(("unknown", "init")),
+            member_tier: Mutex::new("UNKNOWN".into()),
+            cdn_host_class: Mutex::new(None),
             io_kind: Mutex::new(None),
             os_errno: Mutex::new(None),
         })
+    }
+    pub(crate) fn set_member_tier(&self, tier: &str) {
+        if let Ok(mut g) = self.member_tier.lock() {
+            *g = tier.to_string();
+        }
+    }
+    pub(crate) fn set_cdn_host_class(&self, host_class: &str) {
+        if host_class.is_empty() {
+            return;
+        }
+        if let Ok(mut g) = self.cdn_host_class.lock() {
+            *g = Some(host_class.to_string());
+        }
+    }
+    pub(crate) fn record_cdn_cache(&self, status: &str) {
+        let bit = match status {
+            "HIT" => 1,
+            "MISS" => 2,
+            "BYPASS" => 4,
+            _ => 0,
+        };
+        if bit != 0 {
+            self.cdn_cache_flags.fetch_or(bit, Ordering::Relaxed);
+        }
+    }
+    pub(crate) fn inc_stall_restart(&self) {
+        self.stall_restarts.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn inc_cdn_node_switch(&self) {
+        self.cdn_node_switches.fetch_add(1, Ordering::Relaxed);
     }
     pub(crate) fn set_io_kind(&self, kind: &str) {
         if let Ok(mut g) = self.io_kind.lock() {
@@ -170,6 +252,60 @@ impl RunTelemetry {
     }
     pub(crate) fn add_transfer_ms(&self, ms: u64) {
         self.transfer_ms.fetch_add(ms, Ordering::Relaxed);
+    }
+    pub(crate) fn download_response_started(&self) -> ActiveDownloadResponse<'_> {
+        let opened = self.download_active_responses.fetch_add(1, Ordering::Relaxed) + 1;
+        self.download_peak_responses.fetch_max(opened, Ordering::Relaxed);
+        ActiveDownloadResponse {
+            active: &self.download_active_responses,
+            response_us: &self.download_response_us,
+            started: std::time::Instant::now(),
+        }
+    }
+    pub(crate) fn add_download_request_time(&self, elapsed: std::time::Duration) {
+        self.download_requests.fetch_add(1, Ordering::Relaxed);
+        self.download_header_wait_us
+            .fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+    }
+    pub(crate) fn add_download_checkpoint_time(&self, elapsed: std::time::Duration) {
+        self.download_checkpoint_us
+            .fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+    }
+    pub(crate) fn add_upload_part_read_time(&self, elapsed: std::time::Duration) {
+        self.upload_part_read_us
+            .fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+    }
+    pub(crate) fn add_upload_part_auth_time(&self, elapsed: std::time::Duration) {
+        self.upload_part_auth_us
+            .fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+    }
+    pub(crate) fn add_upload_put_time(&self, elapsed: std::time::Duration) {
+        self.upload_put_requests.fetch_add(1, Ordering::Relaxed);
+        self.upload_put_us
+            .fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+    }
+    pub(crate) fn add_download_body_metrics(
+        &self,
+        version: reqwest::Version,
+        read_wait: std::time::Duration,
+        write_wait: std::time::Duration,
+        hash_work: std::time::Duration,
+    ) {
+        let flag = match version {
+            reqwest::Version::HTTP_10 => 1,
+            reqwest::Version::HTTP_11 => 2,
+            reqwest::Version::HTTP_2 => 4,
+            reqwest::Version::HTTP_3 => 8,
+            _ => 16,
+        };
+        self.download_protocols.fetch_or(flag, Ordering::Relaxed);
+        for (counter, elapsed) in [
+            (&self.download_read_wait_us, read_wait),
+            (&self.download_write_wait_us, write_wait),
+            (&self.download_hash_work_us, hash_work),
+        ] {
+            counter.fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+        }
     }
     pub(crate) fn add_publish_ms(&self, ms: u64) {
         self.publish_ms.fetch_add(ms, Ordering::Relaxed);
@@ -250,7 +386,53 @@ impl RunTelemetry {
         let http = self.http_status.load(Ordering::Relaxed);
         let init_parallel = self.parallel.load(Ordering::Relaxed);
         let min_p = self.min_parallel.load(Ordering::Relaxed);
-        json!({
+        let download_protocol = match self.download_protocols.load(Ordering::Relaxed) {
+            0 => None,
+            1 => Some("http/1.0"),
+            2 => Some("http/1.1"),
+            4 => Some("h2"),
+            8 => Some("h3"),
+            16 => Some("other"),
+            _ => Some("mixed"),
+        };
+        let requests = self.download_requests.load(Ordering::Relaxed);
+        let put_requests = self.upload_put_requests.load(Ordering::Relaxed);
+        let member_tier = self
+            .member_tier
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| "UNKNOWN".into());
+        let cdn_host_class = self.cdn_host_class.lock().ok().and_then(|g| g.clone());
+        let cdn_cache_status = (kind == "download").then(|| match self.cdn_cache_flags.load(Ordering::Relaxed) {
+            0 => "UNREPORTED",
+            1 => "HIT",
+            2 => "MISS",
+            4 => "BYPASS",
+            _ => "MIXED",
+        });
+        let diag_extra = json!({
+            "memberTier": member_tier,
+            "cdnHostClass": (kind == "download").then_some(cdn_host_class).flatten(),
+            "cdnCacheStatus": cdn_cache_status,
+            "stallRestarts": (kind == "download").then(|| self.stall_restarts.load(Ordering::Relaxed)),
+            "cdnNodeSwitches": (kind == "download").then(|| self.cdn_node_switches.load(Ordering::Relaxed)),
+        });
+        let timing = json!({
+            "downloadHttpVersion": download_protocol,
+            "downloadReadWaitMs": download_protocol.map(|_| self.download_read_wait_us.load(Ordering::Relaxed) / 1000),
+            "downloadWriteWaitMs": download_protocol.map(|_| self.download_write_wait_us.load(Ordering::Relaxed) / 1000),
+            "downloadHashWorkMs": download_protocol.map(|_| self.download_hash_work_us.load(Ordering::Relaxed) / 1000),
+            "downloadPeakResponses": download_protocol.map(|_| self.download_peak_responses.load(Ordering::Relaxed)),
+            "downloadResponseWorkerMs": download_protocol.map(|_| self.download_response_us.load(Ordering::Relaxed) / 1000),
+            "downloadRequests": (requests > 0).then_some(requests),
+            "downloadHeaderWaitMs": (requests > 0).then(|| self.download_header_wait_us.load(Ordering::Relaxed) / 1000),
+            "downloadCheckpointMs": download_protocol.map(|_| self.download_checkpoint_us.load(Ordering::Relaxed) / 1000),
+            "uploadPartReadMs": (kind == "upload").then(|| self.upload_part_read_us.load(Ordering::Relaxed) / 1000),
+            "uploadPartAuthMs": (kind == "upload").then(|| self.upload_part_auth_us.load(Ordering::Relaxed) / 1000),
+            "uploadPutMs": (kind == "upload").then(|| self.upload_put_us.load(Ordering::Relaxed) / 1000),
+            "uploadPutRequests": (kind == "upload").then_some(put_requests),
+        });
+        let mut sample = json!({
             "ts": now() as i64,
             "kind": kind,
             "outcome": outcome,
@@ -281,7 +463,14 @@ impl RunTelemetry {
             "stage": stage,
             "ioKind": io_kind,
             "osErrno": os_errno,
-        })
+        });
+        if let (Value::Object(sample), Value::Object(timing)) = (&mut sample, timing) {
+            sample.extend(timing);
+        }
+        if let (Value::Object(sample), Value::Object(extra)) = (&mut sample, diag_extra) {
+            sample.extend(extra);
+        }
+        sample
     }
 }
 
@@ -452,7 +641,7 @@ impl TransferManager {
                 revision: AtomicU64::new(0),
                 last_progress_notify: AtomicU64::new(0),
                 observer: Mutex::new(None),
-                download_slots: Semaphore::new(1024),
+                download_slots: Semaphore::new(64),
                 upload_buffers: Semaphore::new(512 * 1024),
             }),
         };
@@ -463,6 +652,16 @@ impl TransferManager {
         if let Ok(mut guard) = self.inner.observer.lock() {
             *guard = Some(observer);
         }
+    }
+    pub(crate) fn active_download_count(&self) -> usize {
+        self.inner
+            .active
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|a| a.kind == "download")
+            .count()
+            .max(1)
     }
     pub(crate) fn emit_telemetry(&self, sample: Value) {
         let cb = self.inner.observer.lock().ok().and_then(|g| g.clone());
@@ -788,6 +987,7 @@ impl TransferManager {
             let id = task.id.clone();
             let kind = task.kind.clone();
             let tel = RunTelemetry::new(task.attempts, limit as u16, task.rate_limit_bps > 0);
+            tel.set_member_tier(&self.inner.core.member_tier());
             tokio::spawn(async move {
                 let result = if kind == "upload" {
                     crate::upload::run(&manager, &id, &token, &tel).await

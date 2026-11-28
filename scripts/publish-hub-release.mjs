@@ -8,12 +8,13 @@ if (mode !== 'stage' && mode !== 'activate') {
 }
 
 const token = process.env.HUB_DEPLOY_TOKEN?.trim();
-if (!token) {
-  console.log('HUB_DEPLOY_TOKEN not configured; skipping Hub deployment.');
+const rawHubUrl = process.env.HUB_URL?.trim();
+if (!token || !rawHubUrl) {
+  console.log('HUB_DEPLOY_TOKEN or HUB_URL not configured; skipping Hub deployment.');
   process.exit(0);
 }
 
-const hub = new URL(process.env.HUB_URL);
+const hub = new URL(rawHubUrl);
 if (hub.protocol !== 'https:' || hub.username || hub.password ||
   hub.pathname !== '/' || hub.search || hub.hash) {
   throw new Error('HUB_URL must be an HTTPS origin.');
@@ -40,6 +41,7 @@ const release = {
   channel: process.env.CHANNEL || 'stable',
   releaseDate: new Date().toISOString().slice(0, 10),
   changelog: readFileSync('hub-changelog.txt', 'utf8').trim(),
+  ...(process.env.MIN_VERSION?.trim() ? { minVersion: process.env.MIN_VERSION.trim() } : {}),
 };
 
 async function request(route, { method = 'GET', contentType, body } = {}) {

@@ -184,8 +184,8 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
         changelog:'• 下载引擎提速 2x\\n• 修复深层面包屑鼠标导航',
         notice:'欢迎体验新版直链更新通道',
         recommendedAssetKey:'macos-arm64',
-        recommendedAsset:{filename:'QuarkDriveLite-1.0.1.zip',size:8388608,sha256:'a'.repeat(64),url:'https://qdl.xiaodianshiuwu.space/downloads/QuarkDriveLite-1.0.1.zip'},
-        assets:{'macos-arm64':{filename:'QuarkDriveLite-1.0.1.zip',size:8388608,sha256:'a'.repeat(64),url:'https://qdl.xiaodianshiuwu.space/downloads/QuarkDriveLite-1.0.1.zip'}},
+        recommendedAsset:{filename:'QuarkDriveLite-1.0.1.zip',size:8388608,sha256:'a'.repeat(64),url:'https://example.invalid/downloads/QuarkDriveLite-1.0.1.zip'},
+        assets:{'macos-arm64':{filename:'QuarkDriveLite-1.0.1.zip',size:8388608,sha256:'a'.repeat(64),url:'https://example.invalid/downloads/QuarkDriveLite-1.0.1.zip'}},
         signatureVerified:true,serverRegion:'海外节点 · Tokyo (JP)'
       }
     };
@@ -212,8 +212,8 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
           case 'agent.mcpConfig': return {mcpServers:{'quark-mini':{command:'node',args:['/fixture/agent/adapters/agent-mcp.js']}}};
           case 'chat.status': return {configured:false,hasKey:false,baseUrl:'',model:'',running:false};
           case 'chat.history': return [];
-          case 'hub.config': return {optIn:!!fixture.settings.serverOptIn,prompted:!!fixture.settings.serverPrompted,baseUrl:'https://qdl.xiaodianshiuwu.space',region:'海外节点 · Tokyo (JP)',currentVersion:'1.0.0',recommendedAssetKey:'macos-arm64',cryptoSummary:'HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端加密 + Ed25519 签名校验'};
-          case 'hub.setOptIn': fixture.settings.serverOptIn=!!p.optIn;fixture.settings.serverPrompted=true;return {optIn:fixture.settings.serverOptIn,prompted:true,baseUrl:'https://qdl.xiaodianshiuwu.space',region:'海外节点 · Tokyo (JP)',currentVersion:'1.0.0',recommendedAssetKey:'macos-arm64',cryptoSummary:'HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端加密 + Ed25519 签名校验'};
+          case 'hub.config': return {available:true,optIn:!!fixture.settings.serverOptIn,prompted:!!fixture.settings.serverPrompted,baseUrl:'https://example.invalid',region:'海外节点 · Tokyo (JP)',currentVersion:'1.0.0',recommendedAssetKey:'macos-arm64',cryptoSummary:'HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端加密 + Ed25519 签名校验'};
+          case 'hub.setOptIn': fixture.settings.serverOptIn=!!p.optIn;fixture.settings.serverPrompted=true;return {available:true,optIn:fixture.settings.serverOptIn,prompted:true,baseUrl:'https://example.invalid',region:'海外节点 · Tokyo (JP)',currentVersion:'1.0.0',recommendedAssetKey:'macos-arm64',cryptoSummary:'HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端加密 + Ed25519 签名校验'};
           case 'hub.checkUpdate': {
             if (!fixture.settings.serverOptIn) throw {code:'OPT_IN_REQUIRED',message:'未开启连接'};
             return snapshot(fixture.hubLatest);

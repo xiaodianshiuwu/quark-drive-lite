@@ -35,6 +35,10 @@ pub const ALLOWED_UI_FILES: &[&str] = &[
     "virtual-list.js",
     "tauri-bridge.js",
     "startup.html",
+    "float-ball.html",
+    "float-ball.js",
+    "float-unarchive.html",
+    "float-unarchive.js",
 ];
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

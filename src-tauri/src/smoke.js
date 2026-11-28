@@ -28,14 +28,21 @@
     const tutSkip = document.getElementById('tut-btn-skip');
     check('first-launch onboarding tutorial shown with skip action', !!tutSkip);
     if (tutSkip) { tutSkip.click(); }
-    const optDecline = await waitFor(() => document.getElementById('optin-btn-decline'), 5000);
-    check('first-launch server opt-in modal shown after tutorial', !!optDecline);
-    if (optDecline) {
-      optDecline.click();
-      await waitFor(async () => {
-        const cfg = await window.qk.hub.config();
-        return cfg && cfg.prompted === true;
-      }, 4000);
+    const hubCfgInitial = await window.qk.hub.config();
+    const hubAvailable = !!(hubCfgInitial && hubCfgInitial.available !== false);
+    if (hubAvailable) {
+      const optDecline = await waitFor(() => document.getElementById('optin-btn-decline'), 5000);
+      check('first-launch server opt-in modal shown after tutorial', !!optDecline);
+      if (optDecline) {
+        optDecline.click();
+        await waitFor(async () => {
+          const cfg = await window.qk.hub.config();
+          return cfg && cfg.prompted === true;
+        }, 4000);
+      }
+    } else {
+      const fbHidden = await waitFor(() => document.getElementById('nav-feedback')?.hidden === true, 3000);
+      check('MIT offline build hides server opt-in modal and feedback nav', !document.getElementById('optin-btn-decline') && fbHidden === true);
     }
     const afterSettings = await window.qk.settings.get();
     check('tutorialSeen persisted after skip', afterSettings && afterSettings.tutorialSeen === true);
@@ -43,12 +50,18 @@
     if (window.qk.platform === 'linux') {
       check('Linux update asset', hubCfg.recommendedAssetKey === 'linux-x64-deb' || hubCfg.recommendedAssetKey === 'linux-arm64-deb');
     }
-    check('hub opt-in defaults off and prompted after decline', hubCfg && hubCfg.optIn === false && hubCfg.prompted === true);
-    let hubBlocked; try { await window.qk.hub.checkUpdate(); } catch (e) { hubBlocked = e.code; }
-    check('hub hard-blocks network when opted out', hubBlocked === 'OPT_IN_REQUIRED');
-    document.querySelector('[data-view="feedback"]').click();
-    check('feedback view', !document.getElementById('view-feedback').hidden);
-    document.querySelector('[data-view="files"]').click();
+    if (hubAvailable) {
+      check('hub opt-in defaults off and prompted after decline', hubCfg && hubCfg.optIn === false && hubCfg.prompted === true);
+      let hubBlocked; try { await window.qk.hub.checkUpdate(); } catch (e) { hubBlocked = e.code; }
+      check('hub hard-blocks network when opted out', hubBlocked === 'OPT_IN_REQUIRED');
+      document.querySelector('[data-view="feedback"]').click();
+      check('feedback view', !document.getElementById('view-feedback').hidden);
+      document.querySelector('[data-view="files"]').click();
+    } else {
+      check('MIT stub reports unavailable and opt-in off', hubCfg && hubCfg.available === false && hubCfg.optIn === false);
+      let hubBlocked; try { await window.qk.hub.checkUpdate(); } catch (e) { hubBlocked = e.code; }
+      check('MIT stub hard-blocks remote update calls', hubBlocked === 'UNAVAILABLE' || hubBlocked === 'OPT_IN_REQUIRED');
+    }
     const appInfo = await window.qk.app.info();
     check('Rust app info command', typeof appInfo?.version === 'string' && appInfo.version.length > 0);
     const changed = await window.qk.settings.set({theme: 'dark', downloadParallel: 48, askDownloadDir: true});

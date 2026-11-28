@@ -49,7 +49,7 @@ impl Default for TuningProfile {
             chunk_size_gt_2g_mb: 16,
             chunk_size_gt_512m_mb: 8,
             chunk_size_gt_128m_mb: 4,
-            chunk_size_gt_32m_mb: 2,
+            chunk_size_gt_32m_mb: 4,
             chunk_size_default_mb: 1,
             aimd_enabled: true,
             aimd_retry_threshold: 2,

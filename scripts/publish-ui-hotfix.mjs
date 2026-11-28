@@ -15,7 +15,7 @@
  *     --changelog "修复目录详情负缓存与界面细节"
  *
  * Options:
- *   --url <hubUrl>        Default: https://qdl.xiaodianshiuwu.space (or QDL_HUB_URL)
+ *   --url <hubUrl>        Hub HTTPS origin (or QDL_HUB_URL env var)
  *   --version <ver>       Required unless --clear is passed
  *   --min <semver>        minBinaryVersion (default: package.json version)
  *   --max <semver>        maxBinaryVersion (optional, e.g. 1.3.99)
@@ -41,6 +41,10 @@ const ALLOWED_UI_FILES = [
   'virtual-list.js',
   'tauri-bridge.js',
   'startup.html',
+  'float-ball.html',
+  'float-ball.js',
+  'float-unarchive.html',
+  'float-unarchive.js',
 ];
 
 function parseArgs(argv) {
@@ -59,7 +63,10 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  const baseUrl = String(args.url || process.env.QDL_HUB_URL || 'https://qdl.xiaodianshiuwu.space').replace(/\/+$/, '');
+  const baseUrl = String(args.url || process.env.QDL_HUB_URL || '').trim().replace(/\/+$/, '');
+  if (!args['dry-run'] && !baseUrl) {
+    throw new Error('Missing --url or QDL_HUB_URL environment variable');
+  }
   const token = String(process.env.HUB_DEPLOY_TOKEN || '').trim();
 
   if (args.clear) {

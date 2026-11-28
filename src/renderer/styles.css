@@ -664,13 +664,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .cb:hover i { border-color: var(--primary); }
 .cb input:checked + i { background: var(--primary); border-color: var(--primary); }
 .cb input:checked + i::after {
-  content: ""; position: absolute; left: 4.5px; top: 1.5px;
-  width: 4px; height: 8px; border: 2px solid #fff;
-  border-top: 0; border-left: 0; transform: rotate(42deg);
+  content: ""; position: absolute; left: 50%; top: 45%;
+  width: 4.5px; height: 8px; border: 1.8px solid #fff;
+  border-top: 0; border-left: 0; transform: translate(-50%, -50%) rotate(45deg);
 }
 .cb input:indeterminate + i { background: var(--primary); border-color: var(--primary); }
 .cb input:indeterminate + i::after {
-  content: ""; position: absolute; left: 3px; top: 6px; width: 8px; height: 2px; background: #fff; border-radius: 2px;
+  content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 2px;
+  background: #fff; border-radius: 2px; transform: translate(-50%, -50%);
 }
 .cb input:focus-visible + i { box-shadow: 0 0 0 3px var(--primary-ring); }
 .cb input:disabled + i { opacity: .45; }
@@ -684,8 +685,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
   display: grid; place-items: center; background: var(--panel-2); color: var(--text-2);
   border: 1px solid var(--border);
 }
-.fileicon .ic { width: 17px; height: 17px; }
-.cat-dir { color: #d89614; background: rgba(216, 150, 20, .12); border-color: rgba(216, 150, 20, .25); }
+.fileicon .ic { width: 17px; height: 17px; filter: none; }
+.cat-dir { color: #d89614; background: rgba(216, 150, 20, .13); border-color: rgba(216, 150, 20, .28); }
 .cat-image { color: #199e63; background: rgba(25, 158, 99, .12); border-color: rgba(25, 158, 99, .24); }
 .cat-video { color: #cf4c86; background: rgba(207, 76, 134, .12); border-color: rgba(207, 76, 134, .24); }
 .cat-audio { color: #8356d6; background: rgba(131, 86, 214, .12); border-color: rgba(131, 86, 214, .24); }
@@ -693,6 +694,33 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .cat-code { color: #2478d1; background: rgba(36, 120, 209, .12); border-color: rgba(36, 120, 209, .24); }
 .cat-doc { color: #3c69d6; background: rgba(60, 105, 214, .12); border-color: rgba(60, 105, 214, .24); }
 .cat-other { color: var(--text-2); }
+/* 深色模式下避免文件夹及文件类型图标发暗或反色 */
+[data-theme="dark"] .cat-dir { color: #f6c453; background: rgba(246, 196, 83, .16); border-color: rgba(246, 196, 83, .32); }
+[data-theme="dark"] .cat-image { color: #4ade80; background: rgba(74, 222, 128, .14); border-color: rgba(74, 222, 128, .28); }
+[data-theme="dark"] .cat-video { color: #f472b6; background: rgba(244, 114, 182, .14); border-color: rgba(244, 114, 182, .28); }
+[data-theme="dark"] .cat-audio { color: #c084fc; background: rgba(192, 132, 252, .14); border-color: rgba(192, 132, 252, .28); }
+[data-theme="dark"] .cat-archive { color: #fbbf24; background: rgba(251, 191, 36, .15); border-color: rgba(251, 191, 36, .30); }
+[data-theme="dark"] .cat-code { color: #60a5fa; background: rgba(96, 165, 250, .14); border-color: rgba(96, 165, 250, .28); }
+[data-theme="dark"] .cat-doc { color: #818cf8; background: rgba(129, 140, 248, .14); border-color: rgba(129, 140, 248, .28); }
+[data-theme="dark"] .archive-row-ic.dir { color: #f6c453; }
+[data-theme="dark"] .brand-mark { background: linear-gradient(135deg, #4b7cf7, #6d9bff); box-shadow: 0 4px 14px rgba(75, 124, 247, .32); }
+.row, .trow { contain: layout style; }
+.qq-group-pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px;
+  border-radius: 99px; font-size: 12px; font-weight: 600; font-family: var(--mono);
+  background: var(--primary-soft); color: var(--primary); border: 1px solid rgba(51, 109, 244, .28);
+}
+.announce-popup-body {
+  font-size: 13.5px; line-height: 1.65; color: var(--text-2);
+  white-space: pre-wrap; word-break: break-word;
+}
+.announce-popup-badge {
+  display: inline-flex; align-items: center; gap: 6px; margin-bottom: 10px;
+  padding: 3px 10px; border-radius: 99px; font-size: 11.5px; font-weight: 600;
+  background: var(--primary-soft); color: var(--primary);
+}
+.announce-popup-badge.warn { background: var(--warn-soft); color: var(--warn); }
+.announce-popup-badge.error { background: var(--danger-soft); color: var(--danger); }
 
 .col-ops { display: flex; justify-content: flex-end; gap: 2px; padding-right: 4px; }
 .op {

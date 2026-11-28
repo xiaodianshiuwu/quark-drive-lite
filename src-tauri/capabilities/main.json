@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
   "description": "Only the bundled main interface (or Ed25519-verified local qdl-ui hotfix) can receive app events. Remote login content has no capabilities.",
-  "windows": ["main"],
+  "windows": ["main", "float-ball", "float-unarchive"],
   "local": true,
   "remote": {
     "urls": [
