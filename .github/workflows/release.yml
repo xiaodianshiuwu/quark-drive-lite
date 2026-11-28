@@ -262,12 +262,20 @@ jobs:
           const rows = [
             ['Windows 10/11 (x64) 安装版', `QuarkDriveLite-${ver}-Windows-x64-Setup.exe`, 'NSIS 轻量安装版，支持中文向导、免管理员与干净卸载'],
             ['Windows 10/11 (x64) 便携版', `QuarkDriveLite-${ver}-Windows-x64-Portable.zip`, 'UTF-8 编码兼容，解压即运行，无需安装'],
-            ['macOS Apple Silicon (M1–M4)', `QuarkDriveLite-${ver}-macOS-arm64.dmg`, '磁盘镜像安装版，拖入「应用程序」即可使用'],
-            ['macOS Apple Silicon (M1–M4)', `QuarkDriveLite-${ver}-macOS-arm64.zip`, '压缩包版，解压即用，支持应用内原位升级'],
+            ['macOS Apple Silicon (arm64)', `QuarkDriveLite-${ver}-macOS-arm64.dmg`, '磁盘镜像安装版，拖入「应用程序」即可使用'],
+            ['macOS Apple Silicon (arm64)', `QuarkDriveLite-${ver}-macOS-arm64.zip`, '压缩包版，解压即用，支持应用内原位升级'],
             ['macOS Intel (x64)', `QuarkDriveLite-${ver}-macOS-x64.zip`, 'Intel 芯片 Mac 压缩包版，解压后拖入「应用程序」'],
             ['Linux x64 (Debian / Ubuntu)', `QuarkDriveLite-${ver}-Linux-x64.deb`, '`sudo apt install ./QuarkDriveLite-' + ver + '-Linux-x64.deb`'],
             ['Linux x64 (通用便携版)', `QuarkDriveLite-${ver}-Linux-x64.AppImage`, '`chmod +x` 赋权后直接运行，支持应用内原位替换升级'],
-          ].filter((r) => sizeStr(r[1]) !== null);
+          ];
+          const expectedFiles = new Set([...rows.map((row) => row[1]), 'SHA256SUMS.txt']);
+          const missing = [...expectedFiles].filter((file) => !files.includes(file) ||
+            !fs.statSync(`all-artifacts/${file}`).isFile() ||
+            fs.statSync(`all-artifacts/${file}`).size === 0);
+          const unexpected = files.filter((file) => !expectedFiles.has(file));
+          if (missing.length || unexpected.length) {
+            throw new Error(`Release files mismatch. Missing: ${missing.join(', ')}. Unexpected: ${unexpected.join(', ')}.`);
+          }
 
           const table = [
             '| 平台 | 安装包文件 | 体积 | 说明 |',
@@ -298,6 +306,12 @@ jobs:
           fs.writeFileSync('release-notes.md', releaseBody, 'utf8');
           fs.writeFileSync('hub-changelog.txt', section.slice(0, 8000), 'utf8');
           EOF
+      - name: Stage and verify Tokyo Hub packages
+        env:
+          HUB_URL: ${{ vars.QDL_HUB_URL || 'https://qdl.xiaodianshiuwu.space' }}
+          HUB_DEPLOY_TOKEN: ${{ secrets.HUB_DEPLOY_TOKEN }}
+          CHANNEL: ${{ inputs.channel || 'stable' }}
+        run: node scripts/publish-hub-release.mjs stage
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -318,66 +332,9 @@ jobs:
               --title "夸克网盘极简版 $TAG_NAME" \
               --notes-file release-notes.md
           fi
-      - name: Auto-upload & Ed25519-sign on Tokyo Hub (when HUB_DEPLOY_TOKEN is set)
+      - name: Activate the complete Tokyo Hub release
         env:
           HUB_URL: ${{ vars.QDL_HUB_URL || 'https://qdl.xiaodianshiuwu.space' }}
           HUB_DEPLOY_TOKEN: ${{ secrets.HUB_DEPLOY_TOKEN }}
           CHANNEL: ${{ inputs.channel || 'stable' }}
-        run: |
-          if [ -z "${HUB_DEPLOY_TOKEN:-}" ]; then
-            echo "HUB_DEPLOY_TOKEN not configured; skipping Tokyo Hub upload."
-            exit 0
-          fi
-          node - <<'EOF'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const ver = pkg.version;
-          const hubUrl = process.env.HUB_URL.replace(/\/+$/, '');
-          const token = process.env.HUB_DEPLOY_TOKEN;
-          const dir = path.resolve('all-artifacts');
-          const changelog = fs.existsSync('hub-changelog.txt')
-            ? fs.readFileSync('hub-changelog.txt', 'utf8').trim()
-            : `v${ver} 正式发布`;
-
-          (async () => {
-            const relRes = await fetch(`${hubUrl}/api/admin/releases`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-Hub-Deploy-Token': token },
-              body: JSON.stringify({
-                version: ver,
-                channel: process.env.CHANNEL || 'stable',
-                releaseDate: new Date().toISOString().slice(0, 10),
-                changelog,
-                isLatest: true,
-              }),
-            });
-            const relJson = await relRes.json();
-            if (!relRes.ok || !relJson.ok) throw new Error(`Create release failed: ${JSON.stringify(relJson)}`);
-            console.log('Hub release created/updated:', relJson);
-
-            // Upload the 5 recommended fast-download assets (4-7 MiB each; oversized ~85 MiB AppImage stays on GitHub Release).
-            const map = [
-              ['macos-arm64', `QuarkDriveLite-${ver}-macOS-arm64.zip`],
-              ['macos-x64', `QuarkDriveLite-${ver}-macOS-x64.zip`],
-              ['windows-x64-setup', `QuarkDriveLite-${ver}-Windows-x64-Setup.exe`],
-              ['windows-x64-portable', `QuarkDriveLite-${ver}-Windows-x64-Portable.zip`],
-              ['linux-x64-deb', `QuarkDriveLite-${ver}-Linux-x64.deb`],
-            ];
-            for (const [assetKey, filename] of map) {
-              const fp = path.join(dir, filename);
-              if (!fs.existsSync(fp)) continue;
-              const qs = new URLSearchParams({ filename, assetKey, version: ver });
-              const upRes = await fetch(`${hubUrl}/api/admin/releases/upload?${qs}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/octet-stream', 'X-Hub-Deploy-Token': token },
-                body: fs.readFileSync(fp),
-              });
-              const text = await upRes.text();
-              let upJson;
-              try { upJson = JSON.parse(text); } catch { throw new Error(`Upload ${filename} non-JSON HTTP ${upRes.status}: ${text.slice(0, 200)}`); }
-              if (!upRes.ok || !upJson.ok) throw new Error(`Upload ${filename} failed: ${JSON.stringify(upJson)}`);
-              console.log('Uploaded to Hub:', assetKey, upJson.filename, upJson.sha256.slice(0, 12));
-            }
-          })().catch((e) => { console.error(e); process.exit(1); });
-          EOF
+        run: node scripts/publish-hub-release.mjs activate

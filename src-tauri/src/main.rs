@@ -545,88 +545,130 @@ fn windows_explorer_exit_ok(code: Option<i32>) -> bool {
     matches!(code, Some(0) | Some(1))
 }
 
+async fn stage_verified_update(
+    update: &quark_core::hub::VerifiedUpdate,
+    parent: &std::path::Path,
+) -> Result<(tempfile::TempDir, PathBuf)> {
+    let staging = tempfile::Builder::new()
+        .prefix("qdl-update-")
+        .tempdir_in(parent)
+        .map_err(|e| Error::new("IO", format!("无法创建安装暂存目录：{e}")))?;
+    let filename = update
+        .path()
+        .file_name()
+        .ok_or_else(|| Error::new("FORBIDDEN", "更新包缺少有效文件名"))?;
+    let staged_path = staging.path().join(filename);
+    let output = std::fs::File::create_new(&staged_path)
+        .map_err(|e| Error::new("IO", format!("无法创建安装暂存文件：{e}")))?;
+    update.copy_verified_to(output).await?;
+    Ok((staging, staged_path))
+}
+
+#[cfg(target_os = "windows")]
+fn prune_windows_update_stages(profile: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(profile) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("qdl-update-")
+            || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+        {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|time| time.elapsed().ok())
+            .is_some_and(|age| age >= Duration::from_secs(7 * 24 * 3600));
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 async fn install_verified_update(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, State>,
     params: Value,
 ) -> Result<Value> {
     let requested_path = params["path"].as_str().filter(|path| !path.is_empty());
-    let verified_path = state.hub.verify_update_for_install(requested_path).await?;
-
-    let filename = verified_path
+    let update = state.hub.verified_update_for_install(requested_path)?;
+    let filename = update
+        .path()
         .file_name()
-        .and_then(|s| s.to_str())
+        .and_then(|name| name.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
 
     #[cfg(target_os = "windows")]
-    {
-        if filename.ends_with(".exe") {
-            let mut cmd = std::process::Command::new(&verified_path);
-            if params["silent"].as_bool() == Some(true) {
-                cmd.arg("/S");
-            }
-            cmd.spawn()
-                .map_err(|e| Error::new("SYSTEM", format!("无法启动安装程序：{e}")))?;
-            let exit_handle = app.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(450)).await;
-                exit_handle.exit(0);
-            });
-            return Ok(json!({
-                "ok": true,
-                "mode": "installer_launched",
-                "restarting": true,
-                "message": "已启动安装程序并正在退出当前版本，请按提示完成升级"
-            }));
+    if filename.ends_with(".exe") {
+        let profile = state.core.profile_dir();
+        prune_windows_update_stages(&profile);
+        let (staging, staged_path) = stage_verified_update(&update, &profile).await?;
+        let mut cmd = std::process::Command::new(staged_path);
+        cmd.current_dir(staging.path());
+        if params["silent"].as_bool() == Some(true) {
+            cmd.arg("/S");
         }
-        open_local(verified_path, true).await?;
+        cmd.spawn()
+            .map_err(|e| Error::new("SYSTEM", format!("无法启动安装程序：{e}")))?;
+        let _ = staging.keep();
+        let exit_handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(450)).await;
+            exit_handle.exit(0);
+        });
         return Ok(json!({
             "ok": true,
-            "mode": "revealed",
-            "restarting": false,
-            "message": "已在资源管理器中定位便携版压缩包，解压覆盖即可完成升级"
+            "mode": "installer_launched",
+            "restarting": true,
+            "message": "已启动安装程序并正在退出当前版本，请按提示完成升级"
         }));
     }
 
     #[cfg(target_os = "macos")]
-    {
-        if filename.ends_with(".zip") {
-            if let Ok(cur_exe) = std::env::current_exe() {
-                if let Some(app_bundle) = cur_exe
-                    .ancestors()
-                    .find(|p| p.extension().and_then(|e| e.to_str()) == Some("app"))
-                    .map(PathBuf::from)
-                {
-                    let parent_writable = app_bundle
-                        .parent()
-                        .and_then(|p| std::fs::metadata(p).ok())
-                        .is_some_and(|m| !m.permissions().readonly());
-                    if parent_writable {
-                        let pid = std::process::id();
+    if filename.ends_with(".zip") {
+        let app_bundle = std::env::current_exe().ok().and_then(|exe| {
+            exe.ancestors()
+                .find(|p| p.extension().and_then(|e| e.to_str()) == Some("app"))
+                .map(PathBuf::from)
+        });
+        if let Some(app_bundle) = app_bundle {
+            if let Some(parent) = app_bundle.parent() {
+                match stage_verified_update(&update, parent).await {
+                    Ok((staging, staged_path)) => {
                         let script = r#"
 pid="$1"
 zip_path="$2"
-app_dest="$3"
-for i in $(seq 1 40); do
+stage="$3"
+app_dest="$4"
+keep_stage=0
+trap 'if [ "$keep_stage" = 0 ]; then /bin/rm -rf "$stage"; fi' 0
+for i in $(/usr/bin/seq 1 40); do
   kill -0 "$pid" 2>/dev/null || break
-  sleep 0.25
+  /bin/sleep 0.25
 done
-stage=$(mktemp -d "${TMPDIR:-/tmp}/qdl-upd.XXXXXX") || exit 1
-ditto -x -k "$zip_path" "$stage" || { rm -rf "$stage"; exit 1; }
-src_app=$(find "$stage" -maxdepth 2 -name "*.app" -print -quit)
-if [ -z "$src_app" ] || ! codesign --verify --deep --strict "$src_app" >/dev/null 2>&1; then
-  rm -rf "$stage"
+if kill -0 "$pid" 2>/dev/null; then exit 1; fi
+unpacked="$stage/unpacked"
+/bin/mkdir "$unpacked" || exit 1
+/usr/bin/ditto -x -k "$zip_path" "$unpacked" || exit 1
+src_app=$(/usr/bin/find "$unpacked" -maxdepth 2 -name "*.app" -type d -print -quit)
+if [ -z "$src_app" ] || ! /usr/bin/codesign --verify --deep --strict "$src_app" >/dev/null 2>&1; then
   exit 1
 fi
-bak="${app_dest}.qdl-old-$$"
-mv "$app_dest" "$bak" || { rm -rf "$stage"; exit 1; }
-if mv "$src_app" "$app_dest"; then
-  rm -rf "$bak" "$stage"
-  open -a "$app_dest"
+previous="$stage/previous.app"
+/bin/mv "$app_dest" "$previous" || exit 1
+if /bin/mv "$src_app" "$app_dest"; then
+  /usr/bin/open -a "$app_dest"
 else
-  mv "$bak" "$app_dest"
-  rm -rf "$stage"
+  if ! /bin/mv "$previous" "$app_dest"; then
+    keep_stage=1
+    echo "Previous installation preserved in $previous" >&2
+  fi
   exit 1
 fi
 "#;
@@ -634,11 +676,15 @@ fi
                             .arg("-c")
                             .arg(script)
                             .arg("qdl-updater")
-                            .arg(pid.to_string())
-                            .arg(&verified_path)
-                            .arg(&app_bundle)
+                            .arg(std::process::id().to_string())
+                            .arg(staged_path)
+                            .arg(staging.path())
+                            .arg(app_bundle)
                             .spawn()
-                            .map_err(|e| Error::new("SYSTEM", format!("无法启动应用原位升级：{e}")))?;
+                            .map_err(|e| {
+                                Error::new("SYSTEM", format!("无法启动应用原位升级：{e}"))
+                            })?;
+                        let _ = staging.keep();
                         let exit_handle = app.clone();
                         tauri::async_runtime::spawn(async move {
                             tokio::time::sleep(Duration::from_millis(350)).await;
@@ -651,78 +697,65 @@ fi
                             "message": "正在自动替换应用并重启至新版本…"
                         }));
                     }
+                    Err(error) if error.code != "IO" => return Err(error),
+                    Err(_) => {}
                 }
             }
         }
-        open_local(verified_path, true).await?;
-        return Ok(json!({
-            "ok": true,
-            "mode": "revealed",
-            "restarting": false,
-            "message": "已在 Finder 中定位更新包，解压替换即可升级"
-        }));
     }
 
     #[cfg(target_os = "linux")]
-    {
-        if filename.ends_with(".appimage") {
-            if let Ok(appimage_env) = std::env::var("APPIMAGE") {
-                let target = PathBuf::from(&appimage_env);
-                if std::fs::symlink_metadata(&target)
-                    .is_ok_and(|m| m.file_type().is_file() && !m.file_type().is_symlink())
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let staging = target.with_extension("AppImage.qdl-new");
-                    let installed = if let Ok(mut output) = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&staging)
-                    {
-                        let copied = std::fs::File::open(&verified_path)
-                            .and_then(|mut input| std::io::copy(&mut input, &mut output))
-                            .and_then(|_| output.set_permissions(std::fs::Permissions::from_mode(0o755)))
-                            .and_then(|_| output.sync_all());
-                        drop(output);
-                        let installed = copied.and_then(|_| std::fs::rename(&staging, &target)).is_ok();
-                        if !installed {
-                            let _ = std::fs::remove_file(&staging);
+    if filename.ends_with(".appimage") {
+        if let Some(target) = std::env::var_os("APPIMAGE").map(PathBuf::from) {
+            if let Some(parent) = target.parent() {
+                if std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_file()) {
+                    match stage_verified_update(&update, parent).await {
+                        Ok((_staging, staged_path)) => {
+                            use std::os::unix::fs::PermissionsExt;
+                            let installed = std::fs::set_permissions(
+                                &staged_path,
+                                std::fs::Permissions::from_mode(0o755),
+                            )
+                            .and_then(|_| std::fs::rename(&staged_path, &target));
+                            if installed.is_ok() {
+                                std::process::Command::new(&target).spawn().map_err(|e| {
+                                    Error::new("SYSTEM", format!("无法启动已安装更新：{e}"))
+                                })?;
+                                let exit_handle = app.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    tokio::time::sleep(Duration::from_millis(350)).await;
+                                    exit_handle.exit(0);
+                                });
+                                return Ok(json!({
+                                    "ok": true,
+                                    "mode": "inplace_swap",
+                                    "restarting": true,
+                                    "message": "已原位更新 AppImage 并正在重启至新版本…"
+                                }));
+                            }
                         }
-                        installed
-                    } else {
-                        false
-                    };
-                    if installed {
-                        let _ = std::process::Command::new(&target).spawn();
-                        let exit_handle = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            tokio::time::sleep(Duration::from_millis(350)).await;
-                            exit_handle.exit(0);
-                        });
-                        return Ok(json!({
-                            "ok": true,
-                            "mode": "inplace_swap",
-                            "restarting": true,
-                            "message": "已原位更新 AppImage 并正在重启至新版本…"
-                        }));
+                        Err(error) if error.code != "IO" => return Err(error),
+                        Err(_) => {}
                     }
                 }
             }
         }
-        open_local(verified_path, true).await?;
-        return Ok(json!({
-            "ok": true,
-            "mode": "revealed",
-            "restarting": false,
-            "message": "已在文件管理器中定位更新包，请安装升级"
-        }));
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        let _ = app;
-        open_local(verified_path, true).await?;
-        Ok(json!({ "ok": true, "mode": "revealed", "restarting": false }))
-    }
+    update.verify().await?;
+    open_local(update.path().to_path_buf(), true).await?;
+    #[cfg(target_os = "windows")]
+    let message = "已在资源管理器中定位便携版压缩包，解压覆盖即可完成升级";
+    #[cfg(target_os = "macos")]
+    let message = "已在 Finder 中定位更新包，解压替换即可升级";
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let message = "已在文件管理器中定位更新包，请安装升级";
+    Ok(json!({
+        "ok": true,
+        "mode": "revealed",
+        "restarting": false,
+        "message": message
+    }))
 }
 
 async fn open_local(path: PathBuf, reveal: bool) -> Result<Value> {

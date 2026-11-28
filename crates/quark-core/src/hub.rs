@@ -28,7 +28,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const DEFAULT_HUB_URL: &str = "https://qdl.xiaodianshiuwu.space";
 pub const DEFAULT_SERVER_REGION: &str = "海外节点 · Tokyo (JP)";
@@ -155,10 +155,95 @@ struct HubInner {
 }
 
 #[derive(Clone)]
-struct VerifiedUpdate {
+pub struct VerifiedUpdate {
     path: PathBuf,
     sha256: String,
     size: u64,
+}
+
+impl VerifiedUpdate {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub async fn verify(&self) -> Result<()> {
+        self.read_verified_into(&mut tokio::io::sink()).await
+    }
+
+    /// Copy the same bytes fed into the checksum to an already-owned staging file.
+    pub async fn copy_verified_to(&self, output: std::fs::File) -> Result<()> {
+        let mut output = tokio::fs::File::from_std(output);
+        self.read_verified_into(&mut output).await?;
+        output
+            .flush()
+            .await
+            .map_err(|e| Error::new("IO", format!("无法刷新安装暂存文件：{e}")))?;
+        output
+            .sync_all()
+            .await
+            .map_err(|e| Error::new("IO", format!("无法保存安装暂存文件：{e}")))
+    }
+
+    async fn read_verified_into(&self, output: &mut (impl AsyncWrite + Unpin)) -> Result<()> {
+        let metadata = tokio::fs::symlink_metadata(&self.path)
+            .await
+            .map_err(|_| Error::new("NOT_FOUND", "已下载的更新包不存在，请重新下载"))?;
+        if !metadata.file_type().is_file() {
+            return Err(Error::new(
+                "FORBIDDEN",
+                "安全拦截：更新包路径必须为普通文件",
+            ));
+        }
+        let modified = || Error::new("CHECKSUM_MISMATCH", "更新包内容已变化，请重新下载");
+        if metadata.len() != self.size {
+            return Err(modified());
+        }
+
+        let mut options = tokio::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        #[cfg(windows)]
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+        let file = options
+            .open(&self.path)
+            .await
+            .map_err(|e| Error::new("IO", format!("无法读取已下载的更新包：{e}")))?;
+        let opened = file
+            .metadata()
+            .await
+            .map_err(|e| Error::new("IO", format!("无法检查已打开的更新包：{e}")))?;
+        if !opened.file_type().is_file() {
+            return Err(Error::new(
+                "FORBIDDEN",
+                "安全拦截：更新包路径必须为普通文件",
+            ));
+        }
+        if opened.len() != self.size {
+            return Err(modified());
+        }
+        let mut reader = file.take(self.size.saturating_add(1));
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0; 64 * 1024];
+        loop {
+            let read = reader
+                .read(&mut buffer)
+                .await
+                .map_err(|e| Error::new("IO", format!("无法读取已下载的更新包：{e}")))?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+            output
+                .write_all(&buffer[..read])
+                .await
+                .map_err(|e| Error::new("IO", format!("无法写入安装暂存文件：{e}")))?;
+        }
+        if hex::encode(hasher.finalize()) != self.sha256 {
+            return Err(modified());
+        }
+        Ok(())
+    }
 }
 
 impl HubClient {
@@ -825,7 +910,10 @@ impl HubClient {
         if total > MAX_UPDATE_BYTES {
             return Err(Error::new("INVALID_MANIFEST", "更新包体积超出安全上限"));
         }
-        let mut file = tokio::fs::File::create(&part_path)
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part_path)
             .await
             .map_err(|e| Error::new("IO", format!("无法创建临时更新文件：{e}")))?;
         let mut hasher = Sha256::new();
@@ -892,9 +980,6 @@ impl HubClient {
             ));
         }
 
-        if tokio::fs::try_exists(&final_path).await.unwrap_or(false) {
-            let _ = tokio::fs::remove_file(&final_path).await;
-        }
         let mut rename_err = None;
         for attempt in 0..5 {
             match tokio::fs::rename(&part_path, &final_path).await {
@@ -911,6 +996,14 @@ impl HubClient {
         if let Some(e) = rename_err {
             let _ = tokio::fs::remove_file(&part_path).await;
             return Err(Error::new("IO", format!("保存更新包失败：{e}")));
+        }
+
+        if let Ok(mut guard) = self.inner.last_verified_update.lock() {
+            *guard = Some(VerifiedUpdate {
+                path: final_path.clone(),
+                sha256: actual_sha256.clone(),
+                size: downloaded,
+            });
         }
 
         on_progress(json!({
@@ -930,14 +1023,6 @@ impl HubClient {
             &format!("verified update {} from {}", manifest["version"].as_str().unwrap_or(app_version), key),
         );
 
-        if let Ok(mut guard) = self.inner.last_verified_update.lock() {
-            *guard = Some(VerifiedUpdate {
-                path: final_path.clone(),
-                sha256: actual_sha256.clone(),
-                size: downloaded,
-            });
-        }
-
         Ok(json!({
             "ok": true,
             "path": final_path.to_string_lossy(),
@@ -949,8 +1034,11 @@ impl HubClient {
         }))
     }
 
-    /// Recheck the most recent signed package before handing it to an installer.
-    pub async fn verify_update_for_install(&self, requested_path: Option<&str>) -> Result<PathBuf> {
+    /// Retrieve the receipt for the most recently verified signed download.
+    pub fn verified_update_for_install(
+        &self,
+        requested_path: Option<&str>,
+    ) -> Result<VerifiedUpdate> {
         let verified = self
             .inner
             .last_verified_update
@@ -958,10 +1046,7 @@ impl HubClient {
             .ok()
             .and_then(|value| value.clone())
             .ok_or_else(|| {
-                Error::new(
-                    "NOT_FOUND",
-                    "尚未完成已校验更新包的下载，请先点击下载更新",
-                )
+                Error::new("NOT_FOUND", "尚未完成已校验更新包的下载，请先点击下载更新")
             })?;
         if requested_path.is_some_and(|path| Path::new(path) != verified.path) {
             return Err(Error::new(
@@ -970,37 +1055,7 @@ impl HubClient {
             ));
         }
 
-        let metadata = tokio::fs::symlink_metadata(&verified.path)
-            .await
-            .map_err(|_| Error::new("NOT_FOUND", "已下载的更新包不存在，请重新下载"))?;
-        if !metadata.file_type().is_file() {
-            return Err(Error::new("FORBIDDEN", "安全拦截：更新包路径必须为普通文件"));
-        }
-        let modified = || Error::new("CHECKSUM_MISMATCH", "更新包内容已变化，请重新下载");
-        if metadata.len() != verified.size {
-            return Err(modified());
-        }
-
-        let file = tokio::fs::File::open(&verified.path)
-            .await
-            .map_err(|e| Error::new("IO", format!("无法读取已下载的更新包：{e}")))?;
-        let mut reader = file.take(verified.size.saturating_add(1));
-        let mut hasher = Sha256::new();
-        let mut buffer = vec![0; 64 * 1024];
-        loop {
-            let read = reader
-                .read(&mut buffer)
-                .await
-                .map_err(|e| Error::new("IO", format!("无法读取已下载的更新包：{e}")))?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-        }
-        if hex::encode(hasher.finalize()) != verified.sha256 {
-            return Err(modified());
-        }
-        Ok(verified.path)
+        Ok(verified)
     }
 
     /// Encrypt and upload strictly sanitized non-sensitive telemetry when opted in.
@@ -2727,16 +2782,30 @@ mod tests {
         assert!(saw_done);
         let downloaded_path = dl["path"].as_str().unwrap();
         assert_eq!(std::fs::read(downloaded_path).unwrap(), pkg_bytes);
-        assert_eq!(
-            hub.verify_update_for_install(Some(downloaded_path)).await.unwrap(),
-            Path::new(downloaded_path)
-        );
+        let receipt = hub.verified_update_for_install(Some(downloaded_path)).unwrap();
+        assert_eq!(receipt.path(), Path::new(downloaded_path));
+        receipt.verify().await.unwrap();
+        let stage = tmp.path().join("private-update-stage");
+        receipt.copy_verified_to(std::fs::File::create_new(&stage).unwrap()).await.unwrap();
+        assert_eq!(std::fs::read(&stage).unwrap(), pkg_bytes);
 
         let mut changed = pkg_bytes.to_vec();
         changed[0] ^= 1;
         std::fs::write(downloaded_path, changed).unwrap();
-        let error = hub.verify_update_for_install(None).await.unwrap_err();
+        let error = receipt.verify().await.unwrap_err();
         assert_eq!(error.code, "CHECKSUM_MISMATCH");
+        let invalid_stage = tmp.path().join("invalid-update-stage");
+        let error = receipt.copy_verified_to(std::fs::File::create_new(invalid_stage).unwrap())
+            .await.unwrap_err();
+        assert_eq!(error.code, "CHECKSUM_MISMATCH");
+        assert_eq!(std::fs::read(stage).unwrap(), pkg_bytes);
+        #[cfg(unix)]
+        {
+            let saved = tmp.path().join("original-update-package");
+            std::fs::rename(downloaded_path, &saved).unwrap();
+            std::os::unix::fs::symlink(&saved, downloaded_path).unwrap();
+            assert_eq!(receipt.verify().await.unwrap_err().code, "FORBIDDEN");
+        }
 
         // 4. L2 hot-UI SHA-256 verification & staging
         let applied = hub.apply_ui_hotfix("0.3.0-beta.1").await.unwrap();
