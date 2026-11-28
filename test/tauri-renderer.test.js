@@ -1139,7 +1139,15 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await click('#bulkbar [data-bulk="clear"]');
     await until('document.getElementById("bulkbar").hidden && QKUI.state.selected.size===0', 'clear button hides floating bulk dock');
 
-    await evaluate('__fixture.folderOpsMode=false;__fixture.asyncDeleteMode=false;QKUI.setView("files")');
+    // 单选压缩包时底部悬浮栏自动显示「云解压」按钮，点击直达云解压弹窗；非压缩包时自动隐藏
+    assert.equal(await evaluate('document.getElementById("bulk-unarchive").hidden'), true, 'bulk unarchive hidden when cleared');
+    await evaluate('__fixture.folderOpsMode=false;__fixture.cloudToolsMode=true;QKUI.navigate("0","全部文件",undefined,{skipCache:true})');
+    await until('QKUI.state.fid==="0" && !QKUI.state.loading && !!document.querySelector(".row[data-fid=\\"tool-zip\\"]")', 'root ready with archive file');
+    await click('.row[data-fid="tool-zip"] input[type="checkbox"]');
+    await until('!document.getElementById("bulkbar").hidden && !document.getElementById("bulk-unarchive").hidden', 'floating dock shows unarchive button for selected zip');
+    await click('#bulk-unarchive');
+    await until('!!document.querySelector(".dlg-title") && document.querySelector(".dlg-title").textContent.includes("云解压")', 'floating dock unarchive button opens cloud archive modal');
+    await evaluate('document.querySelector(".overlay .btn-ghost")?.click();__fixture.cloudToolsMode=false;__fixture.asyncDeleteMode=false;QKUI.setView("files")');
   });
 
 });

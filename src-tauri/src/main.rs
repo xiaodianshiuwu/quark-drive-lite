@@ -109,14 +109,22 @@ async fn qk_call(
     }
     let started = std::time::Instant::now();
     let result = qk_call_inner(&window, &app, &state, &method, params).await;
-    if let Err(ref err) = result {
-        if err.code != "ABORTED" && err.code != "OPT_IN_REQUIRED" {
-            let dur_ms = started.elapsed().as_millis() as u64;
+    let dur_ms = started.elapsed().as_millis() as u64;
+    match &result {
+        Err(err) if err.code != "ABORTED" && err.code != "OPT_IN_REQUIRED" => {
             let level = if method == "auth.login" && err.code == "TIMEOUT" {
                 "warn"
             } else {
                 "error"
             };
+            let mut meta_obj = serde_json::Map::new();
+            meta_obj.insert("method".into(), json!(method));
+            if let Some(ref k) = err.io_kind {
+                meta_obj.insert("ioKind".into(), json!(k));
+            }
+            if let Some(eno) = err.os_errno {
+                meta_obj.insert("osErrno".into(), json!(eno));
+            }
             state.hub.record_event_rich(
                 level,
                 method.split('.').next().unwrap_or("ipc"),
@@ -125,9 +133,34 @@ async fn qk_call(
                 err.http_status,
                 err.biz_code,
                 Some(dur_ms),
-                err.io_kind.as_ref().map(|k| json!({ "ioKind": k })),
+                Some(Value::Object(meta_obj)),
             );
         }
+        Ok(_)
+            if dur_ms >= 3000
+                && !method.starts_with("dialog.")
+                && !matches!(
+                    method.as_str(),
+                    "auth.login"
+                        | "hub.downloadUpdate"
+                        | "hub.installUpdate"
+                        | "chat.send"
+                        | "fs.taskStatus"
+                        | "archive.unarchive"
+                ) =>
+        {
+            state.hub.record_event_rich(
+                "warn",
+                "slow_api",
+                Some("SLOW_CALL"),
+                &format!("{} slow ({}ms)", method, dur_ms),
+                None,
+                None,
+                Some(dur_ms),
+                Some(json!({ "method": method })),
+            );
+        }
+        _ => {}
     }
     result
 }
@@ -937,6 +970,25 @@ fn main() {
             let profile_lock = opts.open(profile.join("app.lock"))?;
             fs2::FileExt::try_lock_exclusive(&profile_lock)
                 .map_err(|_| Error::new("CONFLICT", "此资料目录已有客户端正在运行"))?;
+            {
+                let crash_profile = profile.clone();
+                let prev_hook = std::panic::take_hook();
+                std::panic::set_hook(Box::new(move |info| {
+                    let loc = info
+                        .location()
+                        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                        .unwrap_or_else(|| "unknown".into());
+                    let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "non-string panic payload".into()
+                    };
+                    quark_core::hub::record_panic_breadcrumb(&crash_profile, &loc, &msg);
+                    prev_hook(info);
+                }));
+            }
             let core = Core::open(profile.clone())?;
             let transfers = TransferManager::open(core.clone())?;
             let hub = HubClient::new(core.clone(), HubConfig::from_env_or_default())?;

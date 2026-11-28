@@ -464,30 +464,89 @@
     }
   }
 
-  function recordDiag(level, category, code, msg) {
+  function recordDiag(level, category, code, msg, extra) {
     try {
       if (API.injected && API.has('hub', 'recordEvent')) {
-        API.hub.recordEvent({
+        var payload = {
           level: level || 'info',
           category: category || 'ui',
           code: code || undefined,
           msg: String(msg || '').slice(0, 280)
-        }).catch(function () {});
+        };
+        if (extra && typeof extra === 'object') {
+          if (extra.httpStatus) payload.httpStatus = extra.httpStatus;
+          if (extra.bizCode !== undefined && extra.bizCode !== null) payload.bizCode = extra.bizCode;
+          if (extra.durationMs !== undefined && extra.durationMs !== null) payload.durationMs = extra.durationMs;
+          if (extra.meta && typeof extra.meta === 'object') payload.meta = extra.meta;
+        }
+        API.hub.recordEvent(payload).catch(function () {});
       }
     } catch (_) {}
+  }
+
+  /** 将底层技术错误转译为用户易懂的中文原因与操作建议（保留原有明确中文提示，仅兜底生硬报错）。 */
+  function friendlyErrorMessage(err, fallback) {
+    var code = (err && err.code) ? String(err.code) : '';
+    var rawMsg = (err && err.message) ? String(err.message).trim() : '';
+    var biz = err && err.bizCode;
+    var hasReadableZh = /[\u4e00-\u9fa5]{4,}/.test(rawMsg)
+      && !/^(请求失败|操作失败|服务异常|未知错误|HTTP \d+|SERVER|NETWORK|TIMEOUT|LOCAL_IO|PARSE|CONFLICT)$/i.test(rawMsg);
+
+    if (API.isNeedLogin(err) || code === 'NEED_LOGIN') {
+      return '登录状态已失效，请重新扫码登录';
+    }
+    if (biz === 15000 || (code === 'SERVER' && /15000/.test(rawMsg))) {
+      return '夸克云端处理超时（该目录内容较多时可能出现），请稍后再试';
+    }
+    if (code === 'RATE_LIMIT') {
+      return '操作稍微有点快，夸克服务器暂时限流，请等几秒再试';
+    }
+    if (code === 'NO_SPACE') {
+      return '云盘剩余空间不足，请清理文件或清空回收站后再试';
+    }
+    if (code === 'ARCHIVE_DAMAGED') {
+      return '该压缩包可能已损坏，或暂不支持此压缩格式';
+    }
+    if (code === 'ARCHIVE_PASSWORD') {
+      return '该压缩包已加密，请输入正确的解压密码后重试';
+    }
+    if (code === 'ARCHIVE_LIMIT') {
+      return '云解压次数或单包体积已达到当前账号上限';
+    }
+    if (hasReadableZh) return rawMsg;
+    if (code === 'TIMEOUT') return '请求等待超时，可能是网络波动或服务器繁忙，请稍后再试';
+    if (code === 'NETWORK') return '网络连接不太稳定，请检查网络或代理设置后重试';
+    if (code === 'LOCAL_IO') return '本地文件读写失败，请检查保存目录权限和磁盘剩余空间';
+    if (code === 'PARSE') return '服务器返回的数据格式异常，请稍后重试';
+    if (code === 'CONFLICT') return '目标位置已存在同名文件或状态已变化，请刷新后重试';
+    if (code === 'NOT_FOUND') return '目标文件或文件夹已不存在，请刷新目录后重试';
+    if (code === 'FORBIDDEN') return '当前操作没有权限，请检查账号状态或目录权限';
+    if (code === 'SERVER') return '夸克云端服务暂时开小差，请稍后再试';
+    if (code === 'CONTENT_MISMATCH') return '文件内容校验不一致，原文件已保留，请重试';
+    return rawMsg || fallback || '操作暂时未能完成，请稍后重试';
   }
 
   /** 统一错误上报：NEED_LOGIN 由 QKAPI.onNeedLogin 统一驱动提示条，这里只负责文案。 */
   function reportError(err, fallback) {
     var e = API.normalizeError(err, fallback);
     if (API.isNeedLogin(e)) {
-      toast('error', '登录状态已失效，请重新登录');
+      toast('error', '登录状态已失效，请重新扫码登录');
       return e;
     }
     if (e.code !== 'ABORTED' && e.code !== 'OPT_IN_REQUIRED') {
-      recordDiag('error', 'ui', e.code || 'UI_ERROR', (fallback ? fallback + ': ' : '') + (e.message || ''));
+      recordDiag(
+        'error',
+        'ui',
+        e.code || 'UI_ERROR',
+        (fallback ? fallback + ': ' : '') + (e.message || ''),
+        {
+          httpStatus: e.httpStatus,
+          bizCode: e.bizCode,
+          meta: { view: state.view, fallback: fallback || '' }
+        }
+      );
     }
-    toast('error', e.message || fallback || '操作失败');
+    toast('error', friendlyErrorMessage(e, fallback));
     return e;
   }
 
@@ -2436,10 +2495,12 @@
     var visibleSelCount = 0;
     var totalSelCount = 0;
     var selBytes = 0;
+    var singleSelectedItem = null;
     state.selected.forEach(function (fid) {
       var it = state.itemMap[fid];
       if (it) {
         totalSelCount += 1;
+        singleSelectedItem = it;
         if (visibleSet.has(fid)) visibleSelCount += 1;
         if (!it.dir && it.size > 0) selBytes += Number(it.size) || 0;
       }
@@ -2447,6 +2508,14 @@
     box.checked = loaded > 0 && visibleSelCount >= loaded;
     box.indeterminate = visibleSelCount > 0 && visibleSelCount < loaded;
     box.disabled = loaded === 0;
+
+    if (el.bulkUnarchive) {
+      var showBulkUnarchive = totalSelCount === 1
+        && !!singleSelectedItem
+        && isArchiveItem(singleSelectedItem)
+        && API.has('archive', 'preview');
+      el.bulkUnarchive.hidden = !showBulkUnarchive;
+    }
 
     var hiddenSel = Math.max(0, totalSelCount - visibleSelCount);
     if (el.fileCard) el.fileCard.classList.toggle('has-selection', totalSelCount > 0);
@@ -4437,6 +4506,12 @@
     if (action === 'clear') { clearSelection(); return; }
     if (!items.length) { toast('warn', '请先选择项目'); return; }
     if (action === 'download') return downloadItems(items);
+    if (action === 'unarchive') {
+      var arc = items.find(isArchiveItem);
+      if (arc) return openArchiveModal(arc);
+      toast('warn', '请选择一个压缩包文件进行云解压');
+      return;
+    }
     if (action === 'move') return doTransferOp('move', items);
     if (action === 'copy') return doTransferOp('copy', items);
     if (action === 'remove') return doRemove(items, { bulk: true });
@@ -7251,7 +7326,7 @@
           counter.textContent = (step + 1) + ' / ' + TUTORIAL_STEPS.length;
           heroIc.textContent = '';
           heroIc.appendChild(icon(s.icon));
-          var ver = (state.appInfo && state.appInfo.version) ? state.appInfo.version : '1.3.0';
+          var ver = (state.appInfo && state.appInfo.version) ? state.appInfo.version : '1.3.1';
           titleEl.textContent = s.showVersion ? (s.title + ' v' + ver) : s.title;
           subEl.textContent = s.sub;
           pointsBox.textContent = '';
@@ -8099,18 +8174,48 @@
       }
     });
 
-    // 全局未捕获异常自动记录到脱敏诊断缓冲，便于用户提交反馈时定位真实问题
+    // 全局未捕获异常自动记录到脱敏诊断缓冲（含脚本基名与行号，不含本机路径或文件名），便于定位程序本身的问题
     window.addEventListener('error', function (ev) {
       var msg = (ev && ev.message) ? String(ev.message) : 'window error';
       // Chromium/WebView2 良性 ResizeObserver 帧末通知，不属于运行错误
       if (/^ResizeObserver loop/i.test(msg)) return;
-      recordDiag('error', 'window', 'JS_ERROR', msg);
+      var src = ev && ev.filename ? String(ev.filename).split(/[\\/]/).pop().split('?')[0] : '';
+      var loc = src ? (src + ':' + (ev.lineno || 0) + ':' + (ev.colno || 0)) : '';
+      recordDiag('error', 'window', 'JS_ERROR', loc ? (msg + ' @ ' + loc) : msg, {
+        meta: { view: state.view, loc: loc || undefined }
+      });
     });
     window.addEventListener('unhandledrejection', function (ev) {
       var r = ev && ev.reason;
       var msg = r && r.message ? String(r.message) : String(r || 'unhandled rejection');
-      recordDiag('error', 'window', 'UNHANDLED_REJECTION', msg);
+      var topFrame = '';
+      if (r && typeof r.stack === 'string') {
+        var m = r.stack.match(/([A-Za-z0-9_.-]+\.js:\d+:\d+)/);
+        if (m) topFrame = m[1];
+      }
+      recordDiag('error', 'window', (r && r.code) ? String(r.code) : 'UNHANDLED_REJECTION', topFrame ? (msg + ' @ ' + topFrame) : msg, {
+        httpStatus: r && r.httpStatus ? r.httpStatus : undefined,
+        bizCode: r && r.bizCode !== undefined ? r.bizCode : undefined,
+        meta: { view: state.view, frame: topFrame || undefined }
+      });
     });
+
+    // 轻量主线程卡顿监控：前台页面事件循环阻塞 >= 2.5s 时记录诊断日志用于性能排查
+    (function startStallMonitor() {
+      var lastTick = Date.now();
+      var timer = setInterval(function () {
+        var now = Date.now();
+        var drift = now - lastTick - 2000;
+        lastTick = now;
+        if (!document.hidden && drift >= 2500 && drift < 120000) {
+          recordDiag('warn', 'ui_perf', 'MAIN_THREAD_STALL', 'renderer main thread stalled ' + drift + 'ms', {
+            durationMs: drift,
+            meta: { view: state.view, rows: rowMap.size, transfers: (state.transfers || []).length }
+          });
+        }
+      }, 2000);
+      unsubs.push(function () { clearInterval(timer); });
+    })();
 
     // 完整桌面端快捷键工作流（严格守卫模态框与输入框）
     document.addEventListener('keydown', function (e) {
@@ -8349,6 +8454,7 @@
     el.statusbarSummary = $('statusbar-summary');
     el.statusbarHint = $('statusbar-hint');
     el.bulkbar = $('bulkbar');
+    el.bulkUnarchive = $('bulk-unarchive');
     el.bulkCount = $('bulk-count');
     el.fileCard = $('file-card');
     el.listhead = $('listhead');
@@ -8504,6 +8610,7 @@
   }
 
   async function boot() {
+    var bootStartedAt = Date.now();
     cacheEls();
     // 优先应用本地缓存主题，避免深色模式首帧白屏闪烁
     try {
@@ -8621,6 +8728,11 @@
     if (!API.isMock && !state.settings.tutorialSeen) {
       await showOnboardingTutorial();
     }
+    var bootMs = Date.now() - bootStartedAt;
+    recordDiag(bootMs >= 4000 ? 'warn' : 'info', 'perf', 'BOOT_TIMING', 'app boot ready in ' + bootMs + 'ms', {
+      durationMs: bootMs,
+      meta: { loggedIn: !!(acct && acct.loggedIn), view: state.view, items: state.items.length }
+    });
     // L2 看门狗确认：通知 Rust 端当前界面（含热更新界面）已正常首屏渲染完成，并同步当前热配置
     if (API.has('hub', 'uiReady')) {
       API.hub.uiReady().then(function (st) {
@@ -8659,6 +8771,6 @@
     openStorageDetailModal: openStorageDetailModal,
     loadRecycle: loadRecycle,
     getRowCount: function () { return rowMap.size; },
-    version: '1.3.0'
+    version: '1.3.1'
   };
 })();

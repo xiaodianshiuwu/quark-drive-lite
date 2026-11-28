@@ -62,6 +62,7 @@ pub(crate) fn io_kind_label(e: &std::io::Error) -> &'static str {
 }
 
 pub(crate) fn io_err(e: std::io::Error) -> Error {
+    let raw_errno = e.raw_os_error();
     let kind = io_kind_label(&e);
     let msg = match kind {
         "StorageFull" => "本地磁盘空间不足，请清理空间后重试",
@@ -72,7 +73,11 @@ pub(crate) fn io_err(e: std::io::Error) -> Error {
         "ReadOnlyFilesystem" => "目标磁盘处于只读状态，请更换保存目录",
         _ => "本地文件访问失败，请检查目录权限和磁盘空间",
     };
-    err("LOCAL_IO", msg).with_io_kind(kind)
+    let mut out = err("LOCAL_IO", msg).with_io_kind(kind);
+    if let Some(code) = raw_errno {
+        out = out.with_os_errno(code);
+    }
+    out
 }
 pub(crate) fn net_err(_: reqwest::Error) -> Error {
     err("NETWORK", "网络传输失败，请检查连接后重试")
@@ -95,9 +100,15 @@ pub(crate) struct RunTelemetry {
     pub started_at: std::time::Instant,
     pub transferred_bytes: AtomicU64,
     pub peak_bps: AtomicU64,
+    pub link_ms: AtomicU64,
+    pub probe_ms: AtomicU64,
+    pub transfer_ms: AtomicU64,
     pub hash_ms: AtomicU64,
+    pub publish_ms: AtomicU64,
     pub chunk_size: AtomicU64,
     pub parallel: AtomicU64,
+    pub min_parallel: AtomicU64,
+    pub aimd_downshifts: AtomicU64,
     pub size_bytes: AtomicU64,
     pub part_retries: AtomicU64,
     pub link_refreshes: AtomicU64,
@@ -109,6 +120,7 @@ pub(crate) struct RunTelemetry {
     pub attempts: u32,
     pub meta: Mutex<(&'static str, &'static str)>,
     pub io_kind: Mutex<Option<String>>,
+    pub os_errno: Mutex<Option<i32>>,
 }
 
 impl RunTelemetry {
@@ -117,9 +129,15 @@ impl RunTelemetry {
             started_at: std::time::Instant::now(),
             transferred_bytes: AtomicU64::new(0),
             peak_bps: AtomicU64::new(0),
+            link_ms: AtomicU64::new(0),
+            probe_ms: AtomicU64::new(0),
+            transfer_ms: AtomicU64::new(0),
             hash_ms: AtomicU64::new(0),
+            publish_ms: AtomicU64::new(0),
             chunk_size: AtomicU64::new(0),
             parallel: AtomicU64::new(1),
+            min_parallel: AtomicU64::new(0),
+            aimd_downshifts: AtomicU64::new(0),
             size_bytes: AtomicU64::new(0),
             part_retries: AtomicU64::new(0),
             link_refreshes: AtomicU64::new(0),
@@ -131,11 +149,37 @@ impl RunTelemetry {
             attempts,
             meta: Mutex::new(("unknown", "init")),
             io_kind: Mutex::new(None),
+            os_errno: Mutex::new(None),
         })
     }
     pub(crate) fn set_io_kind(&self, kind: &str) {
         if let Ok(mut g) = self.io_kind.lock() {
             *g = Some(kind.to_string());
+        }
+    }
+    pub(crate) fn set_os_errno(&self, errno: i32) {
+        if let Ok(mut g) = self.os_errno.lock() {
+            *g = Some(errno);
+        }
+    }
+    pub(crate) fn add_link_ms(&self, ms: u64) {
+        self.link_ms.fetch_add(ms, Ordering::Relaxed);
+    }
+    pub(crate) fn add_probe_ms(&self, ms: u64) {
+        self.probe_ms.fetch_add(ms, Ordering::Relaxed);
+    }
+    pub(crate) fn add_transfer_ms(&self, ms: u64) {
+        self.transfer_ms.fetch_add(ms, Ordering::Relaxed);
+    }
+    pub(crate) fn add_publish_ms(&self, ms: u64) {
+        self.publish_ms.fetch_add(ms, Ordering::Relaxed);
+    }
+    pub(crate) fn record_aimd_downshift(&self, next_parallel: usize) {
+        self.aimd_downshifts.fetch_add(1, Ordering::Relaxed);
+        let next = next_parallel as u64;
+        let prev = self.min_parallel.load(Ordering::Relaxed);
+        if prev == 0 || next < prev {
+            self.min_parallel.store(next, Ordering::Relaxed);
         }
     }
     pub(crate) fn set_strategy(&self, s: &'static str) {
@@ -202,7 +246,10 @@ impl RunTelemetry {
         let peak_bps = self.peak_bps.load(Ordering::Relaxed).max(avg_bps);
         let (strategy, stage) = self.meta.lock().map(|m| *m).unwrap_or(("unknown", "unknown"));
         let io_kind = self.io_kind.lock().ok().and_then(|g| g.clone());
+        let os_errno = self.os_errno.lock().ok().and_then(|g| *g);
         let http = self.http_status.load(Ordering::Relaxed);
+        let init_parallel = self.parallel.load(Ordering::Relaxed);
+        let min_p = self.min_parallel.load(Ordering::Relaxed);
         json!({
             "ts": now() as i64,
             "kind": kind,
@@ -210,11 +257,17 @@ impl RunTelemetry {
             "sizeBytes": size,
             "transferredBytes": transferred,
             "durationMs": dur_ms,
+            "linkMs": self.link_ms.load(Ordering::Relaxed),
+            "probeMs": self.probe_ms.load(Ordering::Relaxed),
+            "transferMs": self.transfer_ms.load(Ordering::Relaxed),
             "hashMs": self.hash_ms.load(Ordering::Relaxed),
+            "publishMs": self.publish_ms.load(Ordering::Relaxed),
             "avgBps": avg_bps,
             "peakBps": peak_bps,
             "chunkSize": self.chunk_size.load(Ordering::Relaxed),
-            "parallel": self.parallel.load(Ordering::Relaxed),
+            "parallel": init_parallel,
+            "minParallel": if min_p > 0 { min_p } else { init_parallel },
+            "aimdDownshifts": self.aimd_downshifts.load(Ordering::Relaxed),
             "concurrency": self.concurrency,
             "strategy": strategy,
             "attempts": self.attempts,
@@ -227,6 +280,7 @@ impl RunTelemetry {
             "httpStatus": if (100..=599).contains(&http) { Some(http) } else { None },
             "stage": stage,
             "ioKind": io_kind,
+            "osErrno": os_errno,
         })
     }
 }
@@ -760,6 +814,9 @@ impl TransferManager {
                                 }
                                 if let Some(ref ik) = e.io_kind {
                                     tel.set_io_kind(ik);
+                                }
+                                if let Some(eno) = e.os_errno {
+                                    tel.set_os_errno(eno);
                                 }
                                 if t.status == "running" {
                                     t.status = "error".into();

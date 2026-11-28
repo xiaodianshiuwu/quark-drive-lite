@@ -31,6 +31,8 @@ pub struct Error {
     pub http_status: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub io_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_errno: Option<i32>,
 }
 impl Error {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
@@ -40,10 +42,15 @@ impl Error {
             biz_code: None,
             http_status: None,
             io_kind: None,
+            os_errno: None,
         }
     }
     pub fn with_io_kind(mut self, kind: impl Into<String>) -> Self {
         self.io_kind = Some(kind.into());
+        self
+    }
+    pub fn with_os_errno(mut self, errno: i32) -> Self {
+        self.os_errno = Some(errno);
         self
     }
 }

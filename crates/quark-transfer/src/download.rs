@@ -182,7 +182,9 @@ pub(crate) async fn run(
         .fid
         .clone()
         .ok_or_else(|| err("INVALID_ARG", "缺少下载文件 id"))?;
+    let info_start = Instant::now();
     let info = cancellable(token, m.inner.core.call("fs.info", json!(fid))).await?;
+    tel.add_link_ms(info_start.elapsed().as_millis() as u64);
     if info["dir"].as_bool().unwrap_or(false) {
         return Err(err("INVALID_ARG", "请进入文件夹选择要下载的文件"));
     }
@@ -311,7 +313,9 @@ pub(crate) async fn run(
         // Fast path for small files: skip the 1-byte Range probe and download in one direct stream
         // with inline hashing (eliminates 1 RTT + full post-download disk re-read).
         tel.set_stage("get_link");
+        let link_start = Instant::now();
         let link = get_link(m, &fid, token).await?;
+        tel.add_link_ms(link_start.elapsed().as_millis() as u64);
         let exists = fs::try_exists(&temp).await.map_err(io_err)?;
         if exists {
             let meta = fs::symlink_metadata(&temp).await.map_err(io_err)?;
@@ -337,12 +341,18 @@ pub(crate) async fn run(
             "single_small_direct"
         });
         tel.set_stage("single");
-        Some(single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?)
+        let xfer_start = Instant::now();
+        let digests = single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?;
+        tel.add_transfer_ms(xfer_start.elapsed().as_millis() as u64);
+        Some(digests)
     } else {
         // Probe server FIRST (with retries on transient failures + draining 1-byte body for keep-alive)
         // before touching disk or spending multi-GB I/O on verify_parts().
         tel.set_stage("probe");
+        let link_start = Instant::now();
         let mut link = get_link(m, &fid, token).await?;
+        tel.add_link_ms(link_start.elapsed().as_millis() as u64);
+        let probe_start = Instant::now();
         let probe = {
             let mut last_probe_err = None;
             let mut ok_probe = None;
@@ -430,6 +440,7 @@ pub(crate) async fn run(
         } else {
             drop(probe);
         }
+        tel.add_probe_ms(probe_start.elapsed().as_millis() as u64);
         // Ranges may only be combined when the server supplies a strong representation validator.
         // A missing/weak validator falls back to one complete response and never resumes old pieces.
         let bound_etag = strong_etag(&etag).unwrap_or("").to_string();
@@ -476,16 +487,25 @@ pub(crate) async fn run(
             };
             tel.set_strategy(strat);
             tel.set_stage("multipart");
+            let xfer_start = Instant::now();
             match multipart_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await {
-                Ok(()) => None,
+                Ok(()) => {
+                    tel.add_transfer_ms(xfer_start.elapsed().as_millis() as u64);
+                    None
+                }
                 Err(e) if e.code == "RANGE_UNSUPPORTED" => {
                     tel.set_strategy("single_fallback");
                     tel.set_stage("single");
                     cp.parts.clear();
                     store(m, id, &cp)?;
-                    Some(single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?)
+                    let digests = single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?;
+                    tel.add_transfer_ms(xfer_start.elapsed().as_millis() as u64);
+                    Some(digests)
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    tel.add_transfer_ms(xfer_start.elapsed().as_millis() as u64);
+                    return Err(e);
+                }
             }
         } else {
             tel.set_strategy(if !range {
@@ -496,7 +516,10 @@ pub(crate) async fn run(
                 "single_zero"
             });
             tel.set_stage("single");
-            Some(single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?)
+            let xfer_start = Instant::now();
+            let digests = single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?;
+            tel.add_transfer_ms(xfer_start.elapsed().as_millis() as u64);
+            Some(digests)
         }
     };
     check(token)?;
@@ -548,7 +571,9 @@ pub(crate) async fn run(
     store(m, id, &cp)?;
     m.check_session()?;
     tel.set_stage("publish");
+    let pub_start = Instant::now();
     publish(&temp, Path::new(&cp.target), token).await?;
+    tel.add_publish_ms(pub_start.elapsed().as_millis() as u64);
     m.progress_with_telemetry(id, total, total, Some(tel))
 }
 async fn verify_parts(temp: &Path, cp: &mut Checkpoint, token: &CancellationToken) -> Result<()> {
@@ -943,6 +968,9 @@ async fn multipart_with_tel(
                         {
                             effective_parallel = (effective_parallel / 2).max(min_parallel);
                             recent_retries = 0;
+                            if let Some(tel) = tel {
+                                tel.record_aimd_downshift(effective_parallel);
+                            }
                         }
                     } else {
                         clean_streak = clean_streak.saturating_add(1);

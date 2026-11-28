@@ -225,13 +225,21 @@ jobs:
             for (const [assetKey, filename] of map) {
               const fp = path.join(dir, filename);
               if (!fs.existsSync(fp)) continue;
+              const stat = fs.statSync(fp);
+              // Cloudflare free-tier caps single POST body at 100 MiB; keep oversized AppImage on GitHub Release only.
+              if (stat.size > 95 * 1024 * 1024) {
+                console.log(`Skipping Hub upload for ${filename} (${(stat.size / 1048576).toFixed(1)} MiB > 95 MiB CF edge limit; available on GitHub Release)`);
+                continue;
+              }
               const qs = new URLSearchParams({ filename, assetKey, version: ver });
               const upRes = await fetch(`${hubUrl}/api/admin/releases/upload?${qs}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/octet-stream', 'X-Hub-Deploy-Token': token },
                 body: fs.readFileSync(fp),
               });
-              const upJson = await upRes.json();
+              const text = await upRes.text();
+              let upJson;
+              try { upJson = JSON.parse(text); } catch { throw new Error(`Upload ${filename} non-JSON HTTP ${upRes.status}: ${text.slice(0, 200)}`); }
               if (!upRes.ok || !upJson.ok) throw new Error(`Upload ${filename} failed: ${JSON.stringify(upJson)}`);
               console.log('Uploaded to Hub:', assetKey, upJson.filename, upJson.sha256.slice(0, 12));
             }

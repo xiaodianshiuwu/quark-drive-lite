@@ -37,7 +37,7 @@ pub const DEFAULT_X25519_PUB_B64: &str = "JiBk3eOuPSeJfVdmlf69pMVn5XdZdN2OoCswV+
 /// Server Ed25519 public key (32 raw bytes, base64). Public by design; private key lives only on server.
 pub const DEFAULT_ED25519_PUB_B64: &str = "+ruMjuPB615LgeQuCJI+HUn/C/Ie8KCU+cbQEU8r918=";
 
-const MAX_DIAG_ENTRIES: usize = 200;
+const MAX_DIAG_ENTRIES: usize = 300;
 const MAX_PENDING_SAMPLES: usize = 100;
 const MAX_UPDATE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_HUB_JSON_BYTES: usize = 2 * 1024 * 1024;
@@ -195,6 +195,9 @@ impl HubClient {
             meta: None,
             count: None,
         });
+        if let Some(crash_entry) = ingest_last_crash(&core.profile_dir()) {
+            diag.push_back(crash_entry);
+        }
 
         Ok(Self {
             inner: Arc::new(HubInner {
@@ -307,12 +310,20 @@ impl HubClient {
         let retries = sample["partRetries"].as_u64().unwrap_or(0);
         let rapid = sample["rapidUpload"].as_bool().unwrap_or(false);
         let stage = sample["stage"].as_str().unwrap_or("");
+        let io_kind = sample["ioKind"].as_str().unwrap_or("");
+        let os_errno = sample["osErrno"].as_i64();
+        let link_ms = sample["linkMs"].as_u64().unwrap_or(0);
+        let probe_ms = sample["probeMs"].as_u64().unwrap_or(0);
+        let transfer_ms = sample["transferMs"].as_u64().unwrap_or(0);
+        let hash_ms = sample["hashMs"].as_u64().unwrap_or(0);
+        let publish_ms = sample["publishMs"].as_u64().unwrap_or(0);
+        let aimd_downshifts = sample["aimdDownshifts"].as_u64().unwrap_or(0);
         let err_code = sample["errorCode"].as_str();
         let http_status = sample["httpStatus"].as_u64().and_then(|v| u16::try_from(v).ok());
 
         let level = if outcome == "error" {
             "error"
-        } else if retries > 0 || outcome == "canceled" {
+        } else if retries > 0 || aimd_downshifts > 0 || outcome == "canceled" {
             "warn"
         } else {
             "info"
@@ -324,8 +335,8 @@ impl HubClient {
             (_, "canceled", _) => "TRANSFER_CANCELED",
             _ => "TRANSFER_ERROR",
         });
-        let msg = format!(
-            "{} {} [{}] strat={} avg={}KB/s dur={}ms retries={}{}",
+        let mut msg = format!(
+            "{} {} [{}] strat={} avg={}KB/s dur={}ms retries={}",
             kind,
             outcome,
             bucket,
@@ -333,12 +344,25 @@ impl HubClient {
             avg_bps / 1024,
             dur_ms,
             retries,
-            if stage.is_empty() {
-                String::new()
-            } else {
-                format!(" stage={stage}")
-            }
         );
+        if link_ms > 0 || transfer_ms > 0 || hash_ms > 0 || publish_ms > 0 {
+            msg.push_str(&format!(
+                " (link={link_ms}ms probe={probe_ms}ms xfer={transfer_ms}ms hash={hash_ms}ms pub={publish_ms}ms)"
+            ));
+        }
+        if aimd_downshifts > 0 {
+            msg.push_str(&format!(" aimd={aimd_downshifts}"));
+        }
+        if !stage.is_empty() {
+            msg.push_str(&format!(" stage={stage}"));
+        }
+        if !io_kind.is_empty() {
+            if let Some(eno) = os_errno {
+                msg.push_str(&format!(" io={io_kind}({eno})"));
+            } else {
+                msg.push_str(&format!(" io={io_kind}"));
+            }
+        }
         self.record_event_rich(
             level,
             "transfer",
@@ -600,6 +624,17 @@ impl HubClient {
             .send()
             .await
             .map_err(|e| {
+                let nk = net_error_kind(&e);
+                self.record_event_rich(
+                    "warn",
+                    "hub_net",
+                    Some(if e.is_timeout() { "TIMEOUT" } else { "NETWORK" }),
+                    &format!("hub /updates/latest {nk}"),
+                    None,
+                    None,
+                    None,
+                    Some(json!({ "netKind": nk })),
+                );
                 if e.is_timeout() {
                     Error::new("TIMEOUT", OVERSEAS_NET_HINT)
                 } else {
@@ -936,15 +971,27 @@ impl HubClient {
         let path = "/api/v1/telemetry";
         let url = format!("{}{}", origin.as_str().trim_end_matches('/'), path);
 
-        let recent_events: Vec<DiagEntry> = self
-            .log_preview()
-            .into_iter()
-            .rev()
-            .take(30)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
+        // Prioritize keeping recent error/warn entries so high-volume info logs never evict diagnostics.
+        let all_logs = self.log_preview();
+        let mut important: Vec<DiagEntry> = all_logs
+            .iter()
+            .filter(|e| e.level == "error" || e.level == "warn")
+            .cloned()
             .collect();
+        if important.len() > 55 {
+            important = important.split_off(important.len() - 55);
+        }
+        let info_budget = 80usize.saturating_sub(important.len());
+        let mut infos: Vec<DiagEntry> = all_logs
+            .into_iter()
+            .filter(|e| e.level != "error" && e.level != "warn")
+            .collect();
+        if infos.len() > info_budget {
+            infos = infos.split_off(infos.len() - info_budget);
+        }
+        let mut recent_events = important;
+        recent_events.extend(infos);
+        recent_events.sort_by_key(|e| e.ts);
 
         let agg = if !samples.is_empty() {
             Some(aggregate_transfer_samples(&samples))
@@ -956,6 +1003,20 @@ impl HubClient {
                 .or_else(|| agg.as_ref().and_then(|a| json_u64(&a[key])))
         };
         let mem_mb = current_process_rss_mb().or_else(|| json_u64(&input["memMb"]));
+        let hot_ui_state = crate::hot_ui::load_state(&self.inner.core.profile_dir());
+        let tuning_ver = self.inner.core.tuning().version;
+        let cpu_cores = std::thread::available_parallelism()
+            .map(|n| n.get() as u64)
+            .ok();
+        let install_type = detect_install_type();
+        let settings = self.inner.core.settings();
+        let settings_summary = json!({
+            "downloadParallel": settings["downloadParallel"].as_u64().unwrap_or(16),
+            "downloadConcurrency": settings["downloadConcurrency"].as_u64().unwrap_or(2),
+            "downloadStrategy": settings["downloadStrategy"].as_str().unwrap_or("auto"),
+            "uploadConcurrency": settings["uploadConcurrency"].as_u64().unwrap_or(2),
+            "uploadPartConcurrency": settings["uploadPartConcurrency"].as_u64().unwrap_or(3),
+        });
 
         let payload = json!({
             "appVersion": app_version,
@@ -963,6 +1024,11 @@ impl HubClient {
             "arch": std::env::consts::ARCH,
             "eventType": redact_text(input["eventType"].as_str().unwrap_or("heartbeat"), 32),
             "clientHash": self.inner.session_salt,
+            "hotUiVersion": hot_ui_state.active_version,
+            "tuningVersion": tuning_ver,
+            "cpuCores": cpu_cores,
+            "installType": install_type,
+            "settingsSummary": settings_summary,
             "errorCode": input["errorCode"]
                 .as_str()
                 .or_else(|| agg.as_ref().and_then(|a| a["errorCode"].as_str()))
@@ -1261,6 +1327,17 @@ impl HubClient {
             .send()
             .await
             .map_err(|e| {
+                let nk = net_error_kind(&e);
+                self.record_event_rich(
+                    "warn",
+                    "hub_net",
+                    Some(if e.is_timeout() { "TIMEOUT" } else { "NETWORK" }),
+                    &format!("hub /updates/latest {nk}"),
+                    None,
+                    None,
+                    None,
+                    Some(json!({ "netKind": nk })),
+                );
                 if e.is_timeout() {
                     Error::new("TIMEOUT", OVERSEAS_NET_HINT)
                 } else {
@@ -1486,6 +1563,118 @@ fn json_u64(v: &Value) -> Option<u64> {
     })
 }
 
+/// Persist a strictly redacted panic breadcrumb (`file:line:col` + redacted message, zero PII)
+/// so the next app startup automatically captures and reports crashes into diagnostics.
+pub fn record_panic_breadcrumb(profile_dir: &std::path::Path, location: &str, message: &str) {
+    let clean_loc = location
+        .replace('\\', "/")
+        .rsplit_once("/src/")
+        .map(|(_, tail)| format!("src/{tail}"))
+        .unwrap_or_else(|| {
+            location
+                .replace('\\', "/")
+                .rsplit('/')
+                .next()
+                .unwrap_or("unknown")
+                .to_string()
+        });
+    let payload = json!({
+        "ts": now_ms(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "location": redact_text(&clean_loc, 120),
+        "message": redact_text(message, 220),
+    });
+    let path = profile_dir.join("last-crash.json");
+    if let Ok(bytes) = serde_json::to_vec(&payload) {
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
+fn ingest_last_crash(profile_dir: &std::path::Path) -> Option<DiagEntry> {
+    let path = profile_dir.join("last-crash.json");
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    if !meta.file_type().is_file() || meta.len() > 16 * 1024 {
+        let _ = std::fs::remove_file(&path);
+        return None;
+    }
+    let bytes = std::fs::read(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    let parsed: Value = serde_json::from_slice(&bytes).ok()?;
+    let loc = parsed["location"].as_str().unwrap_or("unknown");
+    let msg = parsed["message"].as_str().unwrap_or("panic");
+    let prev_ver = parsed["version"].as_str().unwrap_or("unknown");
+    Some(DiagEntry {
+        ts: parsed["ts"].as_i64().unwrap_or_else(now_ms),
+        level: "error".into(),
+        category: "crash".into(),
+        code: Some("RUST_PANIC".into()),
+        msg: redact_text(&format!("previous crash v{prev_ver} at {loc}: {msg}"), 320),
+        http_status: None,
+        biz_code: None,
+        duration_ms: None,
+        meta: Some(json!({ "prevVersion": prev_ver, "location": loc })),
+        count: None,
+    })
+}
+
+fn detect_install_type() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("APPIMAGE").is_some() {
+            return "appimage";
+        }
+        if std::env::current_exe()
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.starts_with("/usr/")))
+            .unwrap_or(false)
+        {
+            return "deb";
+        }
+        "linux_bin"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if std::env::current_exe()
+            .ok()
+            .is_some_and(|p| p.ancestors().any(|a| a.extension().and_then(|e| e.to_str()) == Some("app")))
+        {
+            return "app_bundle";
+        }
+        "macos_bin"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            let low = exe.to_string_lossy().to_ascii_lowercase();
+            if low.contains("program files") || low.contains("appdata\\local\\programs") {
+                return "win_setup";
+            }
+            return "win_portable";
+        }
+        "win_bin"
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        "other"
+    }
+}
+
+fn net_error_kind(e: &reqwest::Error) -> &'static str {
+    if e.is_timeout() {
+        "timeout"
+    } else if e.is_connect() {
+        "connect_failed"
+    } else if e.is_body() {
+        "body_error"
+    } else if e.is_decode() {
+        "decode_error"
+    } else if e.is_request() {
+        "request_error"
+    } else {
+        "network_other"
+    }
+}
+
 fn current_process_rss_mb() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
@@ -1609,7 +1798,11 @@ fn sanitize_transfer_sample(raw: &Value) -> Option<Value> {
     };
     let transferred_bytes = json_u64(&raw["transferredBytes"]).unwrap_or(0);
     let duration_ms = json_u64(&raw["durationMs"]).unwrap_or(0);
+    let link_ms = json_u64(&raw["linkMs"]).unwrap_or(0);
+    let probe_ms = json_u64(&raw["probeMs"]).unwrap_or(0);
+    let transfer_ms = json_u64(&raw["transferMs"]).unwrap_or(0);
     let hash_ms = json_u64(&raw["hashMs"]).unwrap_or(0);
+    let publish_ms = json_u64(&raw["publishMs"]).unwrap_or(0);
     let avg_bps = json_u64(&raw["avgBps"]).unwrap_or_else(|| {
         if duration_ms > 0 {
             transferred_bytes.saturating_mul(1000) / duration_ms.max(1)
@@ -1620,6 +1813,8 @@ fn sanitize_transfer_sample(raw: &Value) -> Option<Value> {
     let peak_bps = json_u64(&raw["peakBps"]).unwrap_or(avg_bps).max(avg_bps);
     let chunk_size = json_u64(&raw["chunkSize"]).unwrap_or(0);
     let parallel = json_u64(&raw["parallel"]).unwrap_or(1).min(256);
+    let min_parallel = json_u64(&raw["minParallel"]).unwrap_or(parallel).min(256);
+    let aimd_downshifts = json_u64(&raw["aimdDownshifts"]).unwrap_or(0).min(10_000);
     let concurrency = json_u64(&raw["concurrency"]).unwrap_or(1).min(64);
     let strategy = raw["strategy"]
         .as_str()
@@ -1636,6 +1831,9 @@ fn sanitize_transfer_sample(raw: &Value) -> Option<Value> {
         .filter(|&s| (100..=599).contains(&s));
     let stage = raw["stage"].as_str().and_then(sanitize_code_token);
     let io_kind = raw["ioKind"].as_str().and_then(sanitize_code_token);
+    let os_errno = raw["osErrno"]
+        .as_i64()
+        .filter(|&n| (-1_000_000..=1_000_000).contains(&n));
     let ts = raw["ts"].as_i64().unwrap_or_else(now_ms);
 
     Some(json!({
@@ -1646,11 +1844,17 @@ fn sanitize_transfer_sample(raw: &Value) -> Option<Value> {
         "sizeBucket": size_bucket,
         "transferredBytes": transferred_bytes,
         "durationMs": duration_ms,
+        "linkMs": link_ms,
+        "probeMs": probe_ms,
+        "transferMs": transfer_ms,
         "hashMs": hash_ms,
+        "publishMs": publish_ms,
         "avgBps": avg_bps,
         "peakBps": peak_bps,
         "chunkSize": chunk_size,
         "parallel": parallel,
+        "minParallel": min_parallel,
+        "aimdDownshifts": aimd_downshifts,
         "concurrency": concurrency,
         "strategy": strategy,
         "attempts": attempts,
@@ -1663,6 +1867,7 @@ fn sanitize_transfer_sample(raw: &Value) -> Option<Value> {
         "httpStatus": http_status,
         "stage": stage,
         "ioKind": io_kind,
+        "osErrno": os_errno,
     }))
 }
 

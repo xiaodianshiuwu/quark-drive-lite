@@ -393,7 +393,9 @@ pub(crate) async fn run(
         cp.phase = "pre_started".into();
         store(m, id, &cp)?;
         // Do not cancel an in-flight pre request: wait for its response so an accepted upload cannot be forgotten.
+        let pre_start = Instant::now();
         let result=m.inner.core.post_in_session(generation,"/1/clouddrive/file/upload/pre",json!({"ccp_hash_update":true,"parallel_upload":cp.parallel_requested,"dir_name":"","file_name":name,"format_type":mime,"l_created_at":now(),"l_updated_at":now(),"pdir_fid":parent,"size":size})).await;
+        tel.add_link_ms(pre_start.elapsed().as_millis() as u64);
         let env = match result {
             Ok(env) => env,
             Err(e) => {
@@ -438,11 +440,13 @@ pub(crate) async fn run(
         check(token)?;
         cp.phase = "hash_started".into();
         store(m, id, &cp)?;
+        let hash_api_start = Instant::now();
         let hash_result = m
             .inner
             .core
             .post_in_session(generation, "/1/clouddrive/file/update/hash", hash_request)
             .await;
+        tel.add_link_ms(hash_api_start.elapsed().as_millis() as u64);
         match hash_result {
             Ok(env) if env["data"]["finish"].as_bool() == Some(true) => {
                 if let Some(fid) = env["data"]["fid"].as_str().filter(|s| !s.is_empty()) {
@@ -648,6 +652,7 @@ pub(crate) async fn run(
             let mut unsaved_parts: u32 = 0;
             let mut last_flush = tokio::time::Instant::now();
             let live_done = live.clone();
+            let put_start = Instant::now();
             let result = part_window(
                 pending,
                 concurrency,
@@ -675,6 +680,7 @@ pub(crate) async fn run(
                 },
             )
             .await;
+            tel.add_transfer_ms(put_start.elapsed().as_millis() as u64);
             if unsaved_parts > 0 {
                 let _ = store(m, id, &cp);
             }
