@@ -8143,16 +8143,6 @@
     if (el.fbBtnPreview) el.fbBtnPreview.addEventListener('click', openHubLogPreviewModal);
     if (el.fbBtnSubmit) el.fbBtnSubmit.addEventListener('click', submitFeedbackForm);
     if (el.fbBtnRefreshHistory) el.fbBtnRefreshHistory.addEventListener('click', function () { loadMyFeedback({ silent: false }); });
-    if (API && !API.isMock && API.runtime === 'tauri') {
-      document.addEventListener('keydown', function (ev) {
-        var k = String(ev.key || '').toLowerCase();
-        var mod = ev.ctrlKey || ev.metaKey;
-        if (k === 'f12' || (mod && ev.shiftKey && (k === 'i' || k === 'j' || k === 'c')) || (mod && k === 'u')) {
-          ev.preventDefault();
-          ev.stopPropagation();
-        }
-      }, true);
-    }
     el.themeSeg.addEventListener('click', function (e) {
       var b = e.target.closest ? e.target.closest('.seg') : null;
       if (!b) return;

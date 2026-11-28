@@ -550,25 +550,8 @@ async fn install_verified_update(
     state: &tauri::State<'_, State>,
     params: Value,
 ) -> Result<Value> {
-    let verified_path = state.hub.last_verified_update_path().ok_or_else(|| {
-        Error::new(
-            "NOT_FOUND",
-            "尚未完成已校验更新包的下载，请先点击下载更新",
-        )
-    })?;
-    if let Some(req_path) = params["path"].as_str().filter(|s| !s.is_empty()) {
-        if PathBuf::from(req_path) != verified_path {
-            return Err(Error::new(
-                "FORBIDDEN",
-                "安全拦截：仅允许安装本次会话通过 Ed25519 + SHA-256 校验的更新包",
-            ));
-        }
-    }
-    let pkg_meta = std::fs::symlink_metadata(&verified_path)
-        .map_err(|_| Error::new("NOT_FOUND", "已下载的更新包不存在，请重新下载"))?;
-    if !pkg_meta.file_type().is_file() || pkg_meta.file_type().is_symlink() {
-        return Err(Error::new("FORBIDDEN", "安全拦截：更新包路径必须为普通文件"));
-    }
+    let requested_path = params["path"].as_str().filter(|path| !path.is_empty());
+    let verified_path = state.hub.verify_update_for_install(requested_path).await?;
 
     let filename = verified_path
         .file_name()
@@ -690,11 +673,25 @@ fi
                 {
                     use std::os::unix::fs::PermissionsExt;
                     let staging = target.with_extension("AppImage.qdl-new");
-                    if std::fs::copy(&verified_path, &staging).is_ok()
-                        && std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755))
-                            .is_ok()
-                        && std::fs::rename(&staging, &target).is_ok()
+                    let installed = if let Ok(mut output) = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&staging)
                     {
+                        let copied = std::fs::File::open(&verified_path)
+                            .and_then(|mut input| std::io::copy(&mut input, &mut output))
+                            .and_then(|_| output.set_permissions(std::fs::Permissions::from_mode(0o755)))
+                            .and_then(|_| output.sync_all());
+                        drop(output);
+                        let installed = copied.and_then(|_| std::fs::rename(&staging, &target)).is_ok();
+                        if !installed {
+                            let _ = std::fs::remove_file(&staging);
+                        }
+                        installed
+                    } else {
+                        false
+                    };
+                    if installed {
                         let _ = std::process::Command::new(&target).spawn();
                         let exit_handle = app.clone();
                         tauri::async_runtime::spawn(async move {
@@ -708,7 +705,6 @@ fi
                             "message": "已原位更新 AppImage 并正在重启至新版本…"
                         }));
                     }
-                    let _ = std::fs::remove_file(&staging);
                 }
             }
         }

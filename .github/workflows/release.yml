@@ -13,15 +13,67 @@ on:
         description: 'Release channel (stable / beta)'
         required: false
         default: 'stable'
+        type: choice
+        options: [stable, beta]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: qdl-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
+  release-source:
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.tag.outputs.name }}
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Validate release tag input
+        id: tag
+        env:
+          TAG_NAME: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*)?$ ]]; then
+            echo 'Expected a version tag such as v1.3.2.'
+            exit 1
+          fi
+          echo "name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.name }}
+          persist-credentials: false
+      - name: Record commit and verify package version
+        id: commit
+        env:
+          TAG_NAME: ${{ steps.tag.outputs.name }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          if [[ "$GITHUB_EVENT_NAME" == push && "$sha" != "$(git rev-parse "$GITHUB_SHA^{commit}")" ]]; then
+            echo 'The release tag moved since the push event.'
+            exit 1
+          fi
+          if [[ "$TAG_NAME" != "v$(node -p "require('./package.json').version")" ]]; then
+            echo 'The release tag does not match package.json.'
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  compatibility:
+    needs: release-source
+    uses: ./.github/workflows/p0-compatibility.yml
+    with:
+      release_sha: ${{ needs.release-source.outputs.sha }}
+
   build-windows:
+    needs: release-source
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-source.outputs.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
@@ -34,10 +86,9 @@ jobs:
         shell: pwsh
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
-          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/src --remap-path-prefix=C:\Users\runneradmin\.cargo=/cargo
         run: |
           $ErrorActionPreference = 'Stop'
-          npx tauri build --bundles nsis -- --locked
+          npm run build -- --bundles nsis -- --locked
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $outDir = Join-Path $PWD "dist-release"
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -70,9 +121,13 @@ jobs:
           if-no-files-found: error
 
   build-linux:
+    needs: release-source
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-source.outputs.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
@@ -89,7 +144,6 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
           APPIMAGE_EXTRACT_AND_RUN: '1'
-          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/src --remap-path-prefix=/home/runner/.cargo=/cargo
         run: |
           npm run build -- -- --locked
           mkdir -p dist-release
@@ -106,6 +160,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
+    needs: release-source
     strategy:
       fail-fast: false
       matrix:
@@ -119,6 +174,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-source.outputs.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
@@ -130,9 +188,9 @@ jobs:
       - name: Build macOS packages (${{ matrix.arch }})
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
-          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/src --remap-path-prefix=/Users/runner/.cargo=/cargo
+          MAC_BUNDLES: ${{ matrix.bundles }}
         run: |
-          npm run build -- --bundles ${{ matrix.bundles }} -- --locked
+          npm run build -- --bundles "$MAC_BUNDLES" -- --locked
           mkdir -p dist-release
           version=$(node -p "require('./package.json').version")
           source_app=$(node -p "require('./src-tauri/tauri.conf.json').productName + '.app'")
@@ -141,12 +199,14 @@ jobs:
           codesign --verify --deep --strict "$stage/QuarkDriveLite.app"
           ditto -c -k --norsrc --noextattr --keepParent "$stage/QuarkDriveLite.app" "dist-release/QuarkDriveLite-$version-macOS-${{ matrix.arch }}.zip"
           rm -rf "$stage"
-          if [[ "${{ matrix.bundles }}" == *"dmg"* ]]; then
+          if [[ "$MAC_BUNDLES" == *dmg* ]]; then
             shopt -s nullglob
             dmgs=(target/release/bundle/dmg/*.dmg)
-            if [ "${#dmgs[@]}" -ge 1 ]; then
-              cp "${dmgs[0]}" "dist-release/QuarkDriveLite-$version-macOS-${{ matrix.arch }}.dmg"
+            if [ "${#dmgs[@]}" -ne 1 ]; then
+              echo "Expected one macOS DMG, found ${#dmgs[@]}."
+              exit 1
             fi
+            cp "${dmgs[0]}" "dist-release/QuarkDriveLite-$version-macOS-${{ matrix.arch }}.dmg"
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -155,20 +215,24 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [build-windows, build-linux, build-macos]
+    needs: [release-source, compatibility, build-windows, build-linux, build-macos]
+    permissions:
+      contents: write
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-source.outputs.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
       - uses: actions/download-artifact@v4
         with:
           path: all-artifacts
+          pattern: release-*
           merge-multiple: true
       - name: Generate unified SHA256SUMS.txt & rich Chinese Release Notes
-        env:
-          TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           cd all-artifacts
           sha256sum QuarkDriveLite-* > SHA256SUMS.txt
@@ -237,13 +301,20 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+          TAG_NAME: ${{ needs.release-source.outputs.tag }}
+          RELEASE_SHA: ${{ needs.release-source.outputs.sha }}
         run: |
+          tag_commit=$(git ls-remote --exit-code origin "refs/tags/$TAG_NAME" "refs/tags/$TAG_NAME^{}" |
+            awk 'NR == 1 { sha=$1 } /\^\{\}$/ { sha=$1 } END { print sha }')
+          if [[ "$tag_commit" != "$RELEASE_SHA" ]]; then
+            echo 'The release tag changed after verification.'
+            exit 1
+          fi
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release edit "$TAG_NAME" --title "夸克网盘极简版 $TAG_NAME" --notes-file release-notes.md
             gh release upload "$TAG_NAME" all-artifacts/* --clobber
           else
-            gh release create "$TAG_NAME" all-artifacts/* \
+            gh release create "$TAG_NAME" all-artifacts/* --verify-tag \
               --title "夸克网盘极简版 $TAG_NAME" \
               --notes-file release-notes.md
           fi
@@ -251,7 +322,7 @@ jobs:
         env:
           HUB_URL: ${{ vars.QDL_HUB_URL || 'https://qdl.xiaodianshiuwu.space' }}
           HUB_DEPLOY_TOKEN: ${{ secrets.HUB_DEPLOY_TOKEN }}
-          CHANNEL: ${{ github.event.inputs.channel || 'stable' }}
+          CHANNEL: ${{ inputs.channel || 'stable' }}
         run: |
           if [ -z "${HUB_DEPLOY_TOKEN:-}" ]; then
             echo "HUB_DEPLOY_TOKEN not configured; skipping Tokyo Hub upload."
