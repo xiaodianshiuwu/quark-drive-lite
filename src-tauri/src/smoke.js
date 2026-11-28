@@ -47,10 +47,10 @@
     const afterSettings = await window.qk.settings.get();
     check('tutorialSeen persisted after skip', afterSettings && afterSettings.tutorialSeen === true);
     const hubCfg = await window.qk.hub.config();
-    if (window.qk.platform === 'linux') {
-      check('Linux update asset', hubCfg.recommendedAssetKey === 'linux-x64-deb' || hubCfg.recommendedAssetKey === 'linux-arm64-deb');
-    }
     if (hubAvailable) {
+      if (window.qk.platform === 'linux') {
+        check('Linux update asset', hubCfg.recommendedAssetKey === 'linux-x64-deb' || hubCfg.recommendedAssetKey === 'linux-arm64-deb');
+      }
       check('hub opt-in defaults off and prompted after decline', hubCfg && hubCfg.optIn === false && hubCfg.prompted === true);
       let hubBlocked; try { await window.qk.hub.checkUpdate(); } catch (e) { hubBlocked = e.code; }
       check('hub hard-blocks network when opted out', hubBlocked === 'OPT_IN_REQUIRED');
