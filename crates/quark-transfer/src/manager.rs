@@ -24,8 +24,55 @@ pub(crate) fn now() -> u64 {
 pub(crate) fn err(code: &str, message: impl Into<String>) -> Error {
     Error::new(code, message.into())
 }
-pub(crate) fn io_err(_: std::io::Error) -> Error {
-    err("LOCAL_IO", "本地文件访问失败，请检查目录权限和磁盘空间")
+pub(crate) fn io_kind_label(e: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind;
+    #[cfg(unix)]
+    if let Some(raw) = e.raw_os_error() {
+        match raw {
+            libc::EXDEV => return "CrossesDevices",
+            libc::ENOSPC => return "StorageFull",
+            libc::EBUSY | libc::ETXTBSY => return "ResourceBusy",
+            libc::ENAMETOOLONG => return "InvalidFilename",
+            libc::EROFS => return "ReadOnlyFilesystem",
+            _ => {}
+        }
+    }
+    #[cfg(windows)]
+    if let Some(raw) = e.raw_os_error() {
+        match raw {
+            17 => return "CrossesDevices",
+            39 | 112 => return "StorageFull",
+            32 | 33 => return "ResourceBusy",
+            123 | 206 => return "InvalidFilename",
+            19 => return "ReadOnlyFilesystem",
+            _ => {}
+        }
+    }
+    match e.kind() {
+        ErrorKind::NotFound => "NotFound",
+        ErrorKind::PermissionDenied => "PermissionDenied",
+        ErrorKind::AlreadyExists => "AlreadyExists",
+        ErrorKind::TimedOut => "TimedOut",
+        ErrorKind::Interrupted => "Interrupted",
+        ErrorKind::WriteZero => "WriteZero",
+        ErrorKind::Unsupported => "Unsupported",
+        ErrorKind::InvalidInput | ErrorKind::InvalidData => "InvalidInput",
+        _ => "Other",
+    }
+}
+
+pub(crate) fn io_err(e: std::io::Error) -> Error {
+    let kind = io_kind_label(&e);
+    let msg = match kind {
+        "StorageFull" => "本地磁盘空间不足，请清理空间后重试",
+        "PermissionDenied" => "本地目录无写入权限，请更换保存目录或检查权限",
+        "CrossesDevices" => "跨文件系统发布失败，请检查目标目录挂载状态",
+        "ResourceBusy" => "目标文件正被其他程序占用，请稍后重试",
+        "InvalidFilename" => "本地路径或文件名过长/非法，请缩短保存目录层级",
+        "ReadOnlyFilesystem" => "目标磁盘处于只读状态，请更换保存目录",
+        _ => "本地文件访问失败，请检查目录权限和磁盘空间",
+    };
+    err("LOCAL_IO", msg).with_io_kind(kind)
 }
 pub(crate) fn net_err(_: reqwest::Error) -> Error {
     err("NETWORK", "网络传输失败，请检查连接后重试")
@@ -61,6 +108,7 @@ pub(crate) struct RunTelemetry {
     pub concurrency: u16,
     pub attempts: u32,
     pub meta: Mutex<(&'static str, &'static str)>,
+    pub io_kind: Mutex<Option<String>>,
 }
 
 impl RunTelemetry {
@@ -82,7 +130,13 @@ impl RunTelemetry {
             concurrency,
             attempts,
             meta: Mutex::new(("unknown", "init")),
+            io_kind: Mutex::new(None),
         })
+    }
+    pub(crate) fn set_io_kind(&self, kind: &str) {
+        if let Ok(mut g) = self.io_kind.lock() {
+            *g = Some(kind.to_string());
+        }
     }
     pub(crate) fn set_strategy(&self, s: &'static str) {
         if let Ok(mut m) = self.meta.lock() {
@@ -147,6 +201,7 @@ impl RunTelemetry {
         };
         let peak_bps = self.peak_bps.load(Ordering::Relaxed).max(avg_bps);
         let (strategy, stage) = self.meta.lock().map(|m| *m).unwrap_or(("unknown", "unknown"));
+        let io_kind = self.io_kind.lock().ok().and_then(|g| g.clone());
         let http = self.http_status.load(Ordering::Relaxed);
         json!({
             "ts": now() as i64,
@@ -171,6 +226,7 @@ impl RunTelemetry {
             "errorCode": error_code,
             "httpStatus": if (100..=599).contains(&http) { Some(http) } else { None },
             "stage": stage,
+            "ioKind": io_kind,
         })
     }
 }
@@ -701,6 +757,9 @@ impl TransferManager {
                             Err(e) => {
                                 if let Some(st) = e.http_status {
                                     tel.set_http_status(st);
+                                }
+                                if let Some(ref ik) = e.io_kind {
+                                    tel.set_io_kind(ik);
                                 }
                                 if t.status == "running" {
                                     t.status = "error".into();

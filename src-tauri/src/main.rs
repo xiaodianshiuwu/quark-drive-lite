@@ -29,6 +29,9 @@ struct State {
     agent: Arc<AgentRuntime>,
     /// 可选作者服务器客户端（默认关闭，未开启时零外传）。
     hub: HubClient,
+    /// L2 前端签名热更新状态与看门狗确认标记。
+    hot_ui_confirmed: Arc<AtomicBool>,
+    hot_ui_active: Arc<AtomicBool>,
     login: Arc<AtomicBool>,
     logging_out: Arc<AtomicBool>,
     login_generation: Arc<AtomicU64>,
@@ -36,6 +39,48 @@ struct State {
     _profile_lock: Arc<std::fs::File>,
 }
 
+const HOT_UI_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost https://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
+
+fn hot_ui_entry_url() -> tauri::Url {
+    #[cfg(target_os = "windows")]
+    let raw = "http://qdl-ui.localhost/index.html";
+    #[cfg(not(target_os = "windows"))]
+    let raw = "qdl-ui://localhost/index.html";
+    tauri::Url::parse(raw).expect("valid hot-ui url")
+}
+
+fn builtin_ui_entry_url() -> tauri::Url {
+    #[cfg(target_os = "windows")]
+    let raw = "http://tauri.localhost/index.html";
+    #[cfg(not(target_os = "windows"))]
+    let raw = "tauri://localhost/index.html";
+    tauri::Url::parse(raw).expect("valid builtin url")
+}
+
+fn arm_hot_ui_watchdog(
+    window: tauri::WebviewWindow,
+    profile: PathBuf,
+    confirmed: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
+    hub: HubClient,
+) {
+    confirmed.store(false, Ordering::SeqCst);
+    active.store(true, Ordering::SeqCst);
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        if active.load(Ordering::SeqCst) && !confirmed.load(Ordering::SeqCst) {
+            quark_core::hot_ui::rollback(&profile, env!("CARGO_PKG_VERSION"), true);
+            active.store(false, Ordering::SeqCst);
+            hub.record_event(
+                "warn",
+                "hot_ui",
+                Some("HOT_UI_ROLLBACK"),
+                "hot UI boot watchdog timed out; rolled back to built-in UI",
+            );
+            let _ = window.navigate(builtin_ui_entry_url());
+        }
+    });
+}
 
 fn shell_error(e: impl std::fmt::Display) -> Error {
     Error::new("SYSTEM", e.to_string())
@@ -45,8 +90,9 @@ fn trusted(window: &tauri::WebviewWindow) -> bool {
     window.label() == "main"
         && window.url().is_ok_and(|u| {
             u.scheme() == "tauri"
+                || u.scheme() == "qdl-ui"
                 || ((u.scheme() == "http" || u.scheme() == "https")
-                    && u.host_str() == Some("tauri.localhost"))
+                    && matches!(u.host_str(), Some("tauri.localhost" | "qdl-ui.localhost")))
         })
 }
 
@@ -66,15 +112,20 @@ async fn qk_call(
     if let Err(ref err) = result {
         if err.code != "ABORTED" && err.code != "OPT_IN_REQUIRED" {
             let dur_ms = started.elapsed().as_millis() as u64;
+            let level = if method == "auth.login" && err.code == "TIMEOUT" {
+                "warn"
+            } else {
+                "error"
+            };
             state.hub.record_event_rich(
-                "error",
+                level,
                 method.split('.').next().unwrap_or("ipc"),
                 Some(&err.code),
                 &format!("{} failed ({})", method, err.code),
                 err.http_status,
                 err.biz_code,
                 Some(dur_ms),
-                None,
+                err.io_kind.as_ref().map(|k| json!({ "ioKind": k })),
             );
         }
     }
@@ -142,6 +193,47 @@ async fn qk_call_inner(
                         let _ = ev_handle.emit_to("main", "qk:update-progress", prog);
                     })
                     .await
+            }
+            "hub.installUpdate" => install_verified_update(app, state, params).await,
+            "hub.runtimeStatus" => Ok(state.hub.runtime_status(ver)),
+            "hub.applyUiHotfix" => state.hub.apply_ui_hotfix(ver).await,
+            "hub.reloadUi" => {
+                let profile = state.core.profile_dir();
+                if let Some(active_ver) = quark_core::hot_ui::prepare_boot(&profile, ver) {
+                    arm_hot_ui_watchdog(
+                        window.clone(),
+                        profile,
+                        state.hot_ui_confirmed.clone(),
+                        state.hot_ui_active.clone(),
+                        state.hub.clone(),
+                    );
+                    window.navigate(hot_ui_entry_url()).map_err(shell_error)?;
+                    Ok(json!({ "ok": true, "mode": "hot-ui", "version": active_ver }))
+                } else {
+                    state.hot_ui_active.store(false, Ordering::SeqCst);
+                    window
+                        .navigate(builtin_ui_entry_url())
+                        .map_err(shell_error)?;
+                    Ok(json!({ "ok": true, "mode": "builtin", "version": ver }))
+                }
+            }
+            "hub.uiReady" => {
+                state.hot_ui_confirmed.store(true, Ordering::SeqCst);
+                let st = quark_core::hot_ui::mark_boot_ready(&state.core.profile_dir(), ver);
+                Ok(json!({
+                    "ok": true,
+                    "activeVersion": st.active_version,
+                    "tuning": state.core.tuning().to_value()
+                }))
+            }
+            "hub.rollbackUi" => {
+                let blacklist = params["blacklist"].as_bool().unwrap_or(false);
+                quark_core::hot_ui::rollback(&state.core.profile_dir(), ver, blacklist);
+                state.hot_ui_active.store(false, Ordering::SeqCst);
+                window
+                    .navigate(builtin_ui_entry_url())
+                    .map_err(shell_error)?;
+                Ok(json!({ "ok": true, "rolledBack": true }))
             }
             "hub.sendTelemetry" => state.hub.send_telemetry(ver, params).await,
             "hub.flushTelemetry" => state.hub.flush_transfer_telemetry(ver).await,
@@ -416,6 +508,186 @@ fn windows_explorer_exit_ok(code: Option<i32>) -> bool {
     matches!(code, Some(0) | Some(1))
 }
 
+async fn install_verified_update(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, State>,
+    params: Value,
+) -> Result<Value> {
+    let verified_path = state.hub.last_verified_update_path().ok_or_else(|| {
+        Error::new(
+            "NOT_FOUND",
+            "尚未完成已校验更新包的下载，请先点击下载更新",
+        )
+    })?;
+    if let Some(req_path) = params["path"].as_str().filter(|s| !s.is_empty()) {
+        if PathBuf::from(req_path) != verified_path {
+            return Err(Error::new(
+                "FORBIDDEN",
+                "安全拦截：仅允许安装本次会话通过 Ed25519 + SHA-256 校验的更新包",
+            ));
+        }
+    }
+    if !verified_path.is_file() {
+        return Err(Error::new("NOT_FOUND", "已下载的更新包不存在，请重新下载"));
+    }
+
+    let filename = verified_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    #[cfg(target_os = "windows")]
+    {
+        if filename.ends_with(".exe") {
+            let mut cmd = std::process::Command::new(&verified_path);
+            if params["silent"].as_bool() == Some(true) {
+                cmd.arg("/S");
+            }
+            cmd.spawn()
+                .map_err(|e| Error::new("SYSTEM", format!("无法启动安装程序：{e}")))?;
+            let exit_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(450)).await;
+                exit_handle.exit(0);
+            });
+            return Ok(json!({
+                "ok": true,
+                "mode": "installer_launched",
+                "restarting": true,
+                "message": "已启动安装程序并正在退出当前版本，请按提示完成升级"
+            }));
+        }
+        open_local(verified_path, true).await?;
+        return Ok(json!({
+            "ok": true,
+            "mode": "revealed",
+            "restarting": false,
+            "message": "已在资源管理器中定位便携版压缩包，解压覆盖即可完成升级"
+        }));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if filename.ends_with(".zip") {
+            if let Ok(cur_exe) = std::env::current_exe() {
+                if let Some(app_bundle) = cur_exe
+                    .ancestors()
+                    .find(|p| p.extension().and_then(|e| e.to_str()) == Some("app"))
+                    .map(PathBuf::from)
+                {
+                    let parent_writable = app_bundle
+                        .parent()
+                        .and_then(|p| std::fs::metadata(p).ok())
+                        .is_some_and(|m| !m.permissions().readonly());
+                    if parent_writable {
+                        let pid = std::process::id();
+                        let script = r#"
+pid="$1"
+zip_path="$2"
+app_dest="$3"
+for i in $(seq 1 40); do
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 0.25
+done
+stage=$(mktemp -d "${TMPDIR:-/tmp}/qdl-upd.XXXXXX") || exit 1
+ditto -x -k "$zip_path" "$stage" || { rm -rf "$stage"; exit 1; }
+src_app=$(find "$stage" -maxdepth 2 -name "*.app" -print -quit)
+if [ -z "$src_app" ] || ! codesign --verify --deep --strict "$src_app" >/dev/null 2>&1; then
+  rm -rf "$stage"
+  exit 1
+fi
+bak="${app_dest}.qdl-old-$$"
+mv "$app_dest" "$bak" || { rm -rf "$stage"; exit 1; }
+if mv "$src_app" "$app_dest"; then
+  rm -rf "$bak" "$stage"
+  open -a "$app_dest"
+else
+  mv "$bak" "$app_dest"
+  rm -rf "$stage"
+  exit 1
+fi
+"#;
+                        std::process::Command::new("/bin/sh")
+                            .arg("-c")
+                            .arg(script)
+                            .arg("qdl-updater")
+                            .arg(pid.to_string())
+                            .arg(&verified_path)
+                            .arg(&app_bundle)
+                            .spawn()
+                            .map_err(|e| Error::new("SYSTEM", format!("无法启动应用原位升级：{e}")))?;
+                        let exit_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(350)).await;
+                            exit_handle.exit(0);
+                        });
+                        return Ok(json!({
+                            "ok": true,
+                            "mode": "inplace_swap",
+                            "restarting": true,
+                            "message": "正在自动替换应用并重启至新版本…"
+                        }));
+                    }
+                }
+            }
+        }
+        open_local(verified_path, true).await?;
+        return Ok(json!({
+            "ok": true,
+            "mode": "revealed",
+            "restarting": false,
+            "message": "已在 Finder 中定位更新包，解压替换即可升级"
+        }));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if filename.ends_with(".appimage") {
+            if let Ok(appimage_env) = std::env::var("APPIMAGE") {
+                let target = PathBuf::from(&appimage_env);
+                if target.is_file() {
+                    use std::os::unix::fs::PermissionsExt;
+                    let staging = target.with_extension("AppImage.qdl-new");
+                    if std::fs::copy(&verified_path, &staging).is_ok()
+                        && std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755))
+                            .is_ok()
+                        && std::fs::rename(&staging, &target).is_ok()
+                    {
+                        let _ = std::process::Command::new(&target).spawn();
+                        let exit_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(350)).await;
+                            exit_handle.exit(0);
+                        });
+                        return Ok(json!({
+                            "ok": true,
+                            "mode": "inplace_swap",
+                            "restarting": true,
+                            "message": "已原位更新 AppImage 并正在重启至新版本…"
+                        }));
+                    }
+                    let _ = std::fs::remove_file(&staging);
+                }
+            }
+        }
+        open_local(verified_path, true).await?;
+        return Ok(json!({
+            "ok": true,
+            "mode": "revealed",
+            "restarting": false,
+            "message": "已在文件管理器中定位更新包，请安装升级"
+        }));
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        let _ = app;
+        open_local(verified_path, true).await?;
+        Ok(json!({ "ok": true, "mode": "revealed", "restarting": false }))
+    }
+}
+
 async fn open_local(path: PathBuf, reveal: bool) -> Result<Value> {
     if !path.is_absolute() || !path.exists() {
         return Err(Error::new("NOT_FOUND", "请选择存在的本地绝对路径"));
@@ -588,6 +860,32 @@ fn main() {
         context
     };
     tauri::Builder::default()
+        .register_uri_scheme_protocol("qdl-ui", |ctx, request| {
+            let profile = ctx
+                .app_handle()
+                .try_state::<State>()
+                .map(|s| s.core.profile_dir());
+            if let Some(dir) = profile {
+                if let Some((bytes, mime)) =
+                    quark_core::hot_ui::read_verified_asset(&dir, request.uri().path())
+                {
+                    if let Ok(resp) = tauri::http::Response::builder()
+                        .status(200)
+                        .header("Content-Type", mime)
+                        .header("Cache-Control", "no-store")
+                        .header("Content-Security-Policy", HOT_UI_CSP)
+                        .body(bytes)
+                    {
+                        return resp;
+                    }
+                }
+            }
+            tauri::http::Response::builder()
+                .status(404)
+                .header("Content-Type", "text/plain; charset=utf-8")
+                .body(b"hot-ui asset not found".to_vec())
+                .unwrap()
+        })
         .invoke_handler(tauri::generate_handler![qk_call, smoke_report])
         .setup(|app| {
             let file_menu = tauri::menu::SubmenuBuilder::new(app, "文件")
@@ -668,6 +966,8 @@ fn main() {
                 transfers: transfers.clone(),
                 agent: agent.clone(),
                 hub,
+                hot_ui_confirmed: Arc::new(AtomicBool::new(false)),
+                hot_ui_active: Arc::new(AtomicBool::new(false)),
                 login: Arc::new(AtomicBool::new(false)),
                 logging_out: Arc::new(AtomicBool::new(false)),
                 login_generation: Arc::new(AtomicU64::new(0)),
@@ -685,6 +985,27 @@ fn main() {
                 }
             });
             app.manage(state.clone());
+            // L2: activate Ed25519+SHA-256 verified hot-UI bundle if staged & compatible, guarded by 8s watchdog.
+            if std::env::var_os("QK_SMOKE_REPORT").is_none() {
+                if let Some(hot_ver) =
+                    quark_core::hot_ui::prepare_boot(&profile, env!("CARGO_PKG_VERSION"))
+                {
+                    state.hub.record_event(
+                        "info",
+                        "hot_ui",
+                        Some("HOT_UI_BOOT"),
+                        &format!("activating verified UI hotfix {hot_ver}"),
+                    );
+                    arm_hot_ui_watchdog(
+                        main_window.clone(),
+                        profile.clone(),
+                        state.hot_ui_confirmed.clone(),
+                        state.hot_ui_active.clone(),
+                        state.hub.clone(),
+                    );
+                    let _ = main_window.navigate(hot_ui_entry_url());
+                }
+            }
             {
                 let agent_boot = state.agent.clone();
                 let ai_beta_on = state

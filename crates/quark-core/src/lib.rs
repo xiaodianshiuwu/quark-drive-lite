@@ -1,8 +1,10 @@
 //! Desktop-independent Quark API, encrypted session and settings.
 mod files;
+pub mod hot_ui;
 pub mod hub;
 mod session;
 mod store;
+pub mod tuning;
 
 use reqwest::{header, redirect::Policy, Client, Method, Url};
 use serde::Serialize;
@@ -27,6 +29,8 @@ pub struct Error {
     pub biz_code: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_kind: Option<String>,
 }
 impl Error {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
@@ -35,7 +39,12 @@ impl Error {
             message: message.into(),
             biz_code: None,
             http_status: None,
+            io_kind: None,
         }
+    }
+    pub fn with_io_kind(mut self, kind: impl Into<String>) -> Self {
+        self.io_kind = Some(kind.into());
+        self
     }
 }
 impl fmt::Display for Error {
@@ -66,6 +75,7 @@ struct State {
     store: store::LocalStore,
     document: Value,
     session_generation: u64,
+    tuning: tuning::TuningProfile,
 }
 
 impl Core {
@@ -79,6 +89,7 @@ impl Core {
     fn open_inner(profile: impl AsRef<Path>, no_proxy: bool) -> Result<Self> {
         let profile = profile.as_ref().to_owned();
         let (store, document) = store::LocalStore::open(&profile)?;
+        let tuning = tuning::TuningProfile::load_from_dir(&profile);
         let mut builder = Client::builder()
             .user_agent(USER_AGENT)
             .redirect(Policy::none())
@@ -102,9 +113,32 @@ impl Core {
                     store,
                     document,
                     session_generation: 0,
+                    tuning,
                 }),
             }),
         })
+    }
+    pub fn tuning(&self) -> tuning::TuningProfile {
+        self.inner.state.lock().unwrap().tuning.clone()
+    }
+    pub fn apply_tuning(&self, patch: &Value) -> Result<tuning::TuningProfile> {
+        let next = {
+            let mut state = self.inner.state.lock().unwrap();
+            let merged = tuning::TuningProfile::from_patch(&state.tuning, patch)?;
+            if merged != state.tuning {
+                merged.save_to_dir(&self.inner.profile)?;
+                state.tuning = merged.clone();
+            }
+            merged
+        };
+        Ok(next)
+    }
+    pub fn reset_tuning(&self) -> Result<tuning::TuningProfile> {
+        let defaults = tuning::TuningProfile::default();
+        let mut state = self.inner.state.lock().unwrap();
+        defaults.save_to_dir(&self.inner.profile)?;
+        state.tuning = defaults.clone();
+        Ok(defaults)
     }
     pub fn http_client(&self) -> Client {
         self.inner.client.clone()

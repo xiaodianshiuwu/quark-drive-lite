@@ -266,6 +266,12 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
             return {ok:true,reply,updatedAt:reply.createdAt};
           }
           case 'hub.logPreview': return {logs:[{ts:1763817600000,level:'info',category:'lifecycle',code:'APP_START',msg:'app started (darwin/aarch64)'}]};
+          case 'hub.installUpdate': return {ok:true,mode:'installer_launched',restarting:false,path:p.path||'',message:'已启动一键升级'};
+          case 'hub.runtimeStatus': return {ok:true,tuning:{version:0,dirDetailNegCacheMs:300000,dirDetailConcurrency:2},hotUi:{activeVersion:null}};
+          case 'hub.applyUiHotfix': return {ok:true,applied:false,needsReload:false};
+          case 'hub.reloadUi': return {ok:true,mode:'builtin'};
+          case 'hub.uiReady': return {ok:true,activeVersion:null,tuning:{version:0,dirDetailNegCacheMs:300000,dirDetailConcurrency:2}};
+          case 'hub.rollbackUi': return {ok:true,rolledBack:true};
           case 'hub.recordEvent': return {ok:true};
           case 'settings.get': return snapshot(fixture.settings);
           case 'settings.set': Object.assign(fixture.settings,p);return snapshot(fixture.settings);
@@ -1105,7 +1111,7 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await click('#btn-hub-download');
     await until('!document.getElementById("btn-hub-open-pkg").hidden', 'open package button shown after verified download');
     await click('#btn-hub-open-pkg');
-    await until('__fixtureCalls.some(c=>c.method==="dialog.openPath" && c.params.path==="/fixture/QuarkDriveLite-1.0.1.zip")', 'open package called dialog.openPath');
+    await until('__fixtureCalls.some(c=>c.method==="hub.installUpdate" && c.params.path==="/fixture/QuarkDriveLite-1.0.1.zip")', 'one-click install called hub.installUpdate with verified path');
 
     // 5. Issue #5 回归：单击选中行绝不顶偏列表（0px 位移），同一坐标双击立刻进入文件夹，悬浮批量条正常可用
     await evaluate('QKUI.setView("files");QKUI.navigate("0","全部文件",undefined,{skipCache:true})');

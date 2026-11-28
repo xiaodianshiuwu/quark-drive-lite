@@ -1,0 +1,236 @@
+name: Automated 4-OS Release & Hub Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.3.0)'
+        required: true
+      channel:
+        description: 'Release channel (stable / beta)'
+        required: false
+        default: 'stable'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci --ignore-scripts
+      - run: npm run check:js
+      - run: cargo test --workspace --locked
+      - name: Build Windows NSIS Setup & Portable ZIP
+        shell: pwsh
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npx tauri build --bundles nsis -- --locked
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $outDir = Join-Path $PWD "dist-release"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          $nsisFiles = Get-ChildItem -Path "target/release/bundle/nsis" -Filter "*-setup.exe"
+          if ($nsisFiles.Count -ne 1) { throw "Expected 1 NSIS setup exe, found $($nsisFiles.Count)" }
+          $setupDest = Join-Path $outDir "QuarkDriveLite-$version-Windows-x64-Setup.exe"
+          Copy-Item $nsisFiles[0].FullName $setupDest -Force
+
+          $exePath = Join-Path $PWD "target/release/quark-drive-lite-tauri.exe"
+          $portableStage = Join-Path $env:TEMP "qdl-portable-$version"
+          if (Test-Path $portableStage) { Remove-Item $portableStage -Recurse -Force }
+          $stageInner = Join-Path $portableStage "夸克网盘极简版-v$version-便携版"
+          New-Item -ItemType Directory -Force -Path $stageInner | Out-Null
+          Copy-Item $exePath (Join-Path $stageInner "夸克网盘极简版.exe") -Force
+          @"
+          夸克网盘 · 极简版 v$version（Windows x64 便携版）
+          ==========================================
+          1. 双击「夸克网盘极简版.exe」即可运行，无需安装。
+          2. 需要 Windows 10/11 系统自带的 Microsoft Edge WebView2 运行时。
+          "@ | Set-Content -Path (Join-Path $stageInner "使用说明.txt") -Encoding UTF8
+
+          $zipDest = Join-Path $outDir "QuarkDriveLite-$version-Windows-x64-Portable.zip"
+          python -c "import zipfile, pathlib, sys; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); zf=zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED); [zf.write(p, p.relative_to(root).as_posix()) for p in sorted(root.rglob('*')) if p.is_file()]; zf.close()" $portableStage $zipDest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: dist-release/
+          if-no-files-found: error
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libfuse2 librsvg2-dev libayatana-appindicator3-dev
+      - run: npm ci --ignore-scripts
+      - run: npm run check:js
+      - run: cargo test --workspace --locked
+      - name: Build Linux DEB & AppImage
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: |
+          npm run build -- -- --locked
+          mkdir -p dist-release
+          version=$(node -p "require('./package.json').version")
+          deb=(target/release/bundle/deb/*.deb)
+          appimage=(target/release/bundle/appimage/*.AppImage)
+          cp "${deb[0]}" "dist-release/QuarkDriveLite-$version-Linux-x64.deb"
+          cp "${appimage[0]}" "dist-release/QuarkDriveLite-$version-Linux-x64.AppImage"
+          chmod +x "dist-release/QuarkDriveLite-$version-Linux-x64.AppImage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-x64
+          path: dist-release/
+          if-no-files-found: error
+
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci --ignore-scripts
+      - run: npm run check:js
+      - run: cargo test --workspace --locked
+      - name: Build macOS ZIP (${{ matrix.arch }})
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          npm run build -- --bundles app -- --locked
+          mkdir -p dist-release
+          version=$(node -p "require('./package.json').version")
+          source_app=$(node -p "require('./src-tauri/tauri.conf.json').productName + '.app'")
+          stage=$(mktemp -d)
+          ditto --norsrc --noextattr --noqtn "target/release/bundle/macos/$source_app" "$stage/QuarkDriveLite.app"
+          codesign --verify --deep --strict "$stage/QuarkDriveLite.app"
+          ditto -c -k --norsrc --noextattr --keepParent "$stage/QuarkDriveLite.app" "dist-release/QuarkDriveLite-$version-macOS-${{ matrix.arch }}.zip"
+          rm -rf "$stage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: dist-release/
+          if-no-files-found: error
+
+  publish:
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+          merge-multiple: true
+      - name: Generate unified SHA256SUMS.txt
+        run: |
+          cd all-artifacts
+          sha256sum QuarkDriveLite-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" all-artifacts/* --clobber
+          else
+            gh release create "$TAG_NAME" all-artifacts/* \
+              --title "夸克网盘极简版 $TAG_NAME" \
+              --generate-notes
+          fi
+      - name: Auto-upload & Ed25519-sign on Tokyo Hub (when HUB_DEPLOY_TOKEN is set)
+        if: ${{ secrets.HUB_DEPLOY_TOKEN != '' }}
+        env:
+          HUB_URL: ${{ vars.QDL_HUB_URL || 'https://qdl.xiaodianshiuwu.space' }}
+          HUB_DEPLOY_TOKEN: ${{ secrets.HUB_DEPLOY_TOKEN }}
+          CHANNEL: ${{ github.event.inputs.channel || 'stable' }}
+        run: |
+          node - <<'EOF'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const ver = pkg.version;
+          const hubUrl = process.env.HUB_URL.replace(/\/+$/, '');
+          const token = process.env.HUB_DEPLOY_TOKEN;
+          const dir = path.resolve('all-artifacts');
+
+          // Extract latest section from CHANGELOG.md if present
+          let changelog = `v${ver} 正式发布`;
+          if (fs.existsSync('CHANGELOG.md')) {
+            const md = fs.readFileSync('CHANGELOG.md', 'utf8');
+            const m = md.match(/## \[[^\]]+\][^\n]*\n([\s\S]*?)(?=\n## \[|$)/);
+            if (m) changelog = m[1].trim().slice(0, 8000);
+          }
+
+          (async () => {
+            const relRes = await fetch(`${hubUrl}/api/admin/releases`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Hub-Deploy-Token': token },
+              body: JSON.stringify({
+                version: ver,
+                channel: process.env.CHANNEL || 'stable',
+                releaseDate: new Date().toISOString().slice(0, 10),
+                changelog,
+                isLatest: true,
+              }),
+            });
+            const relJson = await relRes.json();
+            if (!relRes.ok || !relJson.ok) throw new Error(`Create release failed: ${JSON.stringify(relJson)}`);
+            console.log('Hub release created/updated:', relJson);
+
+            const map = [
+              ['macos-arm64', `QuarkDriveLite-${ver}-macOS-arm64.zip`],
+              ['macos-x64', `QuarkDriveLite-${ver}-macOS-x64.zip`],
+              ['windows-x64-setup', `QuarkDriveLite-${ver}-Windows-x64-Setup.exe`],
+              ['windows-x64-portable', `QuarkDriveLite-${ver}-Windows-x64-Portable.zip`],
+              ['linux-x64-deb', `QuarkDriveLite-${ver}-Linux-x64.deb`],
+              ['linux-x64-appimage', `QuarkDriveLite-${ver}-Linux-x64.AppImage`],
+            ];
+            for (const [assetKey, filename] of map) {
+              const fp = path.join(dir, filename);
+              if (!fs.existsSync(fp)) continue;
+              const qs = new URLSearchParams({ filename, assetKey, version: ver });
+              const upRes = await fetch(`${hubUrl}/api/admin/releases/upload?${qs}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/octet-stream', 'X-Hub-Deploy-Token': token },
+                body: fs.readFileSync(fp),
+              });
+              const upJson = await upRes.json();
+              if (!upRes.ok || !upJson.ok) throw new Error(`Upload ${filename} failed: ${JSON.stringify(upJson)}`);
+              console.log('Uploaded to Hub:', assetKey, upJson.filename, upJson.sha256.slice(0, 12));
+            }
+          })().catch((e) => { console.error(e); process.exit(1); });
+          EOF

@@ -150,6 +150,7 @@ struct HubInner {
     pending_samples: Mutex<VecDeque<Value>>,
     sample_notify: Arc<tokio::sync::Notify>,
     feedback_token: Mutex<Option<String>>,
+    last_verified_update: Mutex<Option<PathBuf>>,
 }
 
 impl HubClient {
@@ -206,6 +207,7 @@ impl HubClient {
                 pending_samples: Mutex::new(VecDeque::with_capacity(MAX_PENDING_SAMPLES)),
                 sample_notify: Arc::new(tokio::sync::Notify::new()),
                 feedback_token: Mutex::new(None),
+                last_verified_update: Mutex::new(None),
             }),
         })
     }
@@ -477,6 +479,7 @@ impl HubClient {
     }
 
     /// Fetch and Ed25519-verify the latest update manifest from the author's server.
+    /// Automatically applies any signed L1 runtime tuning profile and exposes L2 UI hotfix metadata.
     pub async fn check_update(&self, app_version: &str) -> Result<Value> {
         self.require_opt_in()?;
         let (manifest, server_region) = self.fetch_verified_manifest().await?;
@@ -484,6 +487,44 @@ impl HubClient {
         let has_update = version_is_newer(latest_version, app_version);
         let rec_key = recommended_asset_key();
         let recommended_asset = manifest["assets"].get(rec_key).cloned().unwrap_or(Value::Null);
+
+        // L1: apply signed remote tuning profile live (no restart needed).
+        let mut tuning_applied = false;
+        if let Some(remote_tuning) = manifest.get("tuning").filter(|v| v.is_object()) {
+            let cur = self.inner.core.tuning();
+            let remote_ver = remote_tuning["version"].as_u64().unwrap_or(0);
+            if remote_ver == 0 || remote_ver >= cur.version {
+                if let Ok(next) = self.inner.core.apply_tuning(remote_tuning) {
+                    if next != cur {
+                        tuning_applied = true;
+                        self.record_event(
+                            "info",
+                            "tuning",
+                            Some("TUNING_APPLIED"),
+                            &format!("applied signed tuning profile v{}", next.version),
+                        );
+                    }
+                }
+            }
+        }
+        let active_tuning = self.inner.core.tuning().to_value();
+
+        // L2: evaluate signed UI hotfix compatibility against current binary version.
+        let hot_ui_state = crate::hot_ui::load_state(&self.inner.core.profile_dir());
+        let mut has_ui_hotfix = false;
+        let ui_hotfix = manifest.get("uiHotfix").filter(|v| v.is_object()).cloned();
+        if let Some(ref hf) = ui_hotfix {
+            let hf_ver = hf["version"].as_str().unwrap_or("");
+            let min_bin = hf["minBinaryVersion"].as_str();
+            let max_bin = hf["maxBinaryVersion"].as_str();
+            let compatible = !hf_ver.is_empty()
+                && crate::hot_ui::is_safe_hotfix_version(hf_ver)
+                && version_in_range(app_version, min_bin, max_bin)
+                && !hot_ui_state.blacklisted_versions.iter().any(|b| b == hf_ver);
+            if compatible && hot_ui_state.active_version.as_deref() != Some(hf_ver) {
+                has_ui_hotfix = true;
+            }
+        }
 
         Ok(json!({
             "ok": true,
@@ -498,8 +539,139 @@ impl HubClient {
             "recommendedAssetKey": rec_key,
             "recommendedAsset": recommended_asset,
             "signatureVerified": true,
-            "serverRegion": server_region
+            "serverRegion": server_region,
+            "tuning": active_tuning,
+            "tuningApplied": tuning_applied,
+            "uiHotfix": ui_hotfix,
+            "hasUiHotfix": has_ui_hotfix,
+            "hotUi": crate::hot_ui::status_json(&self.inner.core.profile_dir(), app_version),
         }))
+    }
+
+    /// Download, Ed25519+SHA-256 verify, and atomically stage an L2 frontend UI hotfix bundle.
+    pub async fn apply_ui_hotfix(&self, app_version: &str) -> Result<Value> {
+        self.require_opt_in()?;
+        let origin = self.inner.config.validated_origin()?;
+        let (manifest, _) = self.fetch_verified_manifest().await?;
+        let hf = manifest
+            .get("uiHotfix")
+            .filter(|v| v.is_object())
+            .ok_or_else(|| Error::new("NOT_FOUND", "当前没有可用的前端热更新包"))?;
+
+        let hf_ver = hf["version"]
+            .as_str()
+            .filter(|s| crate::hot_ui::is_safe_hotfix_version(s))
+            .ok_or_else(|| Error::new("INVALID_MANIFEST", "前端热更新版本号无效"))?;
+        let expected_sha = hf["sha256"]
+            .as_str()
+            .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| Error::new("INVALID_MANIFEST", "前端热更新 SHA-256 缺失"))?;
+        let url_str = hf["url"]
+            .as_str()
+            .ok_or_else(|| Error::new("INVALID_MANIFEST", "前端热更新下载地址缺失"))?;
+
+        let download_url = Url::parse(url_str)
+            .map_err(|_| Error::new("INVALID_MANIFEST", "前端热更新地址格式无效"))?;
+        if download_url.scheme() != origin.scheme()
+            || download_url.host_str() != origin.host_str()
+            || download_url.port_or_known_default() != origin.port_or_known_default()
+            || !download_url.path().starts_with("/downloads/")
+        {
+            return Err(Error::new(
+                "FORBIDDEN",
+                "安全拦截：前端热更新地址必须指向已认证服务器 /downloads/ 路径",
+            ));
+        }
+
+        let min_bin = hf["minBinaryVersion"].as_str();
+        let max_bin = hf["maxBinaryVersion"].as_str();
+        if !version_in_range(app_version, min_bin, max_bin) {
+            return Err(Error::new(
+                "INCOMPATIBLE",
+                "当前前端热更新不适用于本主程序版本，请更新主程序",
+            ));
+        }
+
+        let mut resp = self
+            .inner
+            .http
+            .get(download_url)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    Error::new("TIMEOUT", OVERSEAS_NET_HINT)
+                } else {
+                    Error::new("NETWORK", OVERSEAS_NET_HINT)
+                }
+            })?;
+        if !resp.status().is_success() {
+            return Err(Error::new(
+                "HTTP",
+                format!("前端热更新下载失败（HTTP {}）", resp.status().as_u16()),
+            ));
+        }
+        if resp
+            .content_length()
+            .is_some_and(|n| n > crate::hot_ui::MAX_UI_BUNDLE_BYTES as u64)
+        {
+            return Err(Error::new("INVALID_MANIFEST", "前端热更新包体积超出安全上限"));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| {
+            if e.is_timeout() {
+                Error::new("TIMEOUT", OVERSEAS_NET_HINT)
+            } else {
+                Error::new("NETWORK", OVERSEAS_NET_HINT)
+            }
+        })? {
+            if bytes.len().saturating_add(chunk.len()) > crate::hot_ui::MAX_UI_BUNDLE_BYTES {
+                return Err(Error::new("INVALID_MANIFEST", "前端热更新包超出安全上限"));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+
+        let manifest_files: Option<std::collections::BTreeMap<String, String>> = hf
+            .get("files")
+            .and_then(Value::as_object)
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                    .collect()
+            });
+
+        let state = crate::hot_ui::install_verified_bundle(
+            &self.inner.core.profile_dir(),
+            app_version,
+            hf_ver,
+            expected_sha,
+            manifest_files.as_ref(),
+            hf["changelog"].as_str(),
+            &bytes,
+        )?;
+        self.record_event(
+            "info",
+            "hot_ui",
+            Some("UI_HOTFIX_INSTALLED"),
+            &format!("installed verified UI hotfix {hf_ver}"),
+        );
+        Ok(json!({
+            "ok": true,
+            "applied": true,
+            "version": hf_ver,
+            "changelog": state.active_changelog,
+            "needsReload": true,
+            "hotUi": crate::hot_ui::status_json(&self.inner.core.profile_dir(), app_version),
+        }))
+    }
+
+    pub fn runtime_status(&self, app_version: &str) -> Value {
+        json!({
+            "ok": true,
+            "tuning": self.inner.core.tuning().to_value(),
+            "hotUi": crate::hot_ui::status_json(&self.inner.core.profile_dir(), app_version),
+        })
     }
 
     /// Download a verified release asset directly from the author's server and verify its SHA-256 checksum.
@@ -704,6 +876,10 @@ impl HubClient {
             &format!("verified update {} from {}", manifest["version"].as_str().unwrap_or(app_version), key),
         );
 
+        if let Ok(mut guard) = self.inner.last_verified_update.lock() {
+            *guard = Some(final_path.clone());
+        }
+
         Ok(json!({
             "ok": true,
             "path": final_path.to_string_lossy(),
@@ -713,6 +889,16 @@ impl HubClient {
             "verified": true,
             "version": manifest["version"].as_str().unwrap_or("")
         }))
+    }
+
+    /// Return the path of the most recent Ed25519+SHA-256 verified update package downloaded
+    /// in this session, ensuring the renderer can never invoke the installer on arbitrary paths.
+    pub fn last_verified_update_path(&self) -> Option<PathBuf> {
+        self.inner
+            .last_verified_update
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
     }
 
     /// Encrypt and upload strictly sanitized non-sensitive telemetry when opted in.
@@ -769,7 +955,7 @@ impl HubClient {
             json_u64(&input[key])
                 .or_else(|| agg.as_ref().and_then(|a| json_u64(&a[key])))
         };
-        let mem_mb = json_u64(&input["memMb"]).or_else(current_process_rss_mb);
+        let mem_mb = current_process_rss_mb().or_else(|| json_u64(&input["memMb"]));
 
         let payload = json!({
             "appVersion": app_version,
@@ -1074,16 +1260,20 @@ impl HubClient {
             .timeout(Duration::from_secs(15))
             .send()
             .await
-            .map_err(|_| Error::new("NETWORK", OVERSEAS_NET_HINT))?;
+            .map_err(|e| {
+                if e.is_timeout() {
+                    Error::new("TIMEOUT", OVERSEAS_NET_HINT)
+                } else {
+                    Error::new("NETWORK", OVERSEAS_NET_HINT)
+                }
+            })?;
         if !resp.status().is_success() {
             return Err(Error::new(
                 "HTTP",
                 format!("检查更新失败（HTTP {}）", resp.status().as_u16()),
             ));
         }
-        let body: Value = read_json_bounded(resp, MAX_HUB_JSON_BYTES)
-            .await
-            .map_err(|_| Error::new("PARSE", "更新清单响应格式无效"))?;
+        let body: Value = read_json_bounded(resp, MAX_HUB_JSON_BYTES).await?;
         let manifest_json = body["manifestJson"]
             .as_str()
             .ok_or_else(|| Error::new("INVALID_MANIFEST", "服务端未返回规范化更新清单"))?;
@@ -1211,6 +1401,26 @@ pub fn version_is_newer(candidate: &str, current: &str) -> bool {
     parse_semver(candidate) > parse_semver(current)
 }
 
+/// Check whether `current` is within optional inclusive `[min_version, max_version]` bounds.
+pub fn version_in_range(
+    current: &str,
+    min_version: Option<&str>,
+    max_version: Option<&str>,
+) -> bool {
+    let cur = parse_semver(current);
+    if let Some(min_v) = min_version.filter(|s| !s.trim().is_empty()) {
+        if cur < parse_semver(min_v) {
+            return false;
+        }
+    }
+    if let Some(max_v) = max_version.filter(|s| !s.trim().is_empty()) {
+        if cur > parse_semver(max_v) {
+            return false;
+        }
+    }
+    true
+}
+
 fn parse_semver(raw: &str) -> (u64, u64, u64, u8, u64) {
     let trimmed = raw
         .trim()
@@ -1253,11 +1463,13 @@ async fn read_json_bounded(mut resp: reqwest::Response, max_bytes: usize) -> Res
         return Err(Error::new("PARSE", "响应体过大"));
     }
     let mut buf = Vec::new();
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|_| Error::new("NETWORK", OVERSEAS_NET_HINT))?
-    {
+    while let Some(chunk) = resp.chunk().await.map_err(|e| {
+        if e.is_timeout() {
+            Error::new("TIMEOUT", OVERSEAS_NET_HINT)
+        } else {
+            Error::new("NETWORK", OVERSEAS_NET_HINT)
+        }
+    })? {
         if buf.len().saturating_add(chunk.len()) > max_bytes {
             return Err(Error::new("PARSE", "响应体过大"));
         }
@@ -1304,7 +1516,42 @@ fn current_process_rss_mb() -> Option<u64> {
             .ok()?;
         Some((kb / 1024).max(1))
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        #[repr(C)]
+        struct ProcessMemoryCounters {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota_peak_paged_pool_usage: usize,
+            quota_paged_pool_usage: usize,
+            quota_peak_non_paged_pool_usage: usize,
+            quota_non_paged_pool_usage: usize,
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+        }
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentProcess() -> *mut core::ffi::c_void;
+            fn K32GetProcessMemoryInfo(
+                process: *mut core::ffi::c_void,
+                ppsmem_counters: *mut ProcessMemoryCounters,
+                cb: u32,
+            ) -> i32;
+        }
+        let mut pmc = std::mem::MaybeUninit::<ProcessMemoryCounters>::zeroed();
+        let cb = std::mem::size_of::<ProcessMemoryCounters>() as u32;
+        unsafe {
+            (*pmc.as_mut_ptr()).cb = cb;
+            if K32GetProcessMemoryInfo(GetCurrentProcess(), pmc.as_mut_ptr(), cb) != 0 {
+                let ws = pmc.assume_init().working_set_size as u64;
+                return Some((ws / (1024 * 1024)).max(1));
+            }
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         None
     }
@@ -1388,6 +1635,7 @@ fn sanitize_transfer_sample(raw: &Value) -> Option<Value> {
     let http_status = json_u64(&raw["httpStatus"])
         .filter(|&s| (100..=599).contains(&s));
     let stage = raw["stage"].as_str().and_then(sanitize_code_token);
+    let io_kind = raw["ioKind"].as_str().and_then(sanitize_code_token);
     let ts = raw["ts"].as_i64().unwrap_or_else(now_ms);
 
     Some(json!({
@@ -1414,6 +1662,7 @@ fn sanitize_transfer_sample(raw: &Value) -> Option<Value> {
         "errorCode": error_code,
         "httpStatus": http_status,
         "stage": stage,
+        "ioKind": io_kind,
     }))
 }
 
@@ -2421,5 +2670,62 @@ mod tests {
             .await
             .expect_err("another client must never reply to someone else's feedback");
         assert_eq!(forbidden.code, "HTTP");
+
+        // 9. L1 signed remote tuning + L2 signed frontend UI hotfix end-to-end!
+        let tuning_res: Value = probe
+            .post(format!("{base_url}/api/admin/runtime/tuning"))
+            .header("Cookie", &cookie)
+            .header("X-QDL-Admin", "1")
+            .json(&json!({
+                "smallFileDirectMaxBytes": 4 * 1024 * 1024,
+                "aimdMinParallel": 3,
+                "dirDetailNegCacheMs": 120000
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(tuning_res["ok"], true);
+        assert_eq!(tuning_res["tuning"]["smallFileDirectMaxBytes"], 4 * 1024 * 1024);
+
+        let hf_res: Value = probe
+            .post(format!("{base_url}/api/admin/runtime/ui-hotfix"))
+            .header("Cookie", &cookie)
+            .header("X-QDL-Admin", "1")
+            .json(&json!({
+                "version": "0.3.0-ui.1",
+                "minBinaryVersion": "0.3.0-beta.1",
+                "maxBinaryVersion": "0.3.99",
+                "changelog": "hotfix dirDetail cache",
+                "files": {
+                    "index.html": "<!doctype html><html><body>hotfix-v1</body></html>",
+                    "app.js": "window.__hotfix = '0.3.0-ui.1';"
+                }
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(hf_res["ok"], true);
+
+        // Client check_update automatically verifies Ed25519 signature, applies L1 tuning live, and reports L2 hotfix!
+        let upd2 = hub.check_update("0.3.0-beta.1").await.unwrap();
+        assert_eq!(upd2["tuningApplied"], true);
+        assert_eq!(hub.inner.core.tuning().small_file_direct_max_bytes, 4 * 1024 * 1024);
+        assert_eq!(hub.inner.core.tuning().aimd_min_parallel, 3);
+        assert_eq!(upd2["hasUiHotfix"], true);
+
+        // Client downloads, SHA-256 verifies & atomically stages L2 hot-UI bundle!
+        let applied = hub.apply_ui_hotfix("0.3.0-beta.1").await.unwrap();
+        assert_eq!(applied["ok"], true);
+        assert_eq!(applied["applied"], true);
+        assert_eq!(applied["version"], "0.3.0-ui.1");
+        let (served_html, _) =
+            crate::hot_ui::read_verified_asset(&hub.inner.core.profile_dir(), "/index.html").unwrap();
+        assert!(String::from_utf8_lossy(&served_html).contains("hotfix-v1"));
     }
 }

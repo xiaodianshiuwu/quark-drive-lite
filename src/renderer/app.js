@@ -2562,12 +2562,32 @@
     return String(fp);
   }
 
+  var runtimeTuning = {
+    version: 0,
+    dirDetailNegCacheMs: 300000,
+    dirDetailConcurrency: 2
+  };
+  function applyRuntimeTuning(t) {
+    if (!t || typeof t !== 'object') return;
+    if (typeof t.version === 'number' && isFinite(t.version)) runtimeTuning.version = t.version;
+    if (typeof t.dirDetailNegCacheMs === 'number' && isFinite(t.dirDetailNegCacheMs)) {
+      runtimeTuning.dirDetailNegCacheMs = Math.max(10000, Math.min(3600000, t.dirDetailNegCacheMs));
+    }
+    if (typeof t.dirDetailConcurrency === 'number' && isFinite(t.dirDetailConcurrency)) {
+      runtimeTuning.dirDetailConcurrency = Math.max(1, Math.min(4, Math.round(t.dirDetailConcurrency)));
+    }
+  }
+
   async function fetchDirDetail(fid, opts) {
     var key = String(fid || '');
     var o = opts || {};
     if (!key || !API.has('fs', 'dirDetail')) return null;
     var cached = dirDetailCache.get(key);
-    if (!o.force && cached && cached.finished && (Date.now() - cached.ts) < 60000) {
+    var now = Date.now();
+    if (!o.force && cached && cached.failed && (now - cached.ts) < runtimeTuning.dirDetailNegCacheMs) {
+      return null;
+    }
+    if (!o.force && cached && !cached.failed && cached.finished && (now - cached.ts) < 60000) {
       return cached;
     }
     if (!o.force && dirDetailInflight.has(key)) {
@@ -2576,12 +2596,16 @@
     var p = (async function () {
       try {
         var res = await API.fs.dirDetail(key);
-        if (!res || typeof res !== 'object') return null;
+        if (!res || typeof res !== 'object') {
+          dirDetailCache.set(key, { fid: key, failed: true, ts: Date.now() });
+          return null;
+        }
         var entry = {
           fid: key,
           size: Math.max(0, Number(res.size) || 0),
           items: Math.max(0, Number(res.items) || 0),
           finished: res.finished !== false,
+          failed: false,
           ts: Date.now()
         };
         dirDetailCache.set(key, entry);
@@ -2593,6 +2617,7 @@
         }
         return entry;
       } catch (_) {
+        dirDetailCache.set(key, { fid: key, failed: true, ts: Date.now() });
         return null;
       } finally {
         dirDetailInflight.delete(key);
@@ -2604,7 +2629,7 @@
 
   /**
    * 自动后台统计当前可视区内的文件夹真实大小并即时回填列表「大小」列，
-   * 无需点开详情抽屉；并发上限 4，且目录切换（listSeq 变化）时自动停止旧队列。
+   * 无需点开详情抽屉；并发受远端热配置控制（默认 2），对 500/超时目录自动负缓存冷却。
    */
   function prefetchFolderSizes(dirs, seq) {
     if (!API.injected || needsLoginState() || !API.has('fs', 'dirDetail')) return;
@@ -2615,13 +2640,14 @@
       if (!d || !d.dir || !d.fid) continue;
       var fid = String(d.fid);
       var cached = dirDetailCache.get(fid);
-      if (cached && cached.finished && (now - cached.ts) < 60000) continue;
-      if (cached && !cached.finished && cached.nextRetryAt && now < cached.nextRetryAt) continue;
+      if (cached && cached.failed && (now - cached.ts) < runtimeTuning.dirDetailNegCacheMs) continue;
+      if (cached && !cached.failed && cached.finished && (now - cached.ts) < 60000) continue;
+      if (cached && !cached.failed && !cached.finished && cached.nextRetryAt && now < cached.nextRetryAt) continue;
       if (dirDetailInflight.has(fid)) continue;
       queue.push(fid);
     }
     if (!queue.length) return;
-    var concurrency = Math.min(4, queue.length);
+    var concurrency = Math.min(runtimeTuning.dirDetailConcurrency || 2, queue.length);
     for (var w = 0; w < concurrency; w++) {
       (async function () {
         while (queue.length) {
@@ -6810,9 +6836,13 @@
         : ('已是最新版本 v' + info.currentVersion);
     }
     if (el.hubUpdateMeta) {
-      el.hubUpdateMeta.textContent = (info.releaseDate ? info.releaseDate + ' · ' : '')
-        + (info.signatureVerified ? 'Ed25519 验签通过' : '')
-        + (info.serverRegion ? ' · ' + info.serverRegion : '');
+      var metaParts = [];
+      if (info.releaseDate) metaParts.push(info.releaseDate);
+      if (info.signatureVerified) metaParts.push('Ed25519 验签通过');
+      if (info.serverRegion) metaParts.push(info.serverRegion);
+      if (info.tuning && info.tuning.version > 0) metaParts.push('热配置 v' + info.tuning.version);
+      if (info.hotUi && info.hotUi.activeVersion) metaParts.push('热更 UI ' + info.hotUi.activeVersion);
+      el.hubUpdateMeta.textContent = metaParts.join(' · ');
     }
     if (el.hubUpdateNotice) {
       if (info.notice) {
@@ -6836,6 +6866,9 @@
     }
     if (el.btnHubOpenPkg) {
       el.btnHubOpenPkg.hidden = !state.hub.downloadedPath;
+      if (state.hub.downloadedPath) {
+        el.btnHubOpenPkg.textContent = API.has('hub', 'installUpdate') ? '一键安装并升级' : '打开安装包';
+      }
     }
     if (el.btnHubReveal) {
       el.btnHubReveal.hidden = !state.hub.downloadedPath;
@@ -6856,16 +6889,42 @@
     try {
       var res = await API.hub.checkUpdate();
       state.hub.latest = res;
+      if (res && res.tuning) applyRuntimeTuning(res.tuning);
       if (state.hub.downloadedPath && state.hub.downloadedVersion && res && res.latestVersion && String(res.latestVersion) !== String(state.hub.downloadedVersion)) {
         state.hub.downloadedPath = '';
         state.hub.downloadedVersion = '';
       }
       if (el.hubUpdateSummary) {
         el.hubUpdateSummary.textContent = res.hasUpdate
-          ? ('发现新版本 v' + res.latestVersion + '，已通过 Ed25519 签名验证，可直接从作者服务器下载。')
-          : ('当前 v' + res.currentVersion + ' 已是最新版本（已通过 Ed25519 签名验证）。');
+          ? ('发现新版本 v' + res.latestVersion + '，已通过 Ed25519 签名验证，可直链下载并一键升级。')
+          : ('当前 v' + res.currentVersion + ' 已是最新版本（已通过 Ed25519 签名验证' + (res.tuningApplied ? ' · 已热更新引擎参数' : '') + '）。');
       }
       renderHubUpdateResult(res);
+      // L2: 自动后台拉取并校验兼容的轻量前端热更新包（~100KB），就绪后提示一键秒切
+      if (res && res.hasUiHotfix && res.uiHotfix && API.has('hub', 'applyUiHotfix') && !state.hub.applyingHotfix) {
+        state.hub.applyingHotfix = true;
+        API.hub.applyUiHotfix().then(function (hfRes) {
+          if (hfRes && hfRes.applied && hfRes.needsReload) {
+            var hfVer = String(hfRes.version || '');
+            var hfNote = hfRes.changelog ? ('：' + String(hfRes.changelog).slice(0, 60)) : '';
+            banner('hub-hot-ui', 'info', '已校验轻量界面热更新 ' + hfVer + hfNote + '（无需重装，1 秒刷新即可生效）。', [
+              { label: '立即刷新生效', primary: true, onClick: function () {
+                clearBanner('hub-hot-ui');
+                if (API.has('hub', 'reloadUi')) {
+                  API.hub.reloadUi().catch(function (e) { reportError(e, '应用界面热更新失败'); });
+                } else {
+                  location.reload();
+                }
+              } },
+              { label: '下次启动生效', onClick: function () { clearBanner('hub-hot-ui'); } }
+            ]);
+          }
+        }).catch(function () {
+          // 静默失败，不影响主流程
+        }).finally(function () {
+          state.hub.applyingHotfix = false;
+        });
+      }
       if (res.hasUpdate) {
         if (!o.silent || state.hub.dismissedUpdateVersion !== String(res.latestVersion || '')) {
           banner('hub-update', 'info', '发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），可前往设置页直链下载。', [
@@ -7192,7 +7251,7 @@
           counter.textContent = (step + 1) + ' / ' + TUTORIAL_STEPS.length;
           heroIc.textContent = '';
           heroIc.appendChild(icon(s.icon));
-          var ver = (state.appInfo && state.appInfo.version) ? state.appInfo.version : '1.2.0';
+          var ver = (state.appInfo && state.appInfo.version) ? state.appInfo.version : '1.3.0';
           titleEl.textContent = s.showVersion ? (s.title + ' v' + ver) : s.title;
           subEl.textContent = s.sub;
           pointsBox.textContent = '';
@@ -7548,9 +7607,19 @@
       }, { passive: false });
       el.crumbs.addEventListener('scroll', updateCrumbScrollBtns, { passive: true });
       if (typeof ResizeObserver === 'function') {
-        var crumbResizeObserver = new ResizeObserver(updateCrumbScrollBtns);
+        var crumbRaf = 0;
+        var crumbResizeObserver = new ResizeObserver(function () {
+          if (crumbRaf) return;
+          crumbRaf = requestAnimationFrame(function () {
+            crumbRaf = 0;
+            updateCrumbScrollBtns();
+          });
+        });
         crumbResizeObserver.observe(el.crumbs);
-        unsubs.push(function () { crumbResizeObserver.disconnect(); });
+        unsubs.push(function () {
+          if (crumbRaf) cancelAnimationFrame(crumbRaf);
+          crumbResizeObserver.disconnect();
+        });
       }
     }
     if (el.btnCrumbsPrev) {
@@ -7647,12 +7716,20 @@
       scheduleRows();
     });
     if (typeof ResizeObserver === 'function') {
+      var listResizeRaf = 0;
       var listResizeObserver = new ResizeObserver(function () {
-        refreshCachedRowHeight();
-        scheduleRows();
+        if (listResizeRaf) return;
+        listResizeRaf = requestAnimationFrame(function () {
+          listResizeRaf = 0;
+          refreshCachedRowHeight();
+          scheduleRows();
+        });
       });
       listResizeObserver.observe(el.listwrap);
-      unsubs.push(function () { listResizeObserver.disconnect(); });
+      unsubs.push(function () {
+        if (listResizeRaf) cancelAnimationFrame(listResizeRaf);
+        listResizeObserver.disconnect();
+      });
     }
 
     // 列表交互（O(1) 索引查找 + 整行单击选中 + 复选框增量多选）
@@ -7898,8 +7975,18 @@
     if (el.btnHubLogs) el.btnHubLogs.addEventListener('click', openHubLogPreviewModal);
     if (el.btnHubDownload) el.btnHubDownload.addEventListener('click', downloadHubUpdate);
     if (el.btnHubOpenPkg) {
-      el.btnHubOpenPkg.addEventListener('click', function () {
+      el.btnHubOpenPkg.addEventListener('click', async function () {
         if (!state.hub.downloadedPath) return;
+        if (API.has('hub', 'installUpdate')) {
+          try {
+            var res = await API.hub.installUpdate({ path: state.hub.downloadedPath });
+            if (res && res.message) toast('ok', res.message);
+            return;
+          } catch (err) {
+            reportError(err, '启动一键升级失败');
+            return;
+          }
+        }
         API.dialog.openPath(state.hub.downloadedPath).catch(function (err) { reportError(err, '打开安装包失败'); });
       });
     }
@@ -8015,6 +8102,8 @@
     // 全局未捕获异常自动记录到脱敏诊断缓冲，便于用户提交反馈时定位真实问题
     window.addEventListener('error', function (ev) {
       var msg = (ev && ev.message) ? String(ev.message) : 'window error';
+      // Chromium/WebView2 良性 ResizeObserver 帧末通知，不属于运行错误
+      if (/^ResizeObserver loop/i.test(msg)) return;
       recordDiag('error', 'window', 'JS_ERROR', msg);
     });
     window.addEventListener('unhandledrejection', function (ev) {
@@ -8532,6 +8621,12 @@
     if (!API.isMock && !state.settings.tutorialSeen) {
       await showOnboardingTutorial();
     }
+    // L2 看门狗确认：通知 Rust 端当前界面（含热更新界面）已正常首屏渲染完成，并同步当前热配置
+    if (API.has('hub', 'uiReady')) {
+      API.hub.uiReady().then(function (st) {
+        if (st && st.tuning) applyRuntimeTuning(st.tuning);
+      }).catch(function () {});
+    }
     initHubOnBoot();
   }
 
@@ -8564,6 +8659,6 @@
     openStorageDetailModal: openStorageDetailModal,
     loadRecycle: loadRecycle,
     getRowCount: function () { return rowMap.size; },
-    version: '1.2.0'
+    version: '1.3.0'
   };
 })();

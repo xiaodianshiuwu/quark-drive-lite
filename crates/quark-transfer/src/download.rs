@@ -25,21 +25,16 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::sync::CancellationToken;
 const PART: u64 = 1024 * 1024;
 const WRITE_BUF_CAP: usize = 1024 * 1024;
-const HASH_BUF_CAP: usize = 2 * 1024 * 1024;
+const HASH_BUF_CAP: usize = 4 * 1024 * 1024;
 const CHECKPOINT_VERSION: u32 = 2;
 
+#[cfg(test)]
 fn choose_chunk_size(total: u64) -> u64 {
-    if total > 2048 * PART {
-        16 * PART
-    } else if total > 512 * PART {
-        8 * PART
-    } else if total > 128 * PART {
-        4 * PART
-    } else if total > 32 * PART {
-        2 * PART
-    } else {
-        PART
-    }
+    quark_core::tuning::TuningProfile::default().choose_chunk_size(total)
+}
+
+fn choose_chunk_size_with_tuning(total: u64, tuning: &quark_core::tuning::TuningProfile) -> u64 {
+    tuning.choose_chunk_size(total)
 }
 
 /// Singleflight shared CDN URL so a 403 expiration triggers ONE refresh reused by all active and future workers.
@@ -207,12 +202,13 @@ pub(crate) async fn run(
     if !cp.temp.is_empty() && cp.total != total {
         return Err(err("CONFLICT", "云端文件大小已改变，请取消并重新下载"));
     }
+    let tuning = m.inner.core.tuning();
     if cp.target.is_empty() {
         tel.set_stage("reserve");
         let dir = PathBuf::from(task.local_dir.as_deref().unwrap_or(""));
         fs::create_dir_all(&dir).await.map_err(io_err)?;
         cp.version = CHECKPOINT_VERSION;
-        cp.chunk_size = choose_chunk_size(total);
+        cp.chunk_size = choose_chunk_size_with_tuning(total, &tuning);
         cp.total = total;
         cp.target = reserve(m, id, &dir, &name)
             .await?
@@ -244,25 +240,57 @@ pub(crate) async fn run(
         tel.set_strategy("ready_resume");
         tel.set_resumed(true);
         tel.set_stage("publish");
+        // Verify using the fastest single stored digest (MD5 > SHA1 > SHA256) instead of recomputing all 3.
+        let verify_ready_file = |p: PathBuf,
+                                 cp_md5: String,
+                                 cp_sha1: String,
+                                 cp_sha256: String,
+                                 tok: CancellationToken| async move {
+            let (nm, ns1, ns256) = if !cp_md5.is_empty() {
+                (true, false, false)
+            } else if !cp_sha1.is_empty() {
+                (false, true, false)
+            } else if !cp_sha256.is_empty() {
+                (false, false, true)
+            } else {
+                (false, false, false)
+            };
+            if !nm && !ns1 && !ns256 {
+                return Ok((true, 0u64));
+            }
+            let hs = Instant::now();
+            let (m, s1, s256) = hash_file_selected(&p, nm, ns1, ns256, &tok).await?;
+            let elapsed = hs.elapsed().as_millis() as u64;
+            let matched = (!nm || m == cp_md5) && (!ns1 || s1 == cp_sha1) && (!ns256 || s256 == cp_sha256);
+            Ok::<(bool, u64), quark_core::Error>((matched, elapsed))
+        };
         if fs::try_exists(&cp.target).await.map_err(io_err)? {
-            let hash_start = Instant::now();
-            let existing = hash_file(Path::new(&cp.target), token).await?;
-            tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
-            if existing != (cp.md5.clone(), cp.sha1.clone(), cp.sha256.clone())
-                || fs::metadata(&cp.target).await.map_err(io_err)?.len() != total
-            {
+            let (matched, elapsed) = verify_ready_file(
+                PathBuf::from(&cp.target),
+                cp.md5.clone(),
+                cp.sha1.clone(),
+                cp.sha256.clone(),
+                token.clone(),
+            )
+            .await?;
+            tel.add_hash_ms(elapsed);
+            if !matched || fs::metadata(&cp.target).await.map_err(io_err)?.len() != total {
                 return Err(err("CONFLICT", "下载目标已被其他文件占用"));
             }
             let _ = fs::remove_file(&temp).await;
             let _ = fs::remove_file(format!("{}.qkreserve", cp.target)).await;
             return m.progress_with_telemetry(id, total, total, Some(tel));
         }
-        let hash_start = Instant::now();
-        let temp_hash = hash_file(&temp, token).await?;
-        tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
-        if fs::metadata(&temp).await.map_err(io_err)?.len() != total
-            || temp_hash != (cp.md5.clone(), cp.sha1.clone(), cp.sha256.clone())
-        {
+        let (matched, elapsed) = verify_ready_file(
+            temp.clone(),
+            cp.md5.clone(),
+            cp.sha1.clone(),
+            cp.sha256.clone(),
+            token.clone(),
+        )
+        .await?;
+        tel.add_hash_ms(elapsed);
+        if fs::metadata(&temp).await.map_err(io_err)?.len() != total || !matched {
             return Err(err(
                 "CONTENT_MISMATCH",
                 "已完成下载的临时文件损坏，原文件已保留",
@@ -273,173 +301,212 @@ pub(crate) async fn run(
         return m.progress_with_telemetry(id, total, total, Some(tel));
     }
 
-    // Probe server FIRST (with retries on transient failures + draining 1-byte body for keep-alive)
-    // before touching disk or spending multi-GB I/O on verify_parts().
-    tel.set_stage("probe");
-    let mut link = get_link(m, &fid, token).await?;
-    let probe = {
-        let mut last_probe_err = None;
-        let mut ok_probe = None;
-        for attempt in 0..3u32 {
-            check(token)?;
-            let mut resp = match send(m, &link, Some((0, 0)), None, token).await {
-                Ok(r) => r,
-                Err(e) if attempt < 2 && matches!(e.code.as_str(), "NETWORK" | "RATE_LIMIT") => {
+    let settings = m.inner.core.settings();
+    let strategy_pref = settings["downloadStrategy"].as_str().unwrap_or("auto");
+    let use_small_direct = cp.parts.is_empty()
+        && strategy_pref != "parallel"
+        && (total == 0 || (tuning.small_file_direct_max_bytes > 0 && total <= tuning.small_file_direct_max_bytes));
+
+    let inline_digest = if use_small_direct {
+        // Fast path for small files: skip the 1-byte Range probe and download in one direct stream
+        // with inline hashing (eliminates 1 RTT + full post-download disk re-read).
+        tel.set_stage("get_link");
+        let link = get_link(m, &fid, token).await?;
+        let exists = fs::try_exists(&temp).await.map_err(io_err)?;
+        if exists {
+            let meta = fs::symlink_metadata(&temp).await.map_err(io_err)?;
+            if !meta.is_file() || meta.file_type().is_symlink() {
+                return Err(err("CONFLICT", "下载临时路径已被替换"));
+            }
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp)
+            .await
+            .map_err(io_err)?;
+        file.set_len(total).await.map_err(io_err)?;
+        drop(file);
+        cp.etag.clear();
+        cp.parts.clear();
+        tel.set_strategy(if total == 0 {
+            "single_zero"
+        } else {
+            "single_small_direct"
+        });
+        tel.set_stage("single");
+        Some(single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?)
+    } else {
+        // Probe server FIRST (with retries on transient failures + draining 1-byte body for keep-alive)
+        // before touching disk or spending multi-GB I/O on verify_parts().
+        tel.set_stage("probe");
+        let mut link = get_link(m, &fid, token).await?;
+        let probe = {
+            let mut last_probe_err = None;
+            let mut ok_probe = None;
+            for attempt in 0..3u32 {
+                check(token)?;
+                let mut resp = match send(m, &link, Some((0, 0)), None, token).await {
+                    Ok(r) => r,
+                    Err(e) if attempt < 2 && matches!(e.code.as_str(), "NETWORK" | "RATE_LIMIT") => {
+                        tel.inc_retry();
+                        last_probe_err = Some(e);
+                        cancellable(token, async {
+                            tokio::time::sleep(Duration::from_millis(400 * (1 << attempt))).await;
+                            Ok(())
+                        })
+                        .await?;
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                };
+                if resp.status() == reqwest::StatusCode::FORBIDDEN {
+                    let _ = resp.bytes().await;
+                    link = get_link(m, &fid, token).await?;
+                    tel.inc_link_refresh();
+                    resp = send(m, &link, Some((0, 0)), None, token).await?;
+                }
+                if matches!(
+                    resp.status(),
+                    reqwest::StatusCode::TOO_MANY_REQUESTS
+                        | reqwest::StatusCode::REQUEST_TIMEOUT
+                        | reqwest::StatusCode::BAD_GATEWAY
+                        | reqwest::StatusCode::SERVICE_UNAVAILABLE
+                        | reqwest::StatusCode::GATEWAY_TIMEOUT
+                ) && attempt < 2
+                {
+                    tel.set_http_status(resp.status().as_u16());
                     tel.inc_retry();
-                    last_probe_err = Some(e);
+                    last_probe_err = Some(http_error(resp.status()));
+                    let _ = resp.bytes().await;
                     cancellable(token, async {
-                        tokio::time::sleep(Duration::from_millis(400 * (1 << attempt))).await;
+                        tokio::time::sleep(Duration::from_millis(600 * (1 << attempt))).await;
                         Ok(())
                     })
                     .await?;
                     continue;
                 }
-                Err(e) => return Err(e),
-            };
-            if resp.status() == reqwest::StatusCode::FORBIDDEN {
-                let _ = resp.bytes().await;
-                link = get_link(m, &fid, token).await?;
-                tel.inc_link_refresh();
-                resp = send(m, &link, Some((0, 0)), None, token).await?;
+                ok_probe = Some(resp);
+                break;
             }
-            if matches!(
-                resp.status(),
-                reqwest::StatusCode::TOO_MANY_REQUESTS
-                    | reqwest::StatusCode::REQUEST_TIMEOUT
-                    | reqwest::StatusCode::BAD_GATEWAY
-                    | reqwest::StatusCode::SERVICE_UNAVAILABLE
-                    | reqwest::StatusCode::GATEWAY_TIMEOUT
-            ) && attempt < 2
+            match ok_probe {
+                Some(r) => r,
+                None => return Err(last_probe_err.unwrap_or_else(|| err("NETWORK", "下载探测失败"))),
+            }
+        };
+        validate_encoding(&probe)?;
+        let range = probe.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+        if range {
+            if content_range(
+                probe
+                    .headers()
+                    .get("content-range")
+                    .and_then(|s| s.to_str().ok())
+                    .unwrap_or(""),
+            ) != Some((0, 0, total))
             {
-                tel.set_http_status(resp.status().as_u16());
-                tel.inc_retry();
-                last_probe_err = Some(http_error(resp.status()));
-                let _ = resp.bytes().await;
-                cancellable(token, async {
-                    tokio::time::sleep(Duration::from_millis(600 * (1 << attempt))).await;
-                    Ok(())
-                })
-                .await?;
-                continue;
+                return Err(err("CONTENT_MISMATCH", "探测响应范围与文件大小不符"));
             }
-            ok_probe = Some(resp);
-            break;
-        }
-        match ok_probe {
-            Some(r) => r,
-            None => return Err(last_probe_err.unwrap_or_else(|| err("NETWORK", "下载探测失败"))),
-        }
-    };
-    validate_encoding(&probe)?;
-    let range = probe.status() == reqwest::StatusCode::PARTIAL_CONTENT;
-    if range {
-        if content_range(
-            probe
-                .headers()
-                .get("content-range")
-                .and_then(|s| s.to_str().ok())
-                .unwrap_or(""),
-        ) != Some((0, 0, total))
+        } else if probe.status() != reqwest::StatusCode::OK
+            && !(total == 0 && probe.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE)
         {
-            return Err(err("CONTENT_MISMATCH", "探测响应范围与文件大小不符"));
+            let e = http_error(probe.status());
+            if let Some(st) = e.http_status {
+                tel.set_http_status(st);
+            }
+            return Err(e);
         }
-    } else if probe.status() != reqwest::StatusCode::OK
-        && !(total == 0 && probe.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE)
-    {
-        let e = http_error(probe.status());
-        if let Some(st) = e.http_status {
-            tel.set_http_status(st);
+        let etag = probe
+            .headers()
+            .get("etag")
+            .and_then(|s| s.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        // Drain the 1-byte 206 probe body so hyper returns the TCP+TLS connection cleanly to the pool.
+        if range {
+            let _ = probe.bytes().await;
+        } else {
+            drop(probe);
         }
-        return Err(e);
-    }
-    let etag = probe
-        .headers()
-        .get("etag")
-        .and_then(|s| s.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    // Drain the 1-byte 206 probe body so hyper returns the TCP+TLS connection cleanly to the pool.
-    if range {
-        let _ = probe.bytes().await;
-    } else {
-        drop(probe);
-    }
-    // Ranges may only be combined when the server supplies a strong representation validator.
-    // A missing/weak validator falls back to one complete response and never resumes old pieces.
-    let bound_etag = strong_etag(&etag).unwrap_or("").to_string();
-    if bound_etag.is_empty() || cp.etag != bound_etag {
-        cp.parts.clear();
-    }
-    cp.etag = bound_etag;
-
-    let exists = fs::try_exists(&temp).await.map_err(io_err)?;
-    if exists {
-        let meta = fs::symlink_metadata(&temp).await.map_err(io_err)?;
-        if !meta.is_file() || meta.file_type().is_symlink() {
-            return Err(err("CONFLICT", "下载临时路径已被替换"));
-        }
-        if meta.len() != total {
+        // Ranges may only be combined when the server supplies a strong representation validator.
+        // A missing/weak validator falls back to one complete response and never resumes old pieces.
+        let bound_etag = strong_etag(&etag).unwrap_or("").to_string();
+        if bound_etag.is_empty() || cp.etag != bound_etag {
             cp.parts.clear();
         }
-    } else {
-        cp.parts.clear();
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&temp)
-        .await
-        .map_err(io_err)?;
-    file.set_len(total).await.map_err(io_err)?;
-    drop(file);
-    if !cp.parts.is_empty() {
-        tel.set_stage("verify_parts");
-        tel.set_resumed(true);
-        let hash_start = Instant::now();
-        verify_parts(&temp, &mut cp, token).await?;
-        tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
-    }
-    store(m, id, &cp)?;
-    let settings = m.inner.core.settings();
-    let inline_digest = if range && total > 0 && !cp.etag.is_empty() {
-        let strat = if settings["downloadStrategy"].as_str() == Some("sequential") {
-            "sequential"
-        } else {
-            "multipart"
-        };
-        tel.set_strategy(strat);
-        tel.set_stage("multipart");
-        match multipart_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await {
-            Ok(()) => None,
-            Err(e) if e.code == "RANGE_UNSUPPORTED" => {
-                tel.set_strategy("single_fallback");
-                tel.set_stage("single");
-                cp.parts.clear();
-                store(m, id, &cp)?;
-                Some(single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?)
+        cp.etag = bound_etag;
+
+        let exists = fs::try_exists(&temp).await.map_err(io_err)?;
+        if exists {
+            let meta = fs::symlink_metadata(&temp).await.map_err(io_err)?;
+            if !meta.is_file() || meta.file_type().is_symlink() {
+                return Err(err("CONFLICT", "下载临时路径已被替换"));
             }
-            Err(e) => return Err(e),
-        }
-    } else {
-        tel.set_strategy(if !range {
-            "single_no_range"
-        } else if cp.etag.is_empty() {
-            "single_no_etag"
+            if meta.len() != total {
+                cp.parts.clear();
+            }
         } else {
-            "single_zero"
-        });
-        tel.set_stage("single");
-        Some(single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?)
+            cp.parts.clear();
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&temp)
+            .await
+            .map_err(io_err)?;
+        file.set_len(total).await.map_err(io_err)?;
+        drop(file);
+        if !cp.parts.is_empty() {
+            tel.set_stage("verify_parts");
+            tel.set_resumed(true);
+            let hash_start = Instant::now();
+            verify_parts(&temp, &mut cp, token).await?;
+            tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
+        }
+        store(m, id, &cp)?;
+        if range && total > 0 && !cp.etag.is_empty() {
+            let strat = if strategy_pref == "sequential" {
+                "sequential"
+            } else {
+                "multipart"
+            };
+            tel.set_strategy(strat);
+            tel.set_stage("multipart");
+            match multipart_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await {
+                Ok(()) => None,
+                Err(e) if e.code == "RANGE_UNSUPPORTED" => {
+                    tel.set_strategy("single_fallback");
+                    tel.set_stage("single");
+                    cp.parts.clear();
+                    store(m, id, &cp)?;
+                    Some(single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?)
+                }
+                Err(e) => return Err(e),
+            }
+        } else {
+            tel.set_strategy(if !range {
+                "single_no_range"
+            } else if cp.etag.is_empty() {
+                "single_no_etag"
+            } else {
+                "single_zero"
+            });
+            tel.set_stage("single");
+            Some(single_with_tel(m, id, &fid, &link, &temp, &mut cp, token, Some(tel)).await?)
+        }
     };
     check(token)?;
     let metadata = fs::metadata(&temp).await.map_err(io_err)?;
     if metadata.len() != total {
         return Err(err("CONTENT_MISMATCH", "下载文件长度不符"));
     }
-    // Multipart uses buffered positional writes; sync once before final full-file hash & publication.
-    // Single-stream already synced & computed exact hashes inline while streaming (saves full disk re-read).
+    // Multipart uses buffered positional writes; sync once before final validation & publication.
+    // Compute ONLY the checksum algorithms that the cloud metadata actually provided (parallelized when >=2).
+    // When no cloud digest is provided, every multipart chunk has already verified its per-part SHA-256 inline.
     tel.set_stage("final_hash");
     let (md5, sha1, sha256) = if let Some(digests) = inline_digest {
         digests
@@ -452,10 +519,17 @@ pub(crate) async fn run(
             .sync_all()
             .await
             .map_err(io_err)?;
-        let hash_start = Instant::now();
-        let digests = hash_file(&temp, token).await?;
-        tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
-        digests
+        let need_md5 = info["md5"].as_str().is_some_and(|s| !s.is_empty());
+        let need_sha1 = info["sha1"].as_str().is_some_and(|s| !s.is_empty());
+        let need_sha256 = info["sha256"].as_str().is_some_and(|s| !s.is_empty());
+        if need_md5 || need_sha1 || need_sha256 {
+            let hash_start = Instant::now();
+            let digests = hash_file_selected(&temp, need_md5, need_sha1, need_sha256, token).await?;
+            tel.add_hash_ms(hash_start.elapsed().as_millis() as u64);
+            digests
+        } else {
+            (String::new(), String::new(), String::new())
+        }
     };
     for (key, value) in [("md5", &md5), ("sha1", &sha1), ("sha256", &sha256)] {
         if let Some(expected) = info[key].as_str().filter(|s| !s.is_empty()) {
@@ -605,7 +679,6 @@ async fn reserve(m: &TransferManager, id: &str, dir: &Path, name: &str) -> Resul
         match opts.open(&lock).await {
             Ok(mut f) => {
                 f.write_all(id.as_bytes()).await.map_err(io_err)?;
-                f.sync_all().await.map_err(io_err)?;
                 return Ok(candidate);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -798,9 +871,14 @@ async fn multipart_with_tel(
     };
     let count = cp.total.div_ceil(chunk_size);
     let settings = m.inner.core.settings();
-    let parallel = connections(&settings, cp.total);
+    let tuning = m.inner.core.tuning();
+    let max_parallel = connections(&settings, cp.total);
+    let min_parallel = tuning.aimd_min_parallel.min(max_parallel).max(1);
+    let mut effective_parallel = max_parallel;
+    let mut recent_retries: u32 = 0;
+    let mut clean_streak: u32 = 0;
     if let Some(tel) = tel {
-        tel.set_parallel(parallel);
+        tel.set_parallel(max_parallel);
         tel.set_chunk_size(chunk_size);
     }
     let shared_link = Arc::new(SharedLink::new(link.to_string()));
@@ -821,7 +899,7 @@ async fn multipart_with_tel(
     m.progress_with_telemetry(id, complete, cp.total, tel)?;
     let live = Arc::new(Mutex::new((complete, BTreeMap::<u64, u64>::new())));
     loop {
-        while failure.is_none() && workers.len() < parallel && cursor < count {
+        while failure.is_none() && workers.len() < effective_parallel && cursor < count {
             let index = cursor;
             cursor += 1;
             if cp.parts.contains_key(&index) {
@@ -855,7 +933,28 @@ async fn multipart_with_tel(
             break;
         };
         match result {
-            Ok((index, done)) => {
+            Ok((index, done, part_retries_used)) => {
+                if tuning.aimd_enabled && max_parallel > min_parallel {
+                    if part_retries_used > 0 {
+                        recent_retries = recent_retries.saturating_add(part_retries_used);
+                        clean_streak = 0;
+                        if recent_retries >= tuning.aimd_retry_threshold
+                            && effective_parallel > min_parallel
+                        {
+                            effective_parallel = (effective_parallel / 2).max(min_parallel);
+                            recent_retries = 0;
+                        }
+                    } else {
+                        clean_streak = clean_streak.saturating_add(1);
+                        if clean_streak >= tuning.aimd_recover_clean_parts {
+                            if effective_parallel < max_parallel {
+                                effective_parallel += 1;
+                            }
+                            clean_streak = 0;
+                            recent_retries = 0;
+                        }
+                    }
+                }
                 complete += done.len;
                 let received = {
                     let mut live = live.lock().unwrap();
@@ -934,7 +1033,7 @@ async fn fetch_part_file(
     token: CancellationToken,
     on_progress: Option<Arc<dyn Fn(u64) + Send + Sync>>,
     tel: Option<&RunTelemetry>,
-) -> Result<(u64, DonePart)> {
+) -> Result<(u64, DonePart, u32)> {
     let _slot = cancellable(&token, async {
         m.inner
             .download_slots
@@ -1049,6 +1148,7 @@ async fn fetch_part_file(
                     len: received,
                     sha256: format!("{:x}", hash.finalize()),
                 },
+                attempt,
             ))
         }
         .await;
@@ -1103,7 +1203,7 @@ async fn fetch_part(
             .map_err(io_err)?,
     );
     let shared_link = Arc::new(SharedLink::new(link.to_string()));
-    fetch_part_file(
+    let (idx, done, _) = fetch_part_file(
         m,
         fid,
         shared_link,
@@ -1116,7 +1216,8 @@ async fn fetch_part(
         on_progress,
         None,
     )
-    .await
+    .await?;
+    Ok((idx, done))
 }
 #[cfg(test)]
 async fn single(
@@ -1313,15 +1414,30 @@ async fn hash_range(
     let mut buf = vec![0u8; 1024 * 1024];
     hash_range_file(&mut file, &mut buf, start, len, token).await
 }
+#[cfg(test)]
 async fn hash_file(path: &Path, token: &CancellationToken) -> Result<(String, String, String)> {
+    hash_file_selected(path, true, true, true, token).await
+}
+
+async fn hash_file_selected(
+    path: &Path,
+    need_md5: bool,
+    need_sha1: bool,
+    need_sha256: bool,
+    token: &CancellationToken,
+) -> Result<(String, String, String)> {
+    if !need_md5 && !need_sha1 && !need_sha256 {
+        return Ok((String::new(), String::new(), String::new()));
+    }
     let path = path.to_path_buf();
     let tok = token.clone();
     tokio::task::spawn_blocking(move || -> Result<(String, String, String)> {
         use std::io::Read;
         let mut file = std::fs::File::open(&path).map_err(io_err)?;
-        let mut md5 = Md5::new();
-        let mut sha1 = Sha1::new();
-        let mut sha256 = Sha256::new();
+        let mut md5 = need_md5.then(Md5::new);
+        let mut sha1 = need_sha1.then(Sha1::new);
+        let mut sha256 = need_sha256.then(Sha256::new);
+        let active_count = (need_md5 as u8) + (need_sha1 as u8) + (need_sha256 as u8);
         let mut buf = vec![0u8; HASH_BUF_CAP];
         loop {
             check(&tok)?;
@@ -1329,14 +1445,37 @@ async fn hash_file(path: &Path, token: &CancellationToken) -> Result<(String, St
             if n == 0 {
                 break;
             }
-            md5.update(&buf[..n]);
-            sha1.update(&buf[..n]);
-            sha256.update(&buf[..n]);
+            let slice = &buf[..n];
+            if active_count >= 2 && n >= 256 * 1024 {
+                std::thread::scope(|s| {
+                    let h1 = md5.as_mut().map(|h| s.spawn(move || h.update(slice)));
+                    let h2 = sha1.as_mut().map(|h| s.spawn(move || h.update(slice)));
+                    if let Some(h) = sha256.as_mut() {
+                        h.update(slice);
+                    }
+                    if let Some(j) = h1 {
+                        let _ = j.join();
+                    }
+                    if let Some(j) = h2 {
+                        let _ = j.join();
+                    }
+                });
+            } else {
+                if let Some(h) = md5.as_mut() {
+                    h.update(slice);
+                }
+                if let Some(h) = sha1.as_mut() {
+                    h.update(slice);
+                }
+                if let Some(h) = sha256.as_mut() {
+                    h.update(slice);
+                }
+            }
         }
         Ok((
-            format!("{:x}", md5.finalize()),
-            format!("{:x}", sha1.finalize()),
-            format!("{:x}", sha256.finalize()),
+            md5.map(|h| format!("{:x}", h.finalize())).unwrap_or_default(),
+            sha1.map(|h| format!("{:x}", h.finalize())).unwrap_or_default(),
+            sha256.map(|h| format!("{:x}", h.finalize())).unwrap_or_default(),
         ))
     })
     .await
@@ -1385,21 +1524,53 @@ fn is_hard_link_fallback_err(e: &std::io::Error) -> bool {
         false
     }
 }
-async fn publish(temp: &Path, target: &Path, token: &CancellationToken) -> Result<()> {
+fn is_transient_publish_err(e: &quark_core::Error) -> bool {
+    e.code == "LOCAL_IO"
+        && matches!(
+            e.io_kind.as_deref(),
+            Some("PermissionDenied" | "ResourceBusy" | "Interrupted")
+        )
+}
+
+async fn publish_once(temp: &Path, target: &Path, token: &CancellationToken) -> Result<()> {
     check(token)?;
     match fs::hard_link(temp, target).await {
-        Ok(()) => {}
+        Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(err("CONFLICT", "目标文件已存在，下载没有覆盖它"));
+            Err(err("CONFLICT", "目标文件已存在，下载没有覆盖它"))
         }
         Err(e) if is_hard_link_fallback_err(&e) => {
             let source = temp.to_owned();
             let destination = target.to_owned();
             tokio::task::spawn_blocking(move || rename_no_replace(&source, &destination))
                 .await
-                .map_err(|_| err("LOCAL_IO", "发布下载文件失败"))??;
+                .map_err(|_| err("LOCAL_IO", "发布下载文件失败"))?
         }
-        Err(e) => return Err(io_err(e)),
+        Err(e) => Err(io_err(e)),
+    }
+}
+
+async fn publish(temp: &Path, target: &Path, token: &CancellationToken) -> Result<()> {
+    let mut last_err = None;
+    for attempt in 0..3u64 {
+        match publish_once(temp, target, token).await {
+            Ok(()) => {
+                last_err = None;
+                break;
+            }
+            Err(e) if is_transient_publish_err(&e) && attempt < 2 => {
+                last_err = Some(e);
+                cancellable(token, async {
+                    tokio::time::sleep(Duration::from_millis(80 * (attempt + 1))).await;
+                    Ok(())
+                })
+                .await?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if let Some(e) = last_err {
+        return Err(e);
     }
     // Target is already safely published; clean up temporary link best-effort (with short retries for Windows Defender).
     if fs::try_exists(temp).await.unwrap_or(false) {
