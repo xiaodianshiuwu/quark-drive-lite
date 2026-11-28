@@ -374,6 +374,7 @@
       checkUpdate: expose('hub', 'checkUpdate'),
       downloadUpdate: expose('hub', 'downloadUpdate'),
       installUpdate: expose('hub', 'installUpdate'),
+      openReleasePage: expose('hub', 'openReleasePage'),
       runtimeStatus: expose('hub', 'runtimeStatus', { silent: true, fallback: null }),
       applyUiHotfix: expose('hub', 'applyUiHotfix'),
       reloadUi: expose('hub', 'reloadUi'),
@@ -526,6 +527,7 @@
       checkUpdate: expose('hub', 'checkUpdate'),
       downloadUpdate: expose('hub', 'downloadUpdate'),
       installUpdate: expose('hub', 'installUpdate'),
+      openReleasePage: expose('hub', 'openReleasePage'),
       runtimeStatus: expose('hub', 'runtimeStatus', { silent: true, fallback: null }),
       applyUiHotfix: expose('hub', 'applyUiHotfix'),
       reloadUi: expose('hub', 'reloadUi'),
@@ -1166,6 +1168,10 @@
           return Promise.resolve({ logs: [{ ts: Date.now(), level: 'info', category: 'lifecycle', code: 'APP_START', msg: 'app started (preview)' }] });
         },
         installUpdate: function () { return Promise.resolve({ ok: true, mode: 'mock', restarting: false }); },
+        openReleasePage: function () {
+          pushToast('info', '（假数据模式）已打开 GitHub Releases 页面');
+          return Promise.resolve({ ok: true, url: 'https://github.com/xiaodianshiuwu/quark-drive-lite/releases/latest' });
+        },
         runtimeStatus: function () { return Promise.resolve({ ok: true, tuning: { version: 0, dirDetailNegCacheMs: 300000, dirDetailConcurrency: 2 }, hotUi: { activeVersion: null } }); },
         applyUiHotfix: function () { return Promise.resolve({ ok: true, applied: false, needsReload: false }); },
         reloadUi: function () { return Promise.resolve({ ok: true, mode: 'builtin' }); },

@@ -3,6 +3,7 @@ members = ["crates/quark-core", "crates/quark-transfer", "crates/quark-agent", "
 resolver = "2"
 
 [profile.release]
-lto = "thin"
+opt-level = "s"
+lto = "fat"
 codegen-units = 1
 strip = true

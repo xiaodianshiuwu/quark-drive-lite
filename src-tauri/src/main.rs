@@ -228,6 +228,10 @@ async fn qk_call_inner(
                     .await
             }
             "hub.installUpdate" => install_verified_update(app, state, params).await,
+            "hub.openReleasePage" => {
+                open::that(quark_core::hub::GITHUB_RELEASES_URL).map_err(shell_error)?;
+                Ok(json!({ "ok": true, "url": quark_core::hub::GITHUB_RELEASES_URL }))
+            }
             "hub.runtimeStatus" => Ok(state.hub.runtime_status(ver)),
             "hub.applyUiHotfix" => state.hub.apply_ui_hotfix(ver).await,
             "hub.reloadUi" => {

@@ -6932,11 +6932,39 @@
       el.hubUpdateChangelog.textContent = info.changelog || '（暂无更新说明）';
     }
     var rec = info.recommendedAsset && info.recommendedAsset.filename ? info.recommendedAsset : null;
+    var isAppImage = info.installType === 'appimage' || info.recommendedAssetKey === 'linux-x64-appimage';
     if (el.btnHubDownload) {
       el.btnHubDownload.hidden = !rec;
       el.btnHubDownload.disabled = state.hub.downloading;
       if (rec) {
         el.btnHubDownload.textContent = '直链下载 ' + rec.filename + (rec.size ? '（' + fmtBytes(rec.size) + '）' : '');
+      }
+    }
+    if (el.hubUpdateFallbackHint) {
+      if (!rec && info.hasUpdate) {
+        el.hubUpdateFallbackHint.hidden = false;
+        el.hubUpdateFallbackHint.textContent = isAppImage
+          ? '当前运行的是 Linux AppImage 便携版（因打包了完整 WebKitGTK/GTK3 运行库约 80 MB，不走海外中转直链）。请点击下方按钮前往 GitHub Releases 下载最新 .AppImage 覆盖即可；如使用 Ubuntu/Debian，也可改用约 6 MB 的 .deb 安装包以获得应用内高速直链更新。'
+          : '当前系统架构对应的安装包未托管在海外中转服务器，请点击下方按钮前往 GitHub Releases 页面下载完整安装包。';
+      } else {
+        el.hubUpdateFallbackHint.hidden = true;
+        el.hubUpdateFallbackHint.textContent = '';
+      }
+    }
+    if (el.btnHubGithub) {
+      var showGithub = !!info.hasUpdate || (!rec && isAppImage);
+      el.btnHubGithub.hidden = !showGithub;
+      if (showGithub) {
+        var primaryGithub = !rec;
+        el.btnHubGithub.classList.toggle('btn-primary', primaryGithub);
+        el.btnHubGithub.classList.toggle('btn-ghost', !primaryGithub);
+        if (primaryGithub) {
+          el.btnHubGithub.textContent = isAppImage
+            ? '前往 GitHub Releases 下载 AppImage'
+            : '前往 GitHub Releases 下载';
+        } else {
+          el.btnHubGithub.textContent = 'GitHub Releases 备用下载';
+        }
       }
     }
     if (el.btnHubOpenPkg) {
@@ -6969,9 +6997,15 @@
         state.hub.downloadedPath = '';
         state.hub.downloadedVersion = '';
       }
+      var hasRec = !!(res && res.recommendedAsset && res.recommendedAsset.filename);
+      var isAppImagePkg = !!(res && (res.installType === 'appimage' || res.recommendedAssetKey === 'linux-x64-appimage'));
       if (el.hubUpdateSummary) {
         el.hubUpdateSummary.textContent = res.hasUpdate
-          ? ('发现新版本 v' + res.latestVersion + '，已通过 Ed25519 签名验证，可直链下载并一键升级。')
+          ? (hasRec
+            ? ('发现新版本 v' + res.latestVersion + '，已通过 Ed25519 签名验证，可直链下载并一键升级。')
+            : (isAppImagePkg
+              ? ('发现新版本 v' + res.latestVersion + '（已验签）。Linux AppImage 便携版请前往 GitHub Releases 下载最新 .AppImage 覆盖升级。')
+              : ('发现新版本 v' + res.latestVersion + '（已验签），请前往 GitHub Releases 下载对应系统安装包。')))
           : ('当前 v' + res.currentVersion + ' 已是最新版本（已通过 Ed25519 签名验证' + (res.tuningApplied ? ' · 已热更新引擎参数' : '') + '）。');
       }
       renderHubUpdateResult(res);
@@ -7002,19 +7036,35 @@
       }
       if (res.hasUpdate) {
         if (!o.silent || state.hub.dismissedUpdateVersion !== String(res.latestVersion || '')) {
-          banner('hub-update', 'info', '发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），可前往设置页直链下载。', [
-            { label: '查看更新', primary: true, onClick: function () {
+          var bannerMsg = hasRec
+            ? ('发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），可前往设置页直链下载。')
+            : (isAppImagePkg
+              ? ('发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），AppImage 版请前往 GitHub Releases 下载更新。')
+              : ('发现新版本 v' + res.latestVersion + '（当前 v' + res.currentVersion + '），请前往设置页或 GitHub Releases 下载更新。'));
+          var bannerBtns = [
+            { label: hasRec ? '查看更新' : '查看更新说明', primary: hasRec, onClick: function () {
               clearBanner('hub-update');
               setView('settings');
               if (el.hubCard && typeof el.hubCard.scrollIntoView === 'function') {
                 el.hubCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
               }
-            } },
-            { label: '稍后再说', onClick: function () {
-              state.hub.dismissedUpdateVersion = String(res.latestVersion || '');
-              clearBanner('hub-update');
             } }
-          ]);
+          ];
+          if (!hasRec && API.has('hub', 'openReleasePage')) {
+            bannerBtns.unshift({
+              label: isAppImagePkg ? '前往 GitHub 下载 AppImage' : '前往 GitHub 下载',
+              primary: true,
+              onClick: function () {
+                clearBanner('hub-update');
+                API.hub.openReleasePage().catch(function (err) { reportError(err, '打开 GitHub 发布页失败'); });
+              }
+            });
+          }
+          bannerBtns.push({ label: '稍后再说', onClick: function () {
+            state.hub.dismissedUpdateVersion = String(res.latestVersion || '');
+            clearBanner('hub-update');
+          } });
+          banner('hub-update', 'info', bannerMsg, bannerBtns);
         }
       } else if (res.notice && o.silent) {
         if (state.hub.dismissedNotice !== String(res.notice)) {
@@ -8071,6 +8121,19 @@
         API.dialog.showInFolder(state.hub.downloadedPath).catch(function (err) { reportError(err, '定位安装包失败'); });
       });
     }
+    if (el.btnHubGithub) {
+      el.btnHubGithub.addEventListener('click', function () {
+        if (API.has('hub', 'openReleasePage')) {
+          API.hub.openReleasePage().then(function () {
+            toast('info', '已在浏览器中打开 GitHub Releases 下载页');
+          }).catch(function (err) {
+            reportError(err, '打开 GitHub Releases 失败');
+          });
+        } else {
+          toast('info', '请访问 GitHub Releases 下载最新安装包');
+        }
+      });
+    }
     if (el.fbBtnEnable) el.fbBtnEnable.addEventListener('click', function () { setHubOptIn(true); });
     if (el.fbBtnPreview) el.fbBtnPreview.addEventListener('click', openHubLogPreviewModal);
     if (el.fbBtnSubmit) el.fbBtnSubmit.addEventListener('click', submitFeedbackForm);
@@ -8502,6 +8565,8 @@
     el.btnHubDownload = $('btn-hub-download');
     el.btnHubOpenPkg = $('btn-hub-open-pkg');
     el.btnHubReveal = $('btn-hub-reveal');
+    el.btnHubGithub = $('btn-hub-github');
+    el.hubUpdateFallbackHint = $('hub-update-fallback-hint');
     el.hubDlProgress = $('hub-dl-progress');
     el.hubDlFill = $('hub-dl-fill');
     el.hubDlLabel = $('hub-dl-label');

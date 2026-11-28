@@ -121,7 +121,7 @@
   api.chat.onEvent = function (cb) { return listen('qk:chat-event', cb); };
   // 可选作者服务器（默认关闭，关闭时后端严格零外传）
   [
-    'config', 'setOptIn', 'checkUpdate', 'downloadUpdate', 'installUpdate',
+    'config', 'setOptIn', 'checkUpdate', 'downloadUpdate', 'installUpdate', 'openReleasePage',
     'runtimeStatus', 'applyUiHotfix', 'reloadUi', 'uiReady', 'rollbackUi',
     'sendTelemetry', 'submitFeedback', 'listFeedback', 'replyFeedback', 'logPreview', 'recordEvent'
   ].forEach(function (name) {

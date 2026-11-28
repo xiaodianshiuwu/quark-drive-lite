@@ -267,6 +267,7 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
           }
           case 'hub.logPreview': return {logs:[{ts:1763817600000,level:'info',category:'lifecycle',code:'APP_START',msg:'app started (darwin/aarch64)'}]};
           case 'hub.installUpdate': return {ok:true,mode:'installer_launched',restarting:false,path:p.path||'',message:'已启动一键升级'};
+          case 'hub.openReleasePage': return {ok:true,url:'https://github.com/xiaodianshiuwu/quark-drive-lite/releases/latest'};
           case 'hub.runtimeStatus': return {ok:true,tuning:{version:0,dirDetailNegCacheMs:300000,dirDetailConcurrency:2},hotUi:{activeVersion:null}};
           case 'hub.applyUiHotfix': return {ok:true,applied:false,needsReload:false};
           case 'hub.reloadUi': return {ok:true,mode:'builtin'};
@@ -1112,6 +1113,23 @@ test('renderer DOM: virtual paging, file operations, transfers, settings and acc
     await until('!document.getElementById("btn-hub-open-pkg").hidden', 'open package button shown after verified download');
     await click('#btn-hub-open-pkg');
     await until('__fixtureCalls.some(c=>c.method==="hub.installUpdate" && c.params.path==="/fixture/QuarkDriveLite-1.0.1.zip")', 'one-click install called hub.installUpdate with verified path');
+    // 常规更新面板也提供 GitHub Releases 备用下载按钮
+    assert.equal(await evaluate('document.getElementById("btn-hub-github").hidden'), false, 'secondary GitHub fallback button visible on update');
+
+    // 4b. Linux AppImage 场景（无中转直链）：隐藏直链下载，显示 AppImage 专属中文指引并高亮 GitHub 下载按钮
+    await evaluate(`
+      __fixture.hubLatest = Object.assign({}, __fixture.hubLatest, {
+        installType: 'appimage',
+        recommendedAssetKey: 'linux-x64-appimage',
+        recommendedAsset: null
+      });
+    `);
+    await click('#btn-hub-check');
+    await until('document.getElementById("btn-hub-download").hidden && !document.getElementById("btn-hub-github").hidden && document.getElementById("btn-hub-github").classList.contains("btn-primary")', 'AppImage fallback shows primary GitHub Releases button');
+    const appImageHint = await evaluate('document.getElementById("hub-update-fallback-hint").textContent');
+    assert.ok(appImageHint.includes('AppImage') && appImageHint.includes('GitHub Releases') && appImageHint.includes('.deb'), 'AppImage fallback hint explains GitHub Releases and .deb option');
+    await click('#btn-hub-github');
+    await until('__fixtureCalls.some(c=>c.method==="hub.openReleasePage")', 'clicking GitHub fallback calls hub.openReleasePage');
 
     // 5. Issue #5 回归：单击选中行绝不顶偏列表（0px 位移），同一坐标双击立刻进入文件夹，悬浮批量条正常可用
     await evaluate('QKUI.setView("files");QKUI.navigate("0","全部文件",undefined,{skipCache:true})');

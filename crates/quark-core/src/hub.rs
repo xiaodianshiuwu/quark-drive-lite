@@ -32,6 +32,7 @@ use tokio::io::AsyncWriteExt;
 
 pub const DEFAULT_HUB_URL: &str = "https://qdl.xiaodianshiuwu.space";
 pub const DEFAULT_SERVER_REGION: &str = "海外节点 · Tokyo (JP)";
+pub const GITHUB_RELEASES_URL: &str = "https://github.com/xiaodianshiuwu/quark-drive-lite/releases/latest";
 /// Server X25519 public key (32 raw bytes, base64). Public by design; private key lives only on server.
 pub const DEFAULT_X25519_PUB_B64: &str = "JiBk3eOuPSeJfVdmlf69pMVn5XdZdN2OoCswV+ij+h4=";
 /// Server Ed25519 public key (32 raw bytes, base64). Public by design; private key lives only on server.
@@ -478,7 +479,9 @@ impl HubClient {
             "currentVersion": app_version,
             "platform": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
+            "installType": detect_install_type(),
             "recommendedAssetKey": recommended_asset_key(),
+            "releasePageUrl": GITHUB_RELEASES_URL,
             "cryptoSummary": "HTTPS TLS 1.3 + X25519/AES-256-GCM 端到端加密 + Ed25519 签名校验",
             "overseasHint": "该服务器部署于海外节点（日本东京），国内直连可能出现连接失败或延迟；如有代理/梯子开启后即可顺畅连接，没有也没关系，不影响网盘核心使用。"
         })
@@ -562,6 +565,8 @@ impl HubClient {
             "assets": manifest["assets"],
             "recommendedAssetKey": rec_key,
             "recommendedAsset": recommended_asset,
+            "installType": detect_install_type(),
+            "releasePageUrl": GITHUB_RELEASES_URL,
             "signatureVerified": true,
             "serverRegion": server_region,
             "tuning": active_tuning,
@@ -1457,8 +1462,20 @@ pub fn recommended_asset_key() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "macos-arm64",
         ("macos", _) => "macos-x64",
-        ("windows", _) => "windows-x64-setup",
-        ("linux", "x86_64") => "linux-x64-deb",
+        ("windows", _) => {
+            if detect_install_type() == "win_portable" {
+                "windows-x64-portable"
+            } else {
+                "windows-x64-setup"
+            }
+        }
+        ("linux", "x86_64") => {
+            if std::env::var_os("APPIMAGE").is_some() {
+                "linux-x64-appimage"
+            } else {
+                "linux-x64-deb"
+            }
+        }
         ("linux", "aarch64") => "linux-arm64-deb",
         _ => "windows-x64-portable",
     }
@@ -1646,7 +1663,13 @@ fn detect_install_type() -> &'static str {
     {
         if let Ok(exe) = std::env::current_exe() {
             let low = exe.to_string_lossy().to_ascii_lowercase();
-            if low.contains("program files") || low.contains("appdata\\local\\programs") {
+            let has_uninstaller = exe
+                .parent()
+                .is_some_and(|dir| dir.join("uninstall.exe").is_file());
+            if has_uninstaller
+                || low.contains("program files")
+                || low.contains("appdata\\local\\programs")
+            {
                 return "win_setup";
             }
             return "win_portable";
