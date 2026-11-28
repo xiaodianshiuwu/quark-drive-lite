@@ -172,12 +172,15 @@ jobs:
               --generate-notes
           fi
       - name: Auto-upload & Ed25519-sign on Tokyo Hub (when HUB_DEPLOY_TOKEN is set)
-        if: ${{ secrets.HUB_DEPLOY_TOKEN != '' }}
         env:
           HUB_URL: ${{ vars.QDL_HUB_URL || 'https://qdl.xiaodianshiuwu.space' }}
           HUB_DEPLOY_TOKEN: ${{ secrets.HUB_DEPLOY_TOKEN }}
           CHANNEL: ${{ github.event.inputs.channel || 'stable' }}
         run: |
+          if [ -z "${HUB_DEPLOY_TOKEN:-}" ]; then
+            echo "HUB_DEPLOY_TOKEN not configured; skipping Tokyo Hub upload."
+            exit 0
+          fi
           node - <<'EOF'
           const fs = require('node:fs');
           const path = require('node:path');
