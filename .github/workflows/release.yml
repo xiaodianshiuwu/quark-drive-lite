@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v1.3.0)'
+        description: 'Release tag (e.g. v1.3.1)'
         required: true
       channel:
         description: 'Release channel (stable / beta)'
@@ -57,6 +57,7 @@ jobs:
           ==========================================
           1. 双击「夸克网盘极简版.exe」即可运行，无需安装。
           2. 需要 Windows 10/11 系统自带的 Microsoft Edge WebView2 运行时。
+          3. 如需开启在线更新与轻量前端热更新，可在设置中手动开启「连接作者服务器」。
           "@ | Set-Content -Path (Join-Path $stageInner "使用说明.txt") -Encoding UTF8
 
           $zipDest = Join-Path $outDir "QuarkDriveLite-$version-Windows-x64-Portable.zip"
@@ -109,8 +110,10 @@ jobs:
         include:
           - os: macos-15
             arch: arm64
+            bundles: app,dmg
           - os: macos-15-intel
             arch: x64
+            bundles: app
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -122,11 +125,11 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run check:js
       - run: cargo test --workspace --locked
-      - name: Build macOS ZIP (${{ matrix.arch }})
+      - name: Build macOS packages (${{ matrix.arch }})
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
-          npm run build -- --bundles app -- --locked
+          npm run build -- --bundles ${{ matrix.bundles }} -- --locked
           mkdir -p dist-release
           version=$(node -p "require('./package.json').version")
           source_app=$(node -p "require('./src-tauri/tauri.conf.json').productName + '.app'")
@@ -135,6 +138,13 @@ jobs:
           codesign --verify --deep --strict "$stage/QuarkDriveLite.app"
           ditto -c -k --norsrc --noextattr --keepParent "$stage/QuarkDriveLite.app" "dist-release/QuarkDriveLite-$version-macOS-${{ matrix.arch }}.zip"
           rm -rf "$stage"
+          if [[ "${{ matrix.bundles }}" == *"dmg"* ]]; then
+            shopt -s nullglob
+            dmgs=(target/release/bundle/dmg/*.dmg)
+            if [ "${#dmgs[@]}" -ge 1 ]; then
+              cp "${dmgs[0]}" "dist-release/QuarkDriveLite-$version-macOS-${{ matrix.arch }}.dmg"
+            fi
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos-${{ matrix.arch }}
@@ -153,23 +163,86 @@ jobs:
         with:
           path: all-artifacts
           merge-multiple: true
-      - name: Generate unified SHA256SUMS.txt
+      - name: Generate unified SHA256SUMS.txt & rich Chinese Release Notes
+        env:
+          TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           cd all-artifacts
           sha256sum QuarkDriveLite-* > SHA256SUMS.txt
           cat SHA256SUMS.txt
+          cd ..
+          node - <<'EOF'
+          const fs = require('node:fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const ver = pkg.version;
+          const today = new Date().toISOString().slice(0, 10);
+
+          let section = `> 夸克网盘极简版 v${ver} 全平台正式发布。`;
+          if (fs.existsSync('CHANGELOG.md')) {
+            const md = fs.readFileSync('CHANGELOG.md', 'utf8');
+            const escaped = ver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const re = new RegExp(`## \\\[?v?${escaped}\\\]?[^\\n]*\\n([\\s\\S]*?)(?=\\n---\\n|\\n## |$)`);
+            const m = md.match(re);
+            if (m && m[1].trim()) section = m[1].trim();
+          }
+
+          const files = fs.readdirSync('all-artifacts');
+          const sizeStr = (name) => {
+            if (!files.includes(name)) return null;
+            const mb = (fs.statSync(`all-artifacts/${name}`).size / 1048576).toFixed(2);
+            return `${mb} MB`;
+          };
+          const rows = [
+            ['Windows 10/11 (x64) 安装版', `QuarkDriveLite-${ver}-Windows-x64-Setup.exe`, 'NSIS 轻量安装版，支持中文向导、免管理员与干净卸载'],
+            ['Windows 10/11 (x64) 便携版', `QuarkDriveLite-${ver}-Windows-x64-Portable.zip`, 'UTF-8 编码兼容，解压即运行，无需安装'],
+            ['macOS Apple Silicon (M1–M4)', `QuarkDriveLite-${ver}-macOS-arm64.dmg`, '磁盘镜像安装版，拖入「应用程序」即可使用'],
+            ['macOS Apple Silicon (M1–M4)', `QuarkDriveLite-${ver}-macOS-arm64.zip`, '压缩包版，解压即用，支持应用内原位升级'],
+            ['macOS Intel (x64)', `QuarkDriveLite-${ver}-macOS-x64.zip`, 'Intel 芯片 Mac 压缩包版，解压后拖入「应用程序」'],
+            ['Linux x64 (Debian / Ubuntu)', `QuarkDriveLite-${ver}-Linux-x64.deb`, '`sudo apt install ./QuarkDriveLite-' + ver + '-Linux-x64.deb`'],
+            ['Linux x64 (通用便携版)', `QuarkDriveLite-${ver}-Linux-x64.AppImage`, '`chmod +x` 赋权后直接运行，支持应用内原位替换升级'],
+          ].filter((r) => sizeStr(r[1]) !== null);
+
+          const table = [
+            '| 平台 | 安装包文件 | 体积 | 说明 |',
+            '|---|---|---:|---|',
+            ...rows.map(([p, f, d]) => `| **${p}** | \`${f}\` | ${sizeStr(f)} | ${d} |`),
+          ].join('\n');
+
+          const releaseBody = [
+            `## 夸克网盘极简版 v${ver}（${today}）`,
+            '',
+            section,
+            '',
+            '---',
+            '',
+            '### 📦 全平台安装包下载对照表',
+            '',
+            table,
+            '',
+            '> 💡 **安全校验与使用提示**：',
+            '> - 完整校验和见附件 `SHA256SUMS.txt`；已开启应用内可选更新服务的用户可直接校验 **Ed25519 签名 + SHA-256** 后一键下载升级。',
+            '> - **macOS 首次启动提示**：开源未签名构建若提示「无法验证开发者」，在终端执行一次：',
+            '>   ```sh',
+            '>   xattr -dr com.apple.quarantine "/Applications/QuarkDriveLite.app"',
+            '>   ```',
+            '> - **隐私承诺**：更新、热更新与诊断通道默认关闭（未开启严格零外传）；开启后严格零 PII 脱敏，绝不采集文件名、本地路径、FID、直链、Cookie、Token 或 IP。',
+          ].join('\n');
+
+          fs.writeFileSync('release-notes.md', releaseBody, 'utf8');
+          fs.writeFileSync('hub-changelog.txt', section.slice(0, 8000), 'utf8');
+          EOF
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          version=$(node -p "require('./package.json').version")
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release edit "$TAG_NAME" --title "夸克网盘极简版 $TAG_NAME" --notes-file release-notes.md
             gh release upload "$TAG_NAME" all-artifacts/* --clobber
           else
             gh release create "$TAG_NAME" all-artifacts/* \
               --title "夸克网盘极简版 $TAG_NAME" \
-              --generate-notes
+              --notes-file release-notes.md
           fi
       - name: Auto-upload & Ed25519-sign on Tokyo Hub (when HUB_DEPLOY_TOKEN is set)
         env:
@@ -189,14 +262,9 @@ jobs:
           const hubUrl = process.env.HUB_URL.replace(/\/+$/, '');
           const token = process.env.HUB_DEPLOY_TOKEN;
           const dir = path.resolve('all-artifacts');
-
-          // Extract latest section from CHANGELOG.md if present
-          let changelog = `v${ver} 正式发布`;
-          if (fs.existsSync('CHANGELOG.md')) {
-            const md = fs.readFileSync('CHANGELOG.md', 'utf8');
-            const m = md.match(/## \[[^\]]+\][^\n]*\n([\s\S]*?)(?=\n## \[|$)/);
-            if (m) changelog = m[1].trim().slice(0, 8000);
-          }
+          const changelog = fs.existsSync('hub-changelog.txt')
+            ? fs.readFileSync('hub-changelog.txt', 'utf8').trim()
+            : `v${ver} 正式发布`;
 
           (async () => {
             const relRes = await fetch(`${hubUrl}/api/admin/releases`, {
@@ -214,23 +282,17 @@ jobs:
             if (!relRes.ok || !relJson.ok) throw new Error(`Create release failed: ${JSON.stringify(relJson)}`);
             console.log('Hub release created/updated:', relJson);
 
+            // Upload the 5 recommended fast-download assets (4-7 MiB each; oversized ~85 MiB AppImage stays on GitHub Release).
             const map = [
               ['macos-arm64', `QuarkDriveLite-${ver}-macOS-arm64.zip`],
               ['macos-x64', `QuarkDriveLite-${ver}-macOS-x64.zip`],
               ['windows-x64-setup', `QuarkDriveLite-${ver}-Windows-x64-Setup.exe`],
               ['windows-x64-portable', `QuarkDriveLite-${ver}-Windows-x64-Portable.zip`],
               ['linux-x64-deb', `QuarkDriveLite-${ver}-Linux-x64.deb`],
-              ['linux-x64-appimage', `QuarkDriveLite-${ver}-Linux-x64.AppImage`],
             ];
             for (const [assetKey, filename] of map) {
               const fp = path.join(dir, filename);
               if (!fs.existsSync(fp)) continue;
-              const stat = fs.statSync(fp);
-              // Cloudflare free-tier caps single POST body at 100 MiB; keep oversized AppImage on GitHub Release only.
-              if (stat.size > 95 * 1024 * 1024) {
-                console.log(`Skipping Hub upload for ${filename} (${(stat.size / 1048576).toFixed(1)} MiB > 95 MiB CF edge limit; available on GitHub Release)`);
-                continue;
-              }
               const qs = new URLSearchParams({ filename, assetKey, version: ver });
               const upRes = await fetch(`${hubUrl}/api/admin/releases/upload?${qs}`, {
                 method: 'POST',

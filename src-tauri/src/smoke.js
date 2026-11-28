@@ -16,12 +16,27 @@
     check('askDownloadDir defaults off', settings.askDownloadDir === false);
     check('AI entries hidden when Beta off', document.getElementById('nav-chat')?.hidden === true && document.getElementById('agent-card')?.hidden === true);
     check('backup view removed', !document.querySelector('[data-view="backup"]') && !document.getElementById('view-backup'));
+    const waitFor = async (fn, ms = 5000) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        const val = await fn();
+        if (val) return val;
+        await new Promise(r => setTimeout(r, 50));
+      }
+      return await fn();
+    };
     const tutSkip = document.getElementById('tut-btn-skip');
     check('first-launch onboarding tutorial shown with skip action', !!tutSkip);
-    if (tutSkip) { tutSkip.click(); await new Promise(r => setTimeout(r, 220)); }
-    const optDecline = document.getElementById('optin-btn-decline');
+    if (tutSkip) { tutSkip.click(); }
+    const optDecline = await waitFor(() => document.getElementById('optin-btn-decline'), 5000);
     check('first-launch server opt-in modal shown after tutorial', !!optDecline);
-    if (optDecline) { optDecline.click(); await new Promise(r => setTimeout(r, 120)); }
+    if (optDecline) {
+      optDecline.click();
+      await waitFor(async () => {
+        const cfg = await window.qk.hub.config();
+        return cfg && cfg.prompted === true;
+      }, 4000);
+    }
     const afterSettings = await window.qk.settings.get();
     check('tutorialSeen persisted after skip', afterSettings && afterSettings.tutorialSeen === true);
     const hubCfg = await window.qk.hub.config();
