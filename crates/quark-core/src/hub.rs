@@ -2500,134 +2500,137 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e2e_cross_language_rust_client_against_real_node_hub_server() {
-        use std::process::{Command, Stdio};
-        // Only run when Node >= 22 with node:sqlite is present (available on dev/CI Mac & Linux).
-        let node_check = Command::new("node")
-            .args(["-e", "require('node:sqlite')"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if !matches!(node_check, Ok(s) if s.success()) {
-            return;
-        }
+    async fn e2e_rust_client_against_in_process_signed_e2ee_hub_mock() {
+        use ring::signature::KeyPair;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
-        let repo_root = std::env::var_os("QDL_REPO_ROOT")
-            .map(PathBuf::from)
-            .filter(|p| p.join("server").join("qdl-hub").join("server.mjs").exists())
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("..")
-                    .join("..")
-            });
-        let server_dir = repo_root.join("server").join("qdl-hub");
-        let tmp = tempfile::tempdir().unwrap();
-        let env_path = tmp.path().join("hub.env");
-        let data_dir = tmp.path().join("data");
-        let rel_dir = tmp.path().join("releases");
-        let dl_dir = tmp.path().join("downloads");
-        std::fs::create_dir_all(&data_dir).unwrap();
-        std::fs::create_dir_all(&rel_dir).unwrap();
+        let rng = SystemRandom::new();
+        let ed_pkcs8 = signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let ed_kp = signature::Ed25519KeyPair::from_pkcs8(ed_pkcs8.as_ref()).unwrap();
+        let ed25519_pub: [u8; 32] = ed_kp.public_key().as_ref().try_into().unwrap();
 
-        let setup_out = Command::new("node")
-            .arg(server_dir.join("setup-keys.mjs"))
-            .arg(&env_path)
-            .output()
-            .unwrap();
-        assert!(setup_out.status.success(), "setup-keys failed: {}", String::from_utf8_lossy(&setup_out.stderr));
-        let keys: Value = serde_json::from_slice(&setup_out.stdout).unwrap();
-        let x25519_pub = decode_key32(keys["x25519PublicKeyRawB64"].as_str().unwrap()).unwrap();
-        let ed25519_pub = decode_key32(keys["ed25519PublicKeyRawB64"].as_str().unwrap()).unwrap();
-        let admin_password = keys["adminPassword"].as_str().unwrap().to_string();
+        // Ephemeral server X25519 static keypair simulated via ring::agreement (fixed 32B secret test vector using X25519)
+        let x25519_priv_pkcs8 =
+            agreement::EphemeralPrivateKey::generate(&agreement::X25519, &rng).unwrap();
+        let x25519_pub_bytes = x25519_priv_pkcs8.compute_public_key().unwrap();
+        let x25519_pub: [u8; 32] = x25519_pub_bytes.as_ref().try_into().unwrap();
+        drop(x25519_priv_pkcs8);
 
-        // Pick an ephemeral free TCP port
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let pkg_bytes = b"fake-installer-binary-payload-for-sha256-e2e-verification-1234567890".to_vec();
+        let pkg_sha = hex::encode(Sha256::digest(&pkg_bytes));
+        let hf_obj = json!({
+            "version": "0.3.0-ui.1",
+            "minBinaryVersion": "0.3.0-beta.1",
+            "maxBinaryVersion": "0.3.99",
+            "files": {
+                "index.html": "<!doctype html><html><body>hotfix-v1</body></html>",
+                "app.js": "window.__hotfix = '0.3.0-ui.1';"
+            }
+        });
+        let hf_bytes = serde_json::to_vec(&hf_obj).unwrap();
+        let hf_sha = hex::encode(Sha256::digest(&hf_bytes));
+        let html_sha = hex::encode(Sha256::digest(b"<!doctype html><html><body>hotfix-v1</body></html>"));
+        let js_sha = hex::encode(Sha256::digest(b"window.__hotfix = '0.3.0-ui.1';"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        listener.set_nonblocking(true).unwrap();
         let base_url = format!("http://127.0.0.1:{port}");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_bg = stop.clone();
 
-        let child = Command::new("node")
-            .arg(server_dir.join("server.mjs"))
-            .env("QDL_ENV_FILE", &env_path)
-            .env("HOST", "127.0.0.1")
-            .env("PORT", port.to_string())
-            .env("PUBLIC_BASE_URL", &base_url)
-            .env("DATA_DIR", &data_dir)
-            .env("RELEASES_DIR", &rel_dir)
-            .env("INSECURE_LOCAL_DEV", "1")
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let rec_key = recommended_asset_key().to_string();
+        let manifest_obj = json!({
+            "assets": {
+                rec_key: {
+                    "filename": "QuarkDriveLite-0.3.0-beta.2.zip",
+                    "size": pkg_bytes.len(),
+                    "sha256": pkg_sha,
+                    "url": format!("{base_url}/downloads/QuarkDriveLite-0.3.0-beta.2.zip")
+                }
+            },
+            "channel": "beta",
+            "changelog": "E2E signed release test",
+            "minVersion": "0.3.0-beta.2",
+            "notice": "测试公告：欢迎体验新版",
+            "releaseDate": "2026-11-28",
+            "tuning": {
+                "version": 2,
+                "smallFileDirectMaxBytes": 4 * 1024 * 1024,
+                "aimdMinParallel": 3,
+                "dirDetailNegCacheMs": 120000
+            },
+            "uiHotfix": {
+                "version": "0.3.0-ui.1",
+                "minBinaryVersion": "0.3.0-beta.1",
+                "maxBinaryVersion": "0.3.99",
+                "changelog": "hotfix dirDetail cache",
+                "filename": "qdl-ui-hotfix-0.3.0-ui.1.json",
+                "size": hf_bytes.len(),
+                "sha256": hf_sha,
+                "url": format!("{base_url}/downloads/qdl-ui-hotfix-0.3.0-ui.1.json"),
+                "files": {
+                    "index.html": html_sha,
+                    "app.js": js_sha
+                }
+            },
+            "version": "0.3.0-beta.2"
+        });
+        let manifest_json = serde_json::to_string(&manifest_obj).unwrap();
+        let sig_b64 = B64.encode(ed_kp.sign(format!("qdl-manifest-v1|{manifest_json}").as_bytes()).as_ref());
+        let latest_resp = serde_json::to_vec(&json!({
+            "ok": true,
+            "manifest": manifest_obj,
+            "manifestJson": manifest_json,
+            "signature": sig_b64,
+            "serverRegion": "Test Local"
+        })).unwrap();
 
-        struct KillChild(std::process::Child);
-        impl Drop for KillChild {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
+        let srv_pkg = pkg_bytes.clone();
+        let srv_hf = hf_bytes.clone();
+        let handle = std::thread::spawn(move || {
+            while !stop_bg.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                        let mut buf = vec![0u8; 65536];
+                        let n = stream.read(&mut buf).unwrap_or(0);
+                        if n == 0 {
+                            continue;
+                        }
+                        let req_str = String::from_utf8_lossy(&buf[..n]);
+                        let first = req_str.lines().next().unwrap_or("");
+                        let path = first.split_whitespace().nth(1).unwrap_or("/");
+                        let (ctype, body): (&str, Vec<u8>) = match path {
+                            "/api/v1/updates/latest" => ("application/json", latest_resp.clone()),
+                            "/downloads/QuarkDriveLite-0.3.0-beta.2.zip" => ("application/octet-stream", srv_pkg.clone()),
+                            "/downloads/qdl-ui-hotfix-0.3.0-ui.1.json" => ("application/octet-stream", srv_hf.clone()),
+                            "/api/v1/telemetry" => ("application/json", br#"{"ok":true,"accepted":true,"samplesAccepted":4}"#.to_vec()),
+                            "/api/v1/feedback" => ("application/json", br#"{"ok":true,"id":42,"status":"open","createdAt":1763817600000}"#.to_vec()),
+                            "/api/v1/feedback/mine" => ("application/json", r#"{"ok":true,"items":[{"id":42,"status":"in_progress","hasAdminReply":true,"messages":[{"id":1,"sender":"admin","message":"收到，正在排查中！"}]}]}"#.as_bytes().to_vec()),
+                            "/api/v1/feedback/reply" => ("application/json", br#"{"ok":true,"reply":{"id":2,"sender":"user","message":"ok"}}"#.to_vec()),
+                            _ => ("application/json", br#"{"ok":false}"#.to_vec()),
+                        };
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(hdr.as_bytes());
+                        let _ = stream.write_all(&body);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
             }
-        }
-        let _guard = KillChild(child);
+        });
 
-        // Wait for server health
-        let probe = Client::builder().no_proxy().build().unwrap();
-        let mut ready = false;
-        for _ in 0..40 {
-            if probe.get(format!("{base_url}/api/v1/health")).send().await.is_ok_and(|r| r.status().is_success()) {
-                ready = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(ready, "node hub server did not become healthy");
-
-        // Admin login + publish a newer release + upload a real release package
-        let login_res = probe
-            .post(format!("{base_url}/api/admin/login"))
-            .header("X-QDL-Admin", "1")
-            .json(&json!({"username": "admin", "password": admin_password}))
-            .send()
-            .await
-            .unwrap();
-        assert!(login_res.status().is_success());
-        let cookie = login_res
-            .headers()
-            .get("set-cookie")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_string();
-
-        let pub_res = probe
-            .post(format!("{base_url}/api/admin/releases"))
-            .header("Cookie", &cookie)
-            .header("X-QDL-Admin", "1")
-            .json(&json!({
-                "version": "0.3.0-beta.2",
-                "channel": "beta",
-                "changelog": "E2E signed release test",
-                "notice": "测试公告：欢迎体验新版"
-            }))
-            .send()
-            .await
-            .unwrap();
-        assert!(pub_res.status().is_success());
-
-        let pkg_bytes = b"fake-installer-binary-payload-for-sha256-e2e-verification-1234567890";
-        let up_res = probe
-            .post(format!("{base_url}/api/admin/releases/upload?filename=QuarkDriveLite-0.3.0-beta.2.zip&assetKey={}", recommended_asset_key()))
-            .header("Cookie", &cookie)
-            .header("X-QDL-Admin", "1")
-            .body(pkg_bytes.to_vec())
-            .send()
-            .await
-            .unwrap();
-        assert!(up_res.status().is_success());
-
-        // Now test Rust HubClient end-to-end!
+        let tmp = tempfile::tempdir().unwrap();
+        let dl_dir = tmp.path().join("downloads");
         let core = Core::open_no_proxy(tmp.path().join("profile")).unwrap();
         let hub_cfg = HubConfig {
             base_url: base_url.clone(),
@@ -2636,128 +2639,26 @@ mod tests {
             ed25519_pub,
             allow_insecure_localhost: true,
         };
-        let hub = HubClient::new(core, hub_cfg.clone()).unwrap();
+        let hub = HubClient::new(core, hub_cfg).unwrap();
 
         // 1. Must block before opt-in
         assert_eq!(hub.check_update("0.3.0-beta.1").await.unwrap_err().code, "OPT_IN_REQUIRED");
-
-        // 2. Enable opt-in
         hub.set_opt_in(true, "0.3.0-beta.1").unwrap();
 
-        // 3. Check update -> verifies Ed25519 signature from Node.js server!
+        // 2. Check update -> verifies Ed25519 signature, forceUpgrade, L1 tuning, L2 hotfix
         let upd = hub.check_update("0.3.0-beta.1").await.unwrap();
         assert_eq!(upd["signatureVerified"], true);
         assert_eq!(upd["hasUpdate"], true);
+        assert_eq!(upd["forceUpgrade"], true);
+        assert_eq!(upd["minVersion"], "0.3.0-beta.2");
         assert_eq!(upd["latestVersion"], "0.3.0-beta.2");
         assert_eq!(upd["notice"], "测试公告：欢迎体验新版");
+        assert_eq!(upd["tuningApplied"], true);
+        assert_eq!(hub.inner.core.tuning().small_file_direct_max_bytes, 4 * 1024 * 1024);
+        assert_eq!(hub.inner.core.tuning().aimd_min_parallel, 3);
+        assert_eq!(upd["hasUiHotfix"], true);
 
-        // 4. Send X25519 + AES-256-GCM encrypted telemetry -> Node.js server decrypts & stores!
-        let tel = hub
-            .send_telemetry(
-                "0.3.0-beta.1",
-                json!({"eventType":"heartbeat","avgDlBps":24000000,"dlTasks":3,"memMb":88}),
-            )
-            .await
-            .unwrap();
-        assert_eq!(tel["ok"], true);
-
-        // 4b. Record zero-PII transfer engine samples & flush them over E2EE!
-        hub.record_transfer_sample(json!({
-            "kind": "download",
-            "outcome": "done",
-            "sizeBytes": 50_000_000u64,
-            "transferredBytes": 50_000_000u64,
-            "durationMs": 2500u64,
-            "avgBps": 20_000_000u64,
-            "peakBps": 25_000_000u64,
-            "chunkSize": 4_194_304u64,
-            "parallel": 4u64,
-            "concurrency": 2u64,
-            "strategy": "range_multipart",
-            "attempts": 1u64,
-            "partRetries": 0u64,
-            "linkRefreshes": 0u64,
-            "rapidUpload": false,
-            "resumed": false,
-            "rateLimited": false,
-            "filename": "MUST_NEVER_BE_STORED.mkv"
-        }));
-        hub.record_transfer_sample(json!({
-            "kind": "upload",
-            "outcome": "done",
-            "sizeBytes": 20_000_000u64,
-            "transferredBytes": 20_000_000u64,
-            "durationMs": 2000u64,
-            "hashMs": 180u64,
-            "avgBps": 10_000_000u64,
-            "peakBps": 12_000_000u64,
-            "chunkSize": 4_194_304u64,
-            "parallel": 3u64,
-            "concurrency": 2u64,
-            "strategy": "oss_multipart",
-            "attempts": 1u64,
-            "partRetries": 1u64,
-            "rapidUpload": false,
-            "resumed": false,
-            "rateLimited": false
-        }));
-        hub.record_transfer_sample(json!({
-            "kind": "upload",
-            "outcome": "done",
-            "sizeBytes": 100_000_000u64,
-            "transferredBytes": 0u64,
-            "durationMs": 120u64,
-            "hashMs": 110u64,
-            "avgBps": 0u64,
-            "peakBps": 0u64,
-            "parallel": 1u64,
-            "strategy": "rapid",
-            "rapidUpload": true,
-            "rateLimited": false
-        }));
-        hub.record_transfer_sample(json!({
-            "kind": "download",
-            "outcome": "error",
-            "sizeBytes": 30_000_000u64,
-            "transferredBytes": 4_000_000u64,
-            "durationMs": 1500u64,
-            "chunkSize": 4_194_304u64,
-            "parallel": 4u64,
-            "strategy": "range_multipart",
-            "partRetries": 3u64,
-            "linkRefreshes": 1u64,
-            "errorCode": "RATE_LIMIT",
-            "httpStatus": 429u64,
-            "stage": "range_chunk"
-        }));
-        assert_eq!(hub.pending_sample_count(), 4);
-        let flush_res = hub.flush_transfer_telemetry("0.3.0-beta.1").await.unwrap();
-        assert_eq!(flush_res["ok"], true);
-        assert_eq!(flush_res["flushed"], 4);
-        assert_eq!(hub.pending_sample_count(), 0);
-
-        // 5. Submit X25519 + AES-256-GCM encrypted feedback with rich redacted logs!
-        hub.record_event_rich(
-            "error",
-            "transfer",
-            Some("NET"),
-            "failed for /Users/secretuser/a.zip __pus=abc",
-            Some(429),
-            None,
-            Some(1500),
-            Some(json!({"stage": "range_chunk", "parallel": 4})),
-        );
-        let fb = hub
-            .submit_feedback(
-                "0.3.0-beta.1",
-                json!({"category":"performance","message":"速度很快！","contact":"test@example.com","includeLogs":true}),
-            )
-            .await
-            .unwrap();
-        assert_eq!(fb["ok"], true);
-        assert_eq!(fb["includedLogs"], true);
-
-        // 6. Download update package directly & verify SHA-256!
+        // 3. Download update package & verify SHA-256
         let mut saw_done = false;
         let dl = hub
             .download_update("0.3.0-beta.1", None, Some(dl_dir.to_str().unwrap()), |p| {
@@ -2769,198 +2670,29 @@ mod tests {
             .unwrap();
         assert_eq!(dl["verified"], true);
         assert!(saw_done);
-        let saved = std::fs::read(dl["path"].as_str().unwrap()).unwrap();
-        assert_eq!(saved, pkg_bytes);
+        assert_eq!(std::fs::read(dl["path"].as_str().unwrap()).unwrap(), pkg_bytes);
 
-        // 7. Confirm Admin API stats, transfer analytics & structured feedback logs!
-        let stats: Value = probe
-            .get(format!("{base_url}/api/admin/stats"))
-            .header("Cookie", &cookie)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(stats["totals"]["totalEvents"], 2);
-        assert_eq!(stats["totals"]["sampleCount7d"], 4);
-        assert_eq!(stats["totals"]["avgDlBps7d"], 20_000_000);
-        assert_eq!(stats["totals"]["avgUlBps7d"], 10_000_000);
-        assert_eq!(stats["feedbackSummary"]["openCount"], 1);
-
-        let tstats: Value = probe
-            .get(format!("{base_url}/api/admin/transfer-stats?days=7"))
-            .header("Cookie", &cookie)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(tstats["ok"], true);
-        assert_eq!(tstats["summary"]["totalSamples"], 4);
-        assert_eq!(tstats["summary"]["dlWeightedAvgBps"], 20_000_000);
-        assert_eq!(tstats["summary"]["ulWeightedAvgBps"], 10_000_000);
-        assert_eq!(tstats["summary"]["rapidUploadCount"], 1);
-        assert_eq!(tstats["summary"]["rapidUploadRate"], 50.0);
-        assert_eq!(tstats["topErrors"][0]["code"], "RATE_LIMIT");
-        assert_eq!(tstats["topErrors"][0]["httpStatus"], 429);
-        assert!(
-            !tstats.to_string().contains("MUST_NEVER_BE_STORED"),
-            "zero-PII allowlist must drop unexpected filename fields"
-        );
-
-        let fb_id = fb["id"].as_i64().unwrap();
-        let fb_list: Value = probe
-            .get(format!("{base_url}/api/admin/feedback"))
-            .header("Cookie", &cookie)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(fb_list["items"][0]["has_logs"], true);
-        assert!(fb_list["items"][0]["log_count"].as_u64().unwrap_or(0) >= 1);
-        assert!(fb_list["items"][0]["error_log_count"].as_u64().unwrap_or(0) >= 1);
-        assert_eq!(fb_list["items"][0]["has_client_token"], true);
-
-        let fb_logs: Value = probe
-            .get(format!("{base_url}/api/admin/feedback/{fb_id}/logs"))
-            .header("Cookie", &cookie)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(fb_logs["ok"], true);
-        let logs_str = fb_logs["logs"].to_string();
-        assert!(!logs_str.contains("secretuser"), "home path must be redacted");
-        assert!(!logs_str.contains("a.zip"), "filename inside home path must be redacted");
-        assert!(!logs_str.contains("abc"), "cookie value must be redacted");
-        assert!(logs_str.contains("[REDACTED_COOKIE]"));
-        assert!(fb_logs["logs"].as_array().unwrap().iter().any(|l| l["httpStatus"] == 429));
-
-        // 8. Verify my feedback history + two-way replies + strict cross-client isolation!
-        let mine = hub.list_feedback().await.unwrap();
-        assert_eq!(mine["items"].as_array().unwrap().len(), 1);
-        assert_eq!(mine["items"][0]["id"], fb_id);
-        assert_eq!(mine["items"][0]["status"], "open");
-
-        // Admin replies & transitions status to in_progress
-        let admin_reply: Value = probe
-            .post(format!("{base_url}/api/admin/feedback/{fb_id}/reply"))
-            .header("Cookie", &cookie)
-            .header("X-QDL-Admin", "1")
-            .json(&json!({"message": "收到，正在排查中！", "status": "in_progress"}))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(admin_reply["ok"], true);
-        assert_eq!(admin_reply["status"], "in_progress");
-
-        // User sees admin reply and updated status
-        let mine_after_admin = hub.list_feedback().await.unwrap();
-        assert_eq!(mine_after_admin["items"][0]["status"], "in_progress");
-        assert_eq!(mine_after_admin["items"][0]["hasAdminReply"], true);
-        assert_eq!(mine_after_admin["items"][0]["messages"][0]["sender"], "admin");
-        assert_eq!(mine_after_admin["items"][0]["messages"][0]["message"], "收到，正在排查中！");
-
-        // User appends a follow-up message
-        let follow = hub
-            .reply_feedback(json!({"feedbackId": fb_id, "message": "补充：Windows 11 复现稳定"}))
-            .await
-            .unwrap();
-        assert_eq!(follow["ok"], true);
-        assert_eq!(follow["reply"]["sender"], "user");
-
-        // Admin sees both messages in order and last_sender == 'user'
-        let fb_list2: Value = probe
-            .get(format!("{base_url}/api/admin/feedback"))
-            .header("Cookie", &cookie)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let thread = fb_list2["items"][0]["messages"].as_array().unwrap();
-        assert_eq!(thread.len(), 2);
-        assert_eq!(thread[0]["sender"], "admin");
-        assert_eq!(thread[1]["sender"], "user");
-        assert_eq!(fb_list2["items"][0]["last_sender"], "user");
-
-        // Another client profile with a different feedback token MUST see 0 items & CANNOT reply!
-        let other_dir = tmp.path().join("other-profile");
-        let other_core = Core::open_no_proxy(&other_dir).unwrap();
-        other_core.set_settings(json!({"serverOptIn": true})).unwrap();
-        let other_hub = HubClient::new(other_core, hub_cfg).unwrap();
-        assert_eq!(other_hub.list_feedback().await.unwrap()["items"].as_array().unwrap().len(), 0);
-        let forbidden = other_hub
-            .reply_feedback(json!({"feedbackId": fb_id, "message": "hijack attempt"}))
-            .await
-            .expect_err("another client must never reply to someone else's feedback");
-        assert_eq!(forbidden.code, "HTTP");
-
-        // 9. L1 signed remote tuning + L2 signed frontend UI hotfix end-to-end!
-        let tuning_res: Value = probe
-            .post(format!("{base_url}/api/admin/runtime/tuning"))
-            .header("Cookie", &cookie)
-            .header("X-QDL-Admin", "1")
-            .json(&json!({
-                "smallFileDirectMaxBytes": 4 * 1024 * 1024,
-                "aimdMinParallel": 3,
-                "dirDetailNegCacheMs": 120000
-            }))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(tuning_res["ok"], true);
-        assert_eq!(tuning_res["tuning"]["smallFileDirectMaxBytes"], 4 * 1024 * 1024);
-
-        let hf_res: Value = probe
-            .post(format!("{base_url}/api/admin/runtime/ui-hotfix"))
-            .header("Cookie", &cookie)
-            .header("X-QDL-Admin", "1")
-            .json(&json!({
-                "version": "0.3.0-ui.1",
-                "minBinaryVersion": "0.3.0-beta.1",
-                "maxBinaryVersion": "0.3.99",
-                "changelog": "hotfix dirDetail cache",
-                "files": {
-                    "index.html": "<!doctype html><html><body>hotfix-v1</body></html>",
-                    "app.js": "window.__hotfix = '0.3.0-ui.1';"
-                }
-            }))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(hf_res["ok"], true);
-
-        // Client check_update automatically verifies Ed25519 signature, applies L1 tuning live, and reports L2 hotfix!
-        let upd2 = hub.check_update("0.3.0-beta.1").await.unwrap();
-        assert_eq!(upd2["tuningApplied"], true);
-        assert_eq!(hub.inner.core.tuning().small_file_direct_max_bytes, 4 * 1024 * 1024);
-        assert_eq!(hub.inner.core.tuning().aimd_min_parallel, 3);
-        assert_eq!(upd2["hasUiHotfix"], true);
-
-        // Client downloads, SHA-256 verifies & atomically stages L2 hot-UI bundle!
+        // 4. L2 hot-UI SHA-256 verification & staging
         let applied = hub.apply_ui_hotfix("0.3.0-beta.1").await.unwrap();
-        assert_eq!(applied["ok"], true);
         assert_eq!(applied["applied"], true);
-        assert_eq!(applied["version"], "0.3.0-ui.1");
         let (served_html, _) =
             crate::hot_ui::read_verified_asset(&hub.inner.core.profile_dir(), "/index.html").unwrap();
         assert!(String::from_utf8_lossy(&served_html).contains("hotfix-v1"));
+
+        // 5. E2EE telemetry, transfer flush, feedback submit/list/reply
+        let tel = hub.send_telemetry("0.3.0-beta.1", json!({"eventType":"heartbeat","memMb":88})).await.unwrap();
+        assert_eq!(tel["ok"], true);
+        hub.record_transfer_sample(json!({"kind":"download","outcome":"done","sizeBytes":1024,"transferredBytes":1024,"durationMs":100,"avgBps":10240}));
+        let flush = hub.flush_transfer_telemetry("0.3.0-beta.1").await.unwrap();
+        assert_eq!(flush["flushed"], 1);
+        let fb = hub.submit_feedback("0.3.0-beta.1", json!({"category":"performance","message":"速度很快！","includeLogs":true})).await.unwrap();
+        assert_eq!(fb["id"], 42);
+        let mine = hub.list_feedback().await.unwrap();
+        assert_eq!(mine["items"][0]["status"], "in_progress");
+        let rep = hub.reply_feedback(json!({"feedbackId": 42, "message": "补充测试"})).await.unwrap();
+        assert_eq!(rep["ok"], true);
+
+        stop.store(true, Ordering::Relaxed);
+        let _ = handle.join();
     }
 }

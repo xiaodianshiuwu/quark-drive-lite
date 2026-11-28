@@ -15,4 +15,4 @@ A profile lock prevents two desktop processes from writing the same session/task
 
 GUI → API whitelist → Tauri `qk_call` (trusted main window only) → Core / TransferManager / HubClient / AgentRuntime. Remote login content receives no capabilities.
 
-Product requirements are in `PRODUCT.md`. Companion optional hub server & admin console source is under `server/qdl-hub/` (zero secrets in repository).
+Product requirements are in `PRODUCT.md`.

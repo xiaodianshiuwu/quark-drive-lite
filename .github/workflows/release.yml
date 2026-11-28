@@ -34,6 +34,7 @@ jobs:
         shell: pwsh
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/src --remap-path-prefix=C:\Users\runneradmin\.cargo=/cargo
         run: |
           $ErrorActionPreference = 'Stop'
           npx tauri build --bundles nsis -- --locked
@@ -88,6 +89,7 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
           APPIMAGE_EXTRACT_AND_RUN: '1'
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/src --remap-path-prefix=/home/runner/.cargo=/cargo
         run: |
           npm run build -- -- --locked
           mkdir -p dist-release
@@ -128,6 +130,7 @@ jobs:
       - name: Build macOS packages (${{ matrix.arch }})
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/src --remap-path-prefix=/Users/runner/.cargo=/cargo
         run: |
           npm run build -- --bundles ${{ matrix.bundles }} -- --locked
           mkdir -p dist-release

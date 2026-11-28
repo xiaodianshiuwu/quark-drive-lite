@@ -7,3 +7,6 @@ opt-level = "s"
 lto = "fat"
 codegen-units = 1
 strip = true
+debug = false
+debug-assertions = false
+overflow-checks = false
